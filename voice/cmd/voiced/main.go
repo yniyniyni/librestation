@@ -11,6 +11,7 @@ const usage = `usage:
   wakeword run [flags]        station daemon: detect words, web UI, training
   wakeword train [flags]      train a word from WAV files
   wakeword scan model.json... audio.wav
+  wakeword replay [flags] in16ch.wav [out16k.wav]
 `
 
 func main() {
@@ -29,6 +30,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "train":
 		err = cmdTrain(os.Args[2:])
+	case "replay":
+		err = cmdReplay(os.Args[2:])
 	case "scan":
 		err = cmdScan(os.Args[2:])
 	default:
