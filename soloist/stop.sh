@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Stop soloist-service.sh and everything it started.
 BB=/vendor/xbin/busybox
-PAT='soloist-service.sh|/opt/soloist/soloist|soloist --|pulseaudio -n -F /etc/pulse/soloist.pa|aaudio_pipe 44100|xray run -c /etc/xray.json|voice-bridge.sh|logcat -v raw -T 1 -s quark-native'
+PAT='soloist-service.sh|/opt/soloist/soloist|soloist --|pulseaudio -n -F /etc/pulse/soloist.pa|aaudio_pipe 44100|xray run -c /etc/xray.json|voiced run|app_process /system/bin Mic'
 # supervisors first so nothing respawns, then the rest
 for pass in 1 2; do
     for p in $(ps -A -o PID,ARGS | grep -E "$PAT" | grep -v -E "grep|stop.sh" | $BB awk '{print $1}'); do
