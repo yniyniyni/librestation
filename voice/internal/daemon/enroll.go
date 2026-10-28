@@ -203,10 +203,14 @@ func (d *Daemon) saveEnrollment(e *enrollment) error {
 }
 
 // finishEnroll saves the session and trains it in the background.
-func (d *Daemon) finishEnroll(action string) error {
-	action, err := normalizeAction(action)
-	if err != nil {
-		return err
+// A nil action leaves the word's saved action untouched.
+func (d *Daemon) finishEnroll(action *string) error {
+	if action != nil {
+		a, err := normalizeAction(*action)
+		if err != nil {
+			return err
+		}
+		action = &a
 	}
 	e, err := d.currentEnroll()
 	if err != nil {
@@ -222,7 +226,7 @@ func (d *Daemon) finishEnroll(action string) error {
 		return err
 	}
 	d.endEnroll()
-	return d.startTraining(e.ID, &action)
+	return d.startTraining(e.ID, action)
 }
 
 // startTraining (re)trains a word from its saved recordings.
@@ -300,7 +304,15 @@ func (d *Daemon) trainWord(name string, en kws.Enrollment, action *string) (*kws
 	if err := os.Rename(path+".tmp", path); err != nil {
 		return nil, err
 	}
+	d.applyTrained(id, action)
+	return m, d.loadWords()
+}
+
+// applyTrained makes sure a trained word has settings and, when action is
+// given, stores it; nil keeps the word's existing action.
+func (d *Daemon) applyTrained(id string, action *string) {
 	d.mu.Lock()
+	defer d.mu.Unlock()
 	if d.settings.Words[id] == nil {
 		d.settings.Words[id] = &WordSettings{Enabled: true}
 	}
@@ -308,6 +320,4 @@ func (d *Daemon) trainWord(name string, en kws.Enrollment, action *string) (*kws
 		d.settings.Words[id].Action = *action
 	}
 	d.saveSettings()
-	d.mu.Unlock()
-	return m, d.loadWords()
 }

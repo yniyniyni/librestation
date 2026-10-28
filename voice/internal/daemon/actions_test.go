@@ -171,3 +171,37 @@ func TestEnrollTrainRejectsUnknownAction(t *testing.T) {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 }
+
+func TestTrainKeepsExistingActionWhenAbsent(t *testing.T) {
+	d, _ := newTest(t, nil, "next", false)
+	d.applyTrained("x", nil)
+	if a := d.settings.Words["x"].Action; a != "next" {
+		t.Fatalf("action %q", a)
+	}
+}
+
+func TestTrainSetsActionWhenGiven(t *testing.T) {
+	d, _ := newTest(t, nil, "next", false)
+	pause, none := "pause", ""
+	d.applyTrained("x", &pause)
+	if a := d.settings.Words["x"].Action; a != "pause" {
+		t.Fatalf("action %q", a)
+	}
+	d.applyTrained("x", &none)
+	if a := d.settings.Words["x"].Action; a != "" {
+		t.Fatalf("action %q", a)
+	}
+	d.applyTrained("new", &pause)
+	if d.settings.Words["new"] == nil || d.settings.Words["new"].Action != "pause" || !d.settings.Words["new"].Enabled {
+		t.Fatal("new word not created")
+	}
+}
+
+func TestEnrollTrainMalformedBody(t *testing.T) {
+	d, _ := newTest(t, nil, "", false)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	if r := post(t, srv.URL+"/api/enroll/train", `{bad`); r.StatusCode != 400 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+}

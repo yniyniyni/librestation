@@ -244,6 +244,7 @@ $("newbtn").onclick = () => run(null, async () => {
   if (!name) return;
   msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
   await api("POST", "/api/enroll/start", { name: name.trim() });
+  $("enrollaction").value = "";
 });
 $("wcancel").onclick = () => run(null, async () => { if (confirm("Бросить запись этого слова?")) await api("POST", "/api/enroll/cancel"); });
 $("ambbtn").onclick = () => run($("ambbtn"), async () => {
@@ -285,7 +286,11 @@ document.addEventListener("click", (ev) => {
   if (ds.deltake) run(null, () => api("DELETE", "/api/enroll/take/" + ds.deltake));
   if (ds.false) run(null, () => api("POST", `/api/hits/${ds.false}/false`));
   if (ds.retrain) run(null, () => api("POST", `/api/words/${ds.retrain}/retrain`));
-  if (ds.more) run(null, () => api("POST", "/api/enroll/start", { name: ds.more }));
+  if (ds.more) run(null, async () => {
+    await api("POST", "/api/enroll/start", { name: ds.more });
+    const w = (state.words || []).find(x => x.name === ds.more);
+    $("enrollaction").value = (w && w.action) || "";
+  });
   if (ds.del && confirm(`Удалить слово «${ds.name}» со всеми записями?`)) run(null, () => api("DELETE", "/api/words/" + ds.del));
 });
 </script>

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -281,9 +282,12 @@ func (d *Daemon) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/enroll/train", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Action string `json:"action"`
+			Action *string `json:"action"`
 		}
-		json.NewDecoder(r.Body).Decode(&req) // body is optional
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			httpErr(w, err)
+			return
+		}
 		if err := d.finishEnroll(req.Action); err != nil {
 			httpErr(w, err)
 			return
