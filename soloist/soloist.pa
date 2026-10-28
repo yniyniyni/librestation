@@ -1,0 +1,5 @@
+# PulseAudio for Soloist on Android: everything goes to a FIFO read by aaudio_pipe outside the chroot.
+load-module module-pipe-sink sink_name=android file=/tmp/pulse-out.fifo format=s16le rate=44100 channels=2 sink_properties=device.description=Android
+load-module module-native-protocol-unix socket=/tmp/pulse.sock auth-anonymous=1
+load-module module-suspend-on-idle timeout=3
+set-default-sink android

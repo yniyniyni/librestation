@@ -1,0 +1,9 @@
+librespot/
+rec/
+backup/
+dist/
+voice/dist/
+*.dex
+.venv/
+.superpowers/
+.DS_Store
