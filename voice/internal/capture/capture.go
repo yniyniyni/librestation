@@ -23,6 +23,8 @@ const (
 	silenceBlocks = 5 * Rate / BlockFrames
 )
 
+var errSilence = errors.New("capture: sustained silence")
+
 // Backoff bounds between helper restarts; variables so tests can shrink them.
 var (
 	backoffMin = 1 * time.Second
@@ -77,8 +79,8 @@ func (d *silenceDetector) feed(block []int16) bool {
 // Runner starts the helper process and delivers its audio blocks.
 type Runner struct {
 	Cmd       []string
-	Env       []string // extra environment entries (appended to the current one); nil = inherit only
-	OnBlock   func([]int16)
+	Env       []string      // extra environment entries (appended to the current one); nil = inherit only
+	OnBlock   func([]int16) // slice is reused after return; called on the read goroutine
 	OnSilence func()
 }
 
@@ -94,6 +96,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		got, err := r.runOnce(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, errSilence) {
+			// Mic was held by another app; reopen it promptly, not a failure.
+			log.Printf("capture: silence detected, restarting helper in %s", backoffMin)
+			backoff = backoffMin
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoffMin):
+			}
+			continue
 		}
 		log.Printf("capture: helper exited after %s (%d blocks): %v; restart in %s",
 			time.Since(started).Round(time.Millisecond), got, err, backoff)
@@ -133,8 +146,11 @@ func (r *Runner) runOnce(ctx context.Context) (int, error) {
 		if r.OnBlock != nil {
 			r.OnBlock(b)
 		}
-		if det.feed(b) && r.OnSilence != nil {
-			r.OnSilence()
+		if det.feed(b) {
+			if r.OnSilence != nil {
+				r.OnSilence()
+			}
+			return errSilence
 		}
 		return ctx.Err()
 	})

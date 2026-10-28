@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -166,5 +169,30 @@ func TestSilenceWatchdogTriggers(t *testing.T) {
 	defer mu.Unlock()
 	if silence != 1 {
 		t.Fatalf("OnSilence called %d times, want 1", silence)
+	}
+}
+
+func TestSilenceRestartsHelper(t *testing.T) {
+	defer func(a, b time.Duration) { backoffMin, backoffMax = a, b }(backoffMin, backoffMax)
+	backoffMin, backoffMax = 10*time.Millisecond, time.Hour // growing backoff would stall the test
+	starts := filepath.Join(t.TempDir(), "starts")
+	var silence atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	r := &Runner{
+		Cmd: []string{"sh", "-c", "echo x >> " + starts + "; cat /dev/zero"},
+		OnSilence: func() {
+			if silence.Add(1) >= 3 {
+				cancel()
+			}
+		},
+	}
+	_ = r.Run(ctx)
+	if silence.Load() < 3 {
+		t.Fatalf("OnSilence called %d times, want >= 3", silence.Load())
+	}
+	b, _ := os.ReadFile(starts)
+	if n := strings.Count(string(b), "x"); n < 2 {
+		t.Fatalf("helper started %d times, want >= 2", n)
 	}
 }
