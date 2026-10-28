@@ -1,4 +1,4 @@
-// Command wakeword adds user-trained wake words to Yandex Stations.
+// Command voiced runs user-trained voice commands on a Yandex Station.
 package main
 
 import (
@@ -8,10 +8,10 @@ import (
 )
 
 const usage = `usage:
-  wakeword run [flags]        station daemon: detect words, web UI, training
-  wakeword train [flags]      train a word from WAV files
-  wakeword scan model.json... audio.wav
-  wakeword replay [flags] in16ch.wav [out16k.wav]
+  voiced run [flags]        station daemon: detect words, web UI, training
+  voiced train [flags]      train a word from WAV files
+  voiced scan model.json... audio.wav
+  voiced replay [flags] in16ch.wav [out16k.wav]
 `
 
 func main() {
@@ -39,7 +39,7 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "wakeword:", err)
+		fmt.Fprintln(os.Stderr, "voiced:", err)
 		os.Exit(1)
 	}
 }

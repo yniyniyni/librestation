@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	miccap "voice/internal/capture"
+	"voice/internal/frontend"
 	"voice/internal/kws"
 	"voice/internal/wav"
 )
@@ -26,19 +28,22 @@ type Options struct {
 	DataDir   string // words, settings
 	Negatives string // bundled negatives.bin
 	Listen    string
+	MicCmd    []string // capture helper command
+	Soloist   string   // Soloist WebSocket URL (used by the real Actuator)
+	Actuator  Actuator // runs word actions; nil = actions are only logged
 }
 
 // Settings is persisted in <data>/settings.json.
 type Settings struct {
-	Channel string                   `json:"channel"` // yio_audio channel
-	Gain    float64                  `json:"gain"`    // applied before everything else
-	DryRun  bool                     `json:"dry_run"` // log hits without waking Alice
-	Words   map[string]*WordSettings `json:"words"`
+	Gain   float64                  `json:"gain"`    // frontend output gain
+	DryRun bool                     `json:"dry_run"` // log hits without acting
+	Words  map[string]*WordSettings `json:"words"`
 }
 
 type WordSettings struct {
 	Enabled     bool    `json:"enabled"`
 	Sensitivity float32 `json:"sensitivity"` // threshold offset, -0.3..0.3
+	Action      string  `json:"action"`      // one of actionNames; "" = none
 }
 
 type word struct {
@@ -53,14 +58,15 @@ type Hit struct {
 	Name  string    `json:"name"`
 	Score float32   `json:"score"`
 	At    time.Time `json:"at"`
-	Fired bool      `json:"fired"` // Alice was asked to listen
+	Fired bool      `json:"fired"` // the word's action was run
 	Error string    `json:"error,omitempty"`
 	audio []int16
 }
 
 type Daemon struct {
-	opt         Options
-	startListen func() error
+	opt Options
+
+	onActionDone func() // test hook
 
 	mu       sync.Mutex
 	settings Settings
@@ -114,8 +120,7 @@ func New(opt Options) (*Daemon, error) {
 		return nil, err
 	}
 	d := &Daemon{opt: opt, ring: newRing(ringSecs * kws.SampleRate)}
-	d.startListen = func() error { log.Printf("startListen: no-op (Task 7 replaces)"); return nil }
-	d.settings = Settings{Channel: "vqe_0", Gain: 32, Words: map[string]*WordSettings{}}
+	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
 			return nil, fmt.Errorf("settings: %w", err)
@@ -201,40 +206,44 @@ func (d *Daemon) rebuildDetector() error {
 	return nil
 }
 
-// Run streams audio until ctx ends, reconnecting to maind as needed.
+// Run captures and processes audio until ctx ends. Yandex's voice stack is
+// killed first (and again whenever the mic reads silence) so we get the mic.
 func (d *Daemon) Run(ctx context.Context) {
-	backoff := time.Second
-	for ctx.Err() == nil {
-		start := time.Now()
-		err := errors.New("audio source not implemented")
-		if ctx.Err() != nil {
-			return
-		}
+	if len(d.opt.MicCmd) == 0 {
 		d.mu.Lock()
-		d.audioOK = false
-		d.audioErr = fmt.Sprint(err)
+		d.audioErr = "no capture command"
 		d.mu.Unlock()
-		if time.Since(start) > time.Minute {
-			backoff = time.Second
-		}
-		log.Printf("audio stream: %v (retry in %s)", err, backoff)
-		select {
-		case <-ctx.Done():
-		case <-time.After(backoff):
-		}
-		backoff = min(2*backoff, 30*time.Second)
+		log.Printf("audio: no capture command configured")
+		<-ctx.Done()
+		return
 	}
+	cfg := frontend.DefaultConfig()
+	d.mu.Lock()
+	if d.settings.Gain > 0 {
+		cfg.Gain = d.settings.Gain
+	}
+	d.mu.Unlock()
+	fe := frontend.New(cfg)
+	killYandex()
+	r := &miccap.Runner{
+		Cmd:       d.opt.MicCmd,
+		OnBlock:   func(b []int16) { d.onAudio(fe.Process(b)) },
+		OnSilence: killYandex,
+	}
+	err := r.Run(ctx)
+	d.mu.Lock()
+	d.audioOK = false
+	d.audioErr = fmt.Sprint(err)
+	d.mu.Unlock()
 }
 
-func (d *Daemon) onAudio(raw []int16) {
+// onAudio takes a block of frontend output (16 kHz mono, gain applied).
+func (d *Daemon) onAudio(pcm []int16) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	pcm := make([]int16, len(raw))
 	var e float64
-	for i, s := range raw {
-		v := float64(s) * d.settings.Gain
-		pcm[i] = int16(max(-32768, min(32767, v)))
-		e += float64(pcm[i]) * float64(pcm[i])
+	for _, s := range pcm {
+		e += float64(s) * float64(s)
 	}
 	d.level = 10*math.Log10(e/float64(max(len(pcm), 1))+1e-9) - 90.3 // dBFS
 	d.audioOK, d.audioErr = true, ""
@@ -249,29 +258,45 @@ func (d *Daemon) onAudio(raw []int16) {
 	if d.det == nil || d.paused > 0 {
 		return
 	}
-	d.det.Push(pcm, func(i int, score float32) {
-		id := d.detWords[i]
-		h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: time.Now()}
-		h.audio = d.ring.last(3 * kws.SampleRate)
-		if !d.settings.DryRun {
-			h.Fired = true
-			go func() {
-				if err := d.startListen(); err != nil {
-					log.Printf("start conversation: %v", err)
-					d.mu.Lock()
-					h.Error = err.Error()
-					d.mu.Unlock()
-				}
-			}()
-		}
-		d.hitSeq++
-		h.ID = d.hitSeq
-		d.hits = append(d.hits, h)
-		if len(d.hits) > 20 {
-			d.hits = d.hits[len(d.hits)-20:]
-		}
-		log.Printf("hit %s score %.3f", id, score)
-	})
+	d.det.Push(pcm, func(i int, score float32) { d.onHit(d.detWords[i], score) })
+}
+
+// onHit records a detection and runs the word's action off the audio
+// goroutine; caller holds d.mu.
+func (d *Daemon) onHit(id string, score float32) {
+	h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: time.Now()}
+	h.audio = d.ring.last(3 * kws.SampleRate)
+	var action string
+	if s := d.settings.Words[id]; s != nil {
+		action = s.Action
+	}
+	if action != "" && !d.settings.DryRun {
+		h.Fired = true
+		act := d.opt.Actuator
+		go func() {
+			if err := runAction(act, action); err != nil {
+				log.Printf("action %s: %v", action, err)
+				d.mu.Lock()
+				h.Error = err.Error()
+				d.mu.Unlock()
+			}
+			d.actionDone()
+		}()
+	}
+	d.hitSeq++
+	h.ID = d.hitSeq
+	d.hits = append(d.hits, h)
+	if len(d.hits) > 20 {
+		d.hits = d.hits[len(d.hits)-20:]
+	}
+	log.Printf("hit %s score %.3f action %q", id, score, action)
+}
+
+// actionDone is a test hook called after each action finished.
+func (d *Daemon) actionDone() {
+	if d.onActionDone != nil {
+		d.onActionDone()
+	}
 }
 
 func (d *Daemon) wordName(id string) string {

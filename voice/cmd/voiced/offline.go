@@ -15,7 +15,7 @@ import (
 
 // cmdTrain trains a word from WAV files, the same way the station does:
 //
-//	wakeword train -name джарвис -takes dir/ -ambient room.wav -speech talk.wav \
+//	voiced train -name джарвис -takes dir/ -ambient room.wav -speech talk.wav \
 //	    -negatives negatives.bin -out model.json
 func cmdTrain(args []string) error {
 	fs := flag.NewFlagSet("train", flag.ExitOnError)
@@ -83,7 +83,7 @@ func cmdScan(args []string) error {
 	sens := fs.Float64("sensitivity", 0, "threshold offset (negative = more sensitive)")
 	fs.Parse(args)
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: wakeword scan model.json... audio.wav")
+		return fmt.Errorf("usage: voiced scan model.json... audio.wav")
 	}
 	var models []*kws.Model
 	var offs []float32

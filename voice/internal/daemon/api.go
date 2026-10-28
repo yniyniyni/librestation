@@ -24,6 +24,7 @@ type wordView struct {
 	Name        string    `json:"name"`
 	Enabled     bool      `json:"enabled"`
 	Sensitivity float32   `json:"sensitivity"`
+	Action      string    `json:"action"`
 	Threshold   float32   `json:"threshold"`
 	Recall      float64   `json:"recall"`
 	FalsePerH   float64   `json:"false_per_h"`
@@ -45,10 +46,9 @@ type enrollView struct {
 type stateView struct {
 	Station string `json:"station"`
 	Audio   struct {
-		OK      bool    `json:"ok"`
-		Error   string  `json:"error,omitempty"`
-		Level   float64 `json:"level"`
-		Channel string  `json:"channel"`
+		OK    bool    `json:"ok"`
+		Error string  `json:"error,omitempty"`
+		Level float64 `json:"level"`
 	} `json:"audio"`
 	Words  []wordView  `json:"words"`
 	Hits   []*Hit      `json:"hits"`
@@ -61,7 +61,7 @@ func (d *Daemon) state() stateView {
 	defer d.mu.Unlock()
 	var v stateView
 	v.Station = d.stationName()
-	v.Audio.OK, v.Audio.Error, v.Audio.Level, v.Audio.Channel = d.audioOK, d.audioErr, d.level, d.settings.Channel
+	v.Audio.OK, v.Audio.Error, v.Audio.Level = d.audioOK, d.audioErr, d.level
 	v.Words = make([]wordView, 0, len(d.words)) // [] not null for the UI
 	scores := map[string]float32{}
 	if d.det != nil {
@@ -73,7 +73,7 @@ func (d *Daemon) state() stateView {
 		s := d.settings.Words[w.ID]
 		falses, _ := filepath.Glob(filepath.Join(d.wordDir(w.ID), "false-*.wav"))
 		v.Words = append(v.Words, wordView{
-			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity,
+			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity, Action: s.Action,
 			Threshold: w.Model.Threshold, Recall: w.Model.Recall, FalsePerH: w.Model.FalsePerH,
 			Takes: w.Model.Takes, FalseClips: len(falses), Created: w.Model.Created,
 			Score: scores[w.ID], Notes: w.Model.TrainNotes,
@@ -110,10 +110,20 @@ func (d *Daemon) Handler() http.Handler {
 		var req struct {
 			Enabled     *bool    `json:"enabled"`
 			Sensitivity *float32 `json:"sensitivity"`
+			Action      *string  `json:"action"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
 			return
+		}
+		action := ""
+		if req.Action != nil {
+			a, err := normalizeAction(*req.Action)
+			if err != nil {
+				httpErr(w, err)
+				return
+			}
+			action = a
 		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
@@ -124,6 +134,9 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		if req.Enabled != nil {
 			s.Enabled = *req.Enabled
+		}
+		if req.Action != nil {
+			s.Action = action
 		}
 		if req.Sensitivity != nil {
 			s.Sensitivity = max(-0.3, min(0.3, *req.Sensitivity))
@@ -159,7 +172,7 @@ func (d *Daemon) Handler() http.Handler {
 		writeJSON(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /api/words/{id}/retrain", func(w http.ResponseWriter, r *http.Request) {
-		if err := d.startTraining(r.PathValue("id")); err != nil {
+		if err := d.startTraining(r.PathValue("id"), nil); err != nil {
 			httpErr(w, err)
 			return
 		}
@@ -195,14 +208,6 @@ func (d *Daemon) Handler() http.Handler {
 		d.mu.Unlock()
 		writeJSON(w, map[string]bool{"ok": true})
 	})
-	mux.HandleFunc("POST /api/listen", func(w http.ResponseWriter, r *http.Request) {
-		if err := d.startListen(); err != nil {
-			httpErr(w, err)
-			return
-		}
-		writeJSON(w, map[string]bool{"ok": true})
-	})
-
 	mux.HandleFunc("POST /api/enroll/start", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name string `json:"name"`
@@ -275,7 +280,11 @@ func (d *Daemon) Handler() http.Handler {
 		writeJSON(w, map[string]float64{"level": level})
 	})
 	mux.HandleFunc("POST /api/enroll/train", func(w http.ResponseWriter, r *http.Request) {
-		if err := d.finishEnroll(); err != nil {
+		var req struct {
+			Action string `json:"action"`
+		}
+		json.NewDecoder(r.Body).Decode(&req) // body is optional
+		if err := d.finishEnroll(req.Action); err != nil {
 			httpErr(w, err)
 			return
 		}

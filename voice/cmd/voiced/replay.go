@@ -20,7 +20,7 @@ import (
 // cmdReplay runs a 16-channel 48 kHz recording through the frontend and
 // optionally scans the cleaned audio with every model.json under -models.
 //
-//	wakeword replay [-mics 3,4,5] [-gain 32] [-models dir] in16ch.wav [out16k.wav]
+//	voiced replay [-mics 3,4,5] [-gain 32] [-models dir] in16ch.wav [out16k.wav]
 func cmdReplay(args []string) error {
 	fl := flag.NewFlagSet("replay", flag.ExitOnError)
 	mics := fl.String("mics", "3,4,5", "mic channels")
@@ -28,7 +28,7 @@ func cmdReplay(args []string) error {
 	models := fl.String("models", "", "directory searched for model.json files")
 	fl.Parse(args)
 	if fl.NArg() < 1 || fl.NArg() > 2 {
-		return fmt.Errorf("usage: wakeword replay [-mics 3,4,5] [-gain 32] [-models dir] in16ch.wav [out16k.wav]")
+		return fmt.Errorf("usage: voiced replay [-mics 3,4,5] [-gain 32] [-models dir] in16ch.wav [out16k.wav]")
 	}
 	cfg := frontend.DefaultConfig()
 	cfg.Gain = *gain

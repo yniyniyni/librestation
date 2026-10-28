@@ -203,7 +203,11 @@ func (d *Daemon) saveEnrollment(e *enrollment) error {
 }
 
 // finishEnroll saves the session and trains it in the background.
-func (d *Daemon) finishEnroll() error {
+func (d *Daemon) finishEnroll(action string) error {
+	action, err := normalizeAction(action)
+	if err != nil {
+		return err
+	}
 	e, err := d.currentEnroll()
 	if err != nil {
 		return err
@@ -218,11 +222,12 @@ func (d *Daemon) finishEnroll() error {
 		return err
 	}
 	d.endEnroll()
-	return d.startTraining(e.ID)
+	return d.startTraining(e.ID, &action)
 }
 
 // startTraining (re)trains a word from its saved recordings.
-func (d *Daemon) startTraining(id string) error {
+// A non-nil action is saved into the word's settings once training succeeds.
+func (d *Daemon) startTraining(id string, action *string) error {
 	dir := d.wordDir(id)
 	name, err := os.ReadFile(filepath.Join(dir, "name.txt"))
 	if err != nil {
@@ -253,7 +258,7 @@ func (d *Daemon) startTraining(id string) error {
 
 	go func() {
 		start := time.Now()
-		m, err := d.trainWord(string(name), en)
+		m, err := d.trainWord(string(name), en, action)
 		d.mu.Lock()
 		d.train.Active = false
 		if err != nil {
@@ -269,7 +274,7 @@ func (d *Daemon) startTraining(id string) error {
 	return nil
 }
 
-func (d *Daemon) trainWord(name string, en kws.Enrollment) (*kws.Model, error) {
+func (d *Daemon) trainWord(name string, en kws.Enrollment, action *string) (*kws.Model, error) {
 	b, err := os.ReadFile(d.opt.Negatives)
 	if err != nil {
 		return nil, fmt.Errorf("negatives: %w", err)
@@ -298,6 +303,9 @@ func (d *Daemon) trainWord(name string, en kws.Enrollment) (*kws.Model, error) {
 	d.mu.Lock()
 	if d.settings.Words[id] == nil {
 		d.settings.Words[id] = &WordSettings{Enabled: true}
+	}
+	if action != nil {
+		d.settings.Words[id].Action = *action
 	}
 	d.saveSettings()
 	d.mu.Unlock()

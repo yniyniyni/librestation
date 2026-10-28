@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Свои слова активации</title>
+<title>Голосовые команды</title>
 <style>
   :root { --bg:#f4f2fb; --card:#fff; --fg:#1d1b26; --muted:#6c6880; --accent:#7a55ff; --ok:#1f9d55; --bad:#d64545; --line:#e4e0f2; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14131a; --card:#1e1c27; --fg:#ece9f6; --muted:#9a95ad; --line:#2f2c3b; } }
@@ -54,8 +54,8 @@
   <div class="row">
     <div class="grow">
       <div class="station" id="station"></div>
-      <h1>Свои слова активации</h1>
-      <div class="muted">Скажите своё слово — станция начнёт слушать, как после «Алиса».</div>
+      <h1>Голосовые команды</h1>
+      <div class="muted">Скажите своё слово — станция выполнит выбранное действие.</div>
     </div>
     <span class="pill" title="Звук с микрофонов станции после шумоподавления"><span id="adot" class="dot"></span><span id="atext">нет звука</span><span class="meter level"><i id="alevel"></i></span></span>
   </div>
@@ -92,6 +92,7 @@
       </div>
       <div class="step" id="s-train">
         <b>4. Обучение</b>
+        <div class="row" style="margin-top:8px"><span class="stats">Действие по слову:</span><select id="enrollaction"></select></div>
         <div class="muted">Модель обучается прямо на станции, около 2–3 минут. Страницу можно закрыть.</div>
         <div class="row" style="margin-top:8px"><button class="primary" id="trainbtn">Обучить</button><span id="trainmsg" class="msg"></span></div>
       </div>
@@ -111,8 +112,7 @@
   </div>
 
   <div class="row muted" style="font-size:13px">
-    <span class="grow">Если станция откликнулась зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.</span>
-    <button id="listenbtn" title="Станция начнёт слушать, как по слову">Проверить: «слушаю»</button>
+    <span class="grow">Если команда сработала зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.</span>
   </div>
 </main>
 <script>
@@ -129,9 +129,14 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 function pct(x) { return Math.round(x * 100) + "%"; }
 function msg(el, text, kind) { el.textContent = text || ""; el.className = "msg " + (kind || ""); }
 
+const ACTIONS = [["", "нет"], ["pause", "пауза"], ["play", "продолжить"], ["next", "следующий"], ["prev", "предыдущий"], ["louder", "громче"], ["quieter", "тише"]];
+function actionOptions(sel) {
+  return ACTIONS.map(([v, l]) => `<option value="${v}"${v === sel ? " selected" : ""}>${l}</option>`).join("");
+}
+
 function renderWords(s) {
   const box = $("words");
-  const keep = document.activeElement && document.activeElement.type === "range";
+  const keep = document.activeElement && (document.activeElement.type === "range" || document.activeElement.tagName === "SELECT");
   if (keep) { // do not rebuild under a dragged slider; just move meters
     for (const w of s.words) {
       const m = document.querySelector(`[data-meter="${w.id}"]`);
@@ -152,6 +157,8 @@ function renderWords(s) {
         <span class="stats grow">${w.takes} записей · проверка: узнаёт ${pct(w.recall)} · ложных ≈ ${w.false_per_h.toFixed(1)}/час${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}</span>
         <span class="stats">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" data-sens="${w.id}"><span class="stats">чаще</span>
       </div>
+      <div class="row" style="margin-top:8px"><span class="stats">действие:</span>
+        <select data-action="${w.id}">${actionOptions(w.action)}</select></div>
       ${(w.notes || []).length ? `<div class="stats">${w.notes.map(esc).join("<br>")}</div>` : ""}
       <div class="row" style="margin-top:10px">
         <button data-more="${esc(w.name)}">Дозаписать</button>
@@ -166,7 +173,7 @@ function renderHits(s) {
   $("nohits").hidden = s.hits.length > 0;
   $("hits").innerHTML = s.hits.map(h => `<tr>
     <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»</td><td>${h.score.toFixed(2)}</td>
-    <td>${h.error ? `<span class="msg bad">${esc(h.error)}</span>` : (h.fired ? "станция слушала" : "")}</td>
+    <td>${h.error ? `<span class="msg bad">${esc(h.error)}</span>` : (h.fired ? "действие выполнено" : "")}</td>
     <td><button data-play="/api/hits/${h.id}">▶</button> <button data-false="${h.id}">Ложное</button></td></tr>`).join("");
 }
 
@@ -208,10 +215,10 @@ async function refresh() {
     const prev = state; state = s;
     if ($("station").textContent !== s.station) {
       $("station").textContent = s.station;
-      document.title = s.station ? `${s.station} — свои слова активации` : "Свои слова активации";
+      document.title = s.station ? `${s.station} — голосовые команды` : "Голосовые команды";
     }
     $("adot").className = "dot" + (s.audio.ok ? " on" : "");
-    $("atext").textContent = s.audio.ok ? s.audio.channel : "нет звука";
+    $("atext").textContent = s.audio.ok ? "звук есть" : "нет звука";
     $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
     renderWords(s); renderHits(s); renderEnroll(s); renderTrain(s);
     if (prev && prev.train.active && !s.train.active && !s.train.error) {
@@ -259,14 +266,15 @@ $("speechbtn").onclick = () => run($("speechbtn"), async () => {
   msg($("speechmsg"), "записано", "ok");
 });
 $("trainbtn").onclick = () => run($("trainbtn"), async () => {
-  await api("POST", "/api/enroll/train");
+  await api("POST", "/api/enroll/train", { action: $("enrollaction").value });
   msg($("trainmsg"), "обучение началось");
 });
-$("listenbtn").onclick = () => run($("listenbtn"), () => api("POST", "/api/listen"));
+$("enrollaction").innerHTML = actionOptions("");
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
+  if (t.dataset.action !== undefined) run(null, async () => { await api("POST", "/api/words/" + t.dataset.action, { action: t.value || "none" }); t.blur(); });
   if (t.dataset.sens) run(null, async () => { await api("POST", "/api/words/" + t.dataset.sens, { sensitivity: parseFloat(t.value) }); t.blur(); });
 });
 document.addEventListener("click", (ev) => {
