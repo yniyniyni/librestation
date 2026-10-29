@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -24,13 +23,14 @@ func cmdRun(args []string) error {
 	exe, _ := os.Executable()
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var opt daemon.Options
-	var micCmd, hwCmd, knob string
+	var micCmd, hwCmd, gainFile, knob string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
 	fs.StringVar(&micCmd, "mic-cmd", "sh /data/local/tmp/voice/mic.sh", "mic capture helper command")
 	fs.StringVar(&opt.Soloist, "soloist", "ws://127.0.0.1:9771", "Soloist WebSocket URL")
 	fs.StringVar(&opt.Negatives, "negatives", filepath.Join(filepath.Dir(exe), "negatives.bin"), "bundled negative set")
 	fs.StringVar(&opt.Listen, "listen", ":8780", "web UI address")
-	fs.StringVar(&hwCmd, "hw-cmd", "sh /data/local/tmp/voice/hwvol.sh 14", "pins the hardware volume once at start; empty = leave it")
+	fs.StringVar(&hwCmd, "hw-cmd", "sh /data/local/tmp/voice/hwvol.sh", "sets the amplifier volume (0..100 appended); empty = leave it")
+	fs.StringVar(&gainFile, "gain-file", "/data/local/tmp/soloist/gain", "aaudio_pipe gain that undoes Soloist's software volume; empty = none")
 	fs.StringVar(&knob, "knob", "/dev/input/event2", "volume knob evdev device; empty = none")
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -39,9 +39,10 @@ func cmdRun(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Soloist's volume is the master (see package volume); the hardware level
-	// is pinned once and never touched again.
-	go pinHardware(strings.Fields(hwCmd))
+	// Soloist's volume is the master (see package volume); the amplifier
+	// follows it and aaudio_pipe undoes Soloist's own attenuation.
+	out := newOutput(strings.Fields(hwCmd), gainFile)
+	go out.run(ctx)
 	var vol *volume.Sync
 	volReady := make(chan struct{})
 	sol := soloist.Dial(ctx, opt.Soloist, func(e soloist.Event) {
@@ -53,6 +54,7 @@ func cmdRun(args []string) error {
 	})
 	defer sol.Close()
 	vol = volume.New(sol, filepath.Join(opt.DataDir, "volume"))
+	vol.Out = out.set
 	close(volReady)
 	go vol.Run(ctx)
 	if knob != "" {
@@ -90,19 +92,6 @@ type actuator struct {
 var _ daemon.Actuator = actuator{}
 
 func (a actuator) Step(delta int) error { return a.vol.Step(delta) }
-
-// pinHardware runs the hardware-volume helper once.
-func pinHardware(cmd []string) {
-	if len(cmd) == 0 {
-		return
-	}
-	out, err := exec.Command(cmd[0], cmd[1:]...).CombinedOutput()
-	if err != nil {
-		log.Printf("hardware volume: %v: %s", err, strings.TrimSpace(string(out)))
-		return
-	}
-	log.Printf("hardware volume pinned: %s", strings.TrimSpace(string(out)))
-}
 
 // readKnob reads knob presses, reopening the device after errors.
 func readKnob(ctx context.Context, path string, onKey func(uint16)) {

@@ -35,6 +35,9 @@ mkdir -p $R/etc/soloist
 cp $S/api-key $R/etc/soloist/api-key
 chmod 600 $S/api-key $R/etc/soloist/api-key
 
+# the PulseAudio config is deployed next to this script (the rootfs is root-only)
+[ -s $S/soloist.pa ] && cp $S/soloist.pa $R/etc/pulse/soloist.pa
+
 [ -p $FIFO ] || { rm -f $FIFO; mkfifo $FIFO; }
 # a pid file left by a power cut makes pulseaudio refuse to start
 rm -f $R/root/.config/pulse/*-runtime/pid
@@ -43,7 +46,8 @@ rm -f $R/root/.config/pulse/*-runtime/pid
 [ -f $LOG ] && [ "$(wc -c < $LOG)" -gt 1000000 ] && tail -c 200000 $LOG > $LOG.tmp && mv $LOG.tmp $LOG
 
 # opening the FIFO read-write keeps aaudio_pipe from seeing EOF when pulseaudio restarts
-supervise aaudio_pipe sh -c "exec $S/aaudio_pipe 44100 <> $FIFO" &
+# voiced writes $S/gain: the inverse of Soloist's software volume (see voice/internal/volume)
+supervise aaudio_pipe sh -c "exec $S/aaudio_pipe 44100 $S/gain <> $FIFO" &
 
 supervise pulseaudio sh $S/chroot.sh pulseaudio -n -F /etc/pulse/soloist.pa \
     --exit-idle-time=-1 --daemonize=no --log-target=stderr --log-level=error &

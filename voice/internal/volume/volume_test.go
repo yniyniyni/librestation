@@ -260,3 +260,32 @@ func TestRunRetriesUntilApplied(t *testing.T) {
 }
 
 func ptr(v int) *int { return &v }
+
+func TestCompensationUndoesCubicCurve(t *testing.T) {
+	for _, c := range []struct {
+		v    int
+		want float64
+	}{{100, 1}, {50, 8}, {15, 296.296}, {0, 0}, {-5, 0}} {
+		if got := Compensation(c.v); got < c.want-0.001 || got > c.want+0.001 {
+			t.Fatalf("Compensation(%d) = %v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
+func TestOutGetsEveryCurrentVolume(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "volume")
+	f := &fakeSetter{}
+	s := New(f, path)
+	var outs []int
+	s.Out = func(v int) { outs = append(outs, v) }
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	s.Step(5)          // 20, ours
+	s.OnEvent(vol(15)) // stale echo of the start value: no output
+	s.OnEvent(vol(20)) // our echo: no output
+	s.OnEvent(vol(60)) // the Spotify slider
+	if !equal(outs, []int{15, 20, 60}) {
+		t.Fatalf("outs = %v, want [15 20 60]", outs)
+	}
+}

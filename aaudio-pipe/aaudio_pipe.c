@@ -1,5 +1,8 @@
-// aaudio_pipe: reads raw S16LE stereo PCM from stdin and plays it via AAudio.
-// Usage: aaudio_pipe [sample_rate]   (default 44100, what librespot's pipe backend emits)
+// aaudio_pipe: reads raw FLOAT32LE stereo PCM from stdin and plays it via AAudio.
+// Usage: aaudio_pipe [sample_rate [gain_file]]   (default 44100)
+// gain_file holds one number the samples are multiplied by; it is re-read when
+// it changes. voiced writes there the inverse of Soloist's software volume, so
+// the music leaves here at full level and the amplifier sets the loudness.
 // The stream is paused after a short silence so the speaker does not keep
 // the output path busy while Spotify is paused, and reopened if audioserver
 // disconnects it (e.g. audioserver restart).
@@ -10,15 +13,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define CHANNELS 2
-#define FRAME_BYTES (CHANNELS * 2)
+#define FRAME_BYTES (CHANNELS * 4)
 #define CHUNK_FRAMES 1024
 #define IDLE_PAUSE_MS 1500
 #define WRITE_TIMEOUT_NS (500LL * 1000 * 1000)
+#define GAIN_CHECK_NS (50LL * 1000 * 1000)
 
 static int sample_rate = 44100;
+static const char *gain_file;
+static float gain = 1.0f;
 static AAudioStream *stream;
 static int playing;
 
@@ -40,7 +48,7 @@ static int open_stream(void) {
     AAudioStreamBuilder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
     AAudioStreamBuilder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_NONE);
-    AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
+    AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setChannelCount(b, CHANNELS);
     AAudioStreamBuilder_setSampleRate(b, sample_rate);
     AAudioStreamBuilder_setUsage(b, AAUDIO_USAGE_MEDIA);
@@ -79,7 +87,46 @@ static void pause_stream(void) {
     }
 }
 
-static void play(const unsigned char *buf, int frames) {
+static long long now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+// update_gain re-reads gain_file at most every GAIN_CHECK_NS, when it changed.
+static void update_gain(void) {
+    static long long next;
+    static struct timespec seen;
+    struct stat st;
+    long long t = now_ns();
+    if (!gain_file || t < next)
+        return;
+    next = t + GAIN_CHECK_NS;
+    if (stat(gain_file, &st) != 0 ||
+        (st.st_mtim.tv_sec == seen.tv_sec && st.st_mtim.tv_nsec == seen.tv_nsec))
+        return;
+    seen = st.st_mtim;
+    FILE *f = fopen(gain_file, "r");
+    float g;
+    if (f && fscanf(f, "%f", &g) == 1 && g >= 0 && g < 1e7f) {
+        if (g != gain)
+            fprintf(stderr, "aaudio_pipe: gain %g\n", g);
+        gain = g;
+    }
+    if (f)
+        fclose(f);
+}
+
+static void apply_gain(float *s, int n) {
+    for (int i = 0; i < n; i++) {
+        float v = s[i] * gain;
+        s[i] = v > 1.0f ? 1.0f : v < -1.0f ? -1.0f : v;
+    }
+}
+
+static void play(unsigned char *buf, int frames) {
+    update_gain();
+    apply_gain((float *)buf, frames * CHANNELS);
     while (frames > 0) {
         if (ensure_playing() != 0) {
             // audioserver not ready; drop this chunk rather than block librespot forever
@@ -100,8 +147,11 @@ static void play(const unsigned char *buf, int frames) {
 int main(int argc, char **argv) {
     if (argc > 1)
         sample_rate = atoi(argv[1]);
+    if (argc > 2)
+        gain_file = argv[2];
 
-    static unsigned char buf[CHUNK_FRAMES * FRAME_BYTES];
+    static float fbuf[CHUNK_FRAMES * CHANNELS];
+    unsigned char *buf = (unsigned char *)fbuf;
     size_t have = 0;
     struct pollfd pfd = {.fd = STDIN_FILENO, .events = POLLIN};
 
@@ -117,7 +167,7 @@ int main(int argc, char **argv) {
             pause_stream();
             continue;
         }
-        ssize_t n = read(STDIN_FILENO, buf + have, sizeof(buf) - have);
+        ssize_t n = read(STDIN_FILENO, buf + have, sizeof(fbuf) - have);
         if (n < 0) {
             if (errno == EINTR)
                 continue;

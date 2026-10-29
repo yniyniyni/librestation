@@ -2,29 +2,29 @@
 // the Spotify slider, the rotary knob and the louder/quieter voice actions
 // all move the same value.
 //
-// Master volume decision (Task 9 investigation on the station, 2026-10-29):
+// How the number becomes loudness (revised 2026-10-29 after live use):
 //
-//   - Hardware volume IS settable without io.sdk: AudioSystem.setParameters
-//     ("hw_master_volume=N") makes the Amlogic HAL write the TAS5825 control
-//     ("audio_hardvol: Set mixer ctrl: ret=0; name=\"Tweeters DSP Playback
-//     Volume\"; value=109" for N=14). AudioManager stream volume does not.
-//   - Soloist DOES attenuate in software: its volume is the PulseAudio
-//     sink-input volume of the "spotify" stream (Soloist 15 -> "15% / -49.44 dB",
-//     10 -> "10% / -60.00 dB"), applied before the pipe-sink FIFO.
+//   - Soloist attenuates in software: its volume is the PulseAudio sink-input
+//     volume of the "spotify" stream, on PulseAudio's cubic scale (Soloist 15 ->
+//     "15% / -49.44 dB"). Soloist also adopts any outside change of that
+//     sink-input volume as its own, so it cannot simply be reset to 100%.
+//   - With the amplifier pinned, that curve made 15% inaudible and only ~100%
+//     usable. So the software attenuation is undone after PulseAudio instead:
+//     the sink runs in float, and aaudio_pipe multiplies by Compensation(v).
+//   - The amplifier carries the loudness: AudioSystem.setParameters
+//     ("hw_master_volume=N") makes the Amlogic HAL write the TAS5825 controls;
+//     N follows the volume one to one.
 //
-// Per the rule in the plan, Soloist's volume is therefore the master. The
-// hardware level is pinned once at daemon start (cmd/voiced, -hw-volume,
-// default 14 = the level the station already had) and never touched again, so
-// Soloist 15 sounds exactly as loud as before the switch and Soloist 100 equals
-// the old ceiling of hardware 100 at Soloist 15 (both about -49 dB). Sync only
-// talks to Soloist: knob and voice steps send set_volume; a volume that Soloist
-// reports and we did not send (the Spotify slider) is adopted and saved, never
-// sent back, so there is no feedback loop.
+// Sync only talks to Soloist: knob and voice steps send set_volume; a volume
+// that Soloist reports and we did not send (the Spotify slider) is adopted and
+// saved, never sent back, so there is no feedback loop. Every volume that
+// becomes current is handed to Out, which drives the amplifier and the gain.
 package volume
 
 import (
 	"context"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -47,6 +47,15 @@ const (
 	maxInflight = 16
 )
 
+// Compensation is the gain that undoes Soloist's software attenuation at
+// volume v: PulseAudio's cubic scale gives (v/100)^3. Volume 0 stays silent.
+func Compensation(v int) float64 {
+	if v <= 0 {
+		return 0
+	}
+	return math.Pow(100/float64(min(v, 100)), 3)
+}
+
 // Setter is the part of the Soloist client Sync needs.
 type Setter interface {
 	SetVolume(v int) error
@@ -62,6 +71,10 @@ type sent struct {
 type Sync struct {
 	set  Setter
 	path string
+	// Out, when set before Apply/Run, gets every volume that becomes current
+	// (ours or adopted from Spotify). It is called with the lock held and must
+	// not block.
+	Out func(v int)
 
 	now   func() time.Time
 	retry time.Duration
@@ -165,6 +178,13 @@ func (s *Sync) OnEvent(e soloist.Event) {
 	}
 	s.cur = v
 	s.save()
+	s.outLocked()
+}
+
+func (s *Sync) outLocked() {
+	if s.Out != nil {
+		s.Out(s.cur)
+	}
 }
 
 func (s *Sync) sendLocked(v int) error {
@@ -180,6 +200,7 @@ func (s *Sync) sendLocked(v int) error {
 		s.cur = v
 		s.save()
 	}
+	s.outLocked()
 	return nil
 }
 
