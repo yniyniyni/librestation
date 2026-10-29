@@ -209,6 +209,27 @@ func (d *Daemon) Handler() http.Handler {
 		d.mu.Unlock()
 		writeJSON(w, map[string]bool{"ok": true})
 	})
+	mux.HandleFunc("POST /api/record", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Seconds int `json:"seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			httpErr(w, err)
+			return
+		}
+		if req.Seconds < 1 || req.Seconds > maxRecordSecs {
+			http.Error(w, fmt.Sprintf(`{"error":"seconds must be 1..%d"}`, maxRecordSecs), http.StatusBadRequest)
+			return
+		}
+		if err := d.startRecording(req.Seconds); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusConflict)
+			return
+		}
+		writeJSON(w, d.recordStatus())
+	})
+	mux.HandleFunc("GET /api/record", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, d.recordStatus())
+	})
 	mux.HandleFunc("POST /api/enroll/start", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Name string `json:"name"`

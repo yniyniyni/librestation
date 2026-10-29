@@ -1,6 +1,9 @@
 #!/bin/sh
 # Builds voiced + mic.dex (+ negatives.bin if missing) and pushes them to the station.
-# Restart the service afterwards: mysudo -n sh /data/local/tmp/soloist/stop.sh; ... start.sh
+# Also pushes the supervisor scripts (soloist-service.sh, stop.sh) that run voiced.
+# Restart the service afterwards:
+#   adb shell -tt 'mysudo -n sh /data/local/tmp/soloist/stop.sh'
+#   adb shell -tt 'mysudo -n sh /data/local/tmp/soloist/start.sh'
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 dev=${ADB_DEVICE:-speaker-ip:5555}
@@ -18,3 +21,9 @@ for f in dist/voiced dist/mic.dex dist/negatives.bin mic/mic.sh mic/hwvol.sh; do
     adb -s "$dev" push "$here/$f" "$dst/$(basename "$f")"
 done
 adb -s "$dev" shell "chmod 755 $dst/voiced; ls -l $dst"
+
+sdst=/data/local/tmp/soloist
+for f in soloist-service.sh stop.sh; do
+    adb -s "$dev" push "$here/../soloist/$f" "$sdst/$f"
+done
+adb -s "$dev" shell "chmod 755 $sdst/soloist-service.sh $sdst/stop.sh"

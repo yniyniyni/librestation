@@ -59,8 +59,10 @@ type Hit struct {
 	Score float32   `json:"score"`
 	At    time.Time `json:"at"`
 	Fired bool      `json:"fired"` // the word's action was run
-	Error string    `json:"error,omitempty"`
-	audio []int16
+	// Debounced: the same action ran moments ago, so this hit was only logged.
+	Debounced bool   `json:"debounced,omitempty"`
+	Error     string `json:"error,omitempty"`
+	audio     []int16
 }
 
 type Daemon struct {
@@ -84,7 +86,23 @@ type Daemon struct {
 	enroll   *enrollment
 	train    trainState
 	name     cachedName
+
+	now        func() time.Time // injectable clock
+	lastAction map[string]time.Time
+
+	enrollIdle    time.Duration // abandon an enrollment after this long without API calls
+	enrollTimer   *time.Timer
+	enrollTouched time.Time
+
+	rec recorder
 }
+
+// actionDebounce is how long the same action is ignored after it ran: several
+// models may map to one action and one utterance can trigger more than one.
+const actionDebounce = 1500 * time.Millisecond
+
+// enrollIdleTimeout is how long an abandoned enrollment keeps detection paused.
+const enrollIdleTimeout = 10 * time.Minute
 
 // cachedName is the app-given station name, re-read when maind rewrites
 // the synced config (the owner renamed the station).
@@ -119,7 +137,8 @@ func New(opt Options) (*Daemon, error) {
 	if err := os.MkdirAll(filepath.Join(opt.DataDir, "words"), 0o755); err != nil {
 		return nil, err
 	}
-	d := &Daemon{opt: opt, ring: newRing(ringSecs * kws.SampleRate)}
+	d := &Daemon{opt: opt, ring: newRing(ringSecs * kws.SampleRate),
+		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout}
 	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
@@ -227,7 +246,7 @@ func (d *Daemon) Run(ctx context.Context) {
 	killYandex()
 	r := &miccap.Runner{
 		Cmd:       d.opt.MicCmd,
-		OnBlock:   func(b []int16) { d.onAudio(fe.Process(b)) },
+		OnBlock:   func(b []int16) { d.onRaw(b); d.onAudio(fe.Process(b)) },
 		OnSilence: killYandex,
 	}
 	err := r.Run(ctx)
@@ -270,8 +289,13 @@ func (d *Daemon) onHit(id string, score float32) {
 	if s := d.settings.Words[id]; s != nil {
 		action = s.Action
 	}
+	if t, ok := d.lastAction[action]; ok && action != "" && !d.settings.DryRun && d.now().Sub(t) < actionDebounce {
+		h.Debounced = true
+		action = ""
+	}
 	if action != "" && !d.settings.DryRun {
 		h.Fired = true
+		d.lastAction[action] = d.now()
 		act := d.opt.Actuator
 		go func() {
 			if err := runAction(act, action); err != nil {
@@ -289,7 +313,7 @@ func (d *Daemon) onHit(id string, score float32) {
 	if len(d.hits) > 20 {
 		d.hits = d.hits[len(d.hits)-20:]
 	}
-	log.Printf("hit %s score %.3f action %q", id, score, action)
+	log.Printf("hit %s score %.3f action %q debounced %v", id, score, action, h.Debounced)
 }
 
 // actionDone is a test hook called after each action finished.

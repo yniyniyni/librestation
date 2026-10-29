@@ -205,3 +205,34 @@ func TestEnrollTrainMalformedBody(t *testing.T) {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 }
+
+func TestSameActionDebounced(t *testing.T) {
+	f := &fakeAct{}
+	d, done := newTest(t, f, "next", false)
+	d.settings.Words["y"] = &WordSettings{Enabled: true, Action: "next"}
+	clock := time.Unix(1000, 0)
+	d.now = func() time.Time { return clock }
+	fire := func(id string) {
+		d.mu.Lock()
+		d.onHit(id, 0.9)
+		d.mu.Unlock()
+	}
+	fire("x")
+	<-done
+	clock = clock.Add(100 * time.Millisecond)
+	fire("y")
+	time.Sleep(50 * time.Millisecond)
+	if g := f.got(); len(g) != 1 {
+		t.Fatalf("calls %v", g)
+	}
+	hits := d.state().Hits
+	if len(hits) != 2 || hits[0].Fired || !hits[0].Debounced {
+		t.Fatalf("hits %+v", hits)
+	}
+	clock = clock.Add(1600 * time.Millisecond)
+	fire("y")
+	<-done
+	if g := f.got(); len(g) != 2 {
+		t.Fatalf("calls %v", g)
+	}
+}

@@ -68,12 +68,41 @@ func (d *Daemon) startEnroll(name string) (*enrollment, error) {
 		d.paused++
 	}
 	d.enroll = e
+	d.touchEnrollLocked()
 	return e, nil
+}
+
+// touchEnrollLocked records enrollment activity and (re)arms the idle timer;
+// caller holds d.mu and d.enroll is set.
+func (d *Daemon) touchEnrollLocked() {
+	d.enrollTouched = d.now()
+	if d.enrollTimer == nil {
+		d.enrollTimer = time.AfterFunc(d.enrollIdle, d.enrollExpired)
+	} else {
+		d.enrollTimer.Reset(d.enrollIdle)
+	}
+}
+
+// enrollExpired ends an enrollment nobody has touched for enrollIdle, so
+// detection does not stay paused forever.
+func (d *Daemon) enrollExpired() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.enroll == nil || d.now().Sub(d.enrollTouched) < d.enrollIdle {
+		return
+	}
+	log.Printf("enrollment %q abandoned, resuming detection", d.enroll.Name)
+	d.enroll = nil
+	d.paused--
 }
 
 func (d *Daemon) endEnroll() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.enrollTimer != nil {
+		d.enrollTimer.Stop()
+		d.enrollTimer = nil
+	}
 	if d.enroll != nil {
 		d.enroll = nil
 		d.paused--
@@ -86,6 +115,7 @@ func (d *Daemon) currentEnroll() (*enrollment, error) {
 	if d.enroll == nil {
 		return nil, errors.New("запись не начата")
 	}
+	d.touchEnrollLocked()
 	return d.enroll, nil
 }
 
@@ -171,6 +201,7 @@ func (d *Daemon) deleteTake(i int) error {
 	if d.enroll == nil || i < 0 || i >= len(d.enroll.Takes) {
 		return errors.New("нет такой записи")
 	}
+	d.touchEnrollLocked()
 	d.enroll.Takes = append(d.enroll.Takes[:i], d.enroll.Takes[i+1:]...)
 	return nil
 }
