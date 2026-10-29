@@ -67,3 +67,7 @@ com.yandex.io.sdk`). Стоковые анимации экрана Яндекс
   `dist/`, в репозитории его нет) — [openwakeword_features](https://huggingface.co/datasets/davidscripka/openwakeword_features),
   CC BY-NC-SA 4.0, только некоммерческое использование.
 - Spotify Soloist — проприетарный, распространяется Spotify отдельно.
+
+## Лицензия
+
+Код проекта — [MIT](LICENSE). Сторонние части — под своими лицензиями (см. выше).
