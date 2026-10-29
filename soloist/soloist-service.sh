@@ -3,10 +3,11 @@
 #   soloist (Debian chroot) -> PulseAudio pipe-sink -> FIFO -> aaudio_pipe -> audioserver.
 # Run as root. Each part is restarted on its own if it dies.
 
-BB=/vendor/xbin/busybox
-S=/data/local/tmp/soloist
-R=$S/rootfs
-LOG=$S/soloist.log
+BB=${BUSYBOX:-/vendor/xbin/busybox}
+S=${SOLOIST_BASE:-/data/local/tmp/soloist}
+V=${VOICE_DIR:-/data/local/tmp/voice}
+R=${ROOTFS_DIR:-$S/rootfs}
+LOG=${SOLOIST_LOG:-$S/soloist.log}
 FIFO=$R/tmp/pulse-out.fifo
 NAME="Яндекс Станция"
 
@@ -63,7 +64,7 @@ PROXY_ENV=
 if [ -s $S/xray.json ]; then
     cp $S/xray.json $R/etc/xray.json
     chmod 600 $S/xray.json $R/etc/xray.json
-    supervise xray sh $S/chroot.sh /opt/xray/xray run -c /etc/xray.json &
+    supervise xray sh $S/chroot.sh ${XRAY_BIN:-/opt/xray/xray} run -c /etc/xray.json &
     PROXY_ENV="HTTPS_PROXY=http://127.0.0.1:1081 HTTP_PROXY=http://127.0.0.1:1081 ALL_PROXY=socks5h://127.0.0.1:1080 NO_PROXY=localhost,127.0.0.1"
 fi
 
@@ -77,7 +78,7 @@ supervise soloist sh $S/chroot.sh /bin/sh -c \
         --initial-volume 15 --ws 127.0.0.1:9771 $1' "$NAME" "$SOLOIST_FLAGS" "$PROXY_ENV" &
 
 # LED daemon: clock, volume ring and carousel on the front panel
-supervise ledd /data/local/tmp/voice/ledd &
-supervise voiced /data/local/tmp/voice/voiced run &
+supervise ledd $V/ledd -assets $V/assets -data $V/data -sock $V/ledd.sock &
+supervise voiced $V/voiced run -data $V/data -mic-cmd "sh $V/mic.sh" -gain-file $S/gain -led-sock $V/ledd.sock -ledd http://127.0.0.1:8781 &
 
 wait

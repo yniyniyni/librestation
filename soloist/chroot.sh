@@ -1,8 +1,8 @@
 #!/system/bin/sh
 # Run a command inside the Debian chroot, mounting what it needs first (idempotent).
 # Usage: chroot.sh <command> [args...]
-BB=/vendor/xbin/busybox
-R=/data/local/tmp/soloist/rootfs
+BB=${BUSYBOX:-/vendor/xbin/busybox}
+R=${ROOTFS_DIR:-${SOLOIST_BASE:-/data/local/tmp/soloist}/rootfs}
 
 mounted() { $BB grep -q " $1 " /proc/mounts; }
 
