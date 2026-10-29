@@ -1,6 +1,6 @@
 # Station Max LED hardware notes (device spike, 2026-10-30)
 
-Measured on the speaker (adb speaker-ip:5555) after removing Yandex io.sdk.
+Measured on the speaker (over adb on the LAN) after removing Yandex io.sdk.
 Test script: `voice/tools/fbtest.sh` (push to /data/local/tmp, run as root).
 
 ## io.sdk

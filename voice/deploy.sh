@@ -7,7 +7,7 @@
 #   adb shell -tt 'mysudo -n sh /data/local/tmp/soloist/start.sh'
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-dev=${ADB_DEVICE:-speaker-ip:5555}
+dev=${ADB_DEVICE:?set ADB_DEVICE to the speaker, e.g. ADB_DEVICE=192.168.1.50:5555}
 py=${NEG_PYTHON:-python3}
 dst=/data/local/tmp/voice
 

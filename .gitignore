@@ -1,9 +1,25 @@
-librespot/
-rec/
-backup/
+# build output
 dist/
 voice/dist/
 *.dex
+aaudio-pipe/aaudio_pipe
+
+# local data: recordings, device backups, third-party binaries
+librespot/
+rec/
+backup/
+*.bundle
+
+# secrets — never commit (they live only on the speaker)
+api-key
+*.key
+xray.json
+xray.json.off
+.env
+
+# tooling
 .venv/
 .superpowers/
+docs/superpowers/
+.claude/
 .DS_Store
