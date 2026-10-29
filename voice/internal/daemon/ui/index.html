@@ -119,6 +119,12 @@
       <span id="ledmsg" class="msg bad"></span>
     </div>
     <div id="ledsel"></div>
+    <div class="row" style="margin-top:8px">
+      <span class="stats grow">Яркость экрана</span>
+      <label class="stats"><input type="checkbox" id="ledauto"> авто</label>
+      <input type="range" id="ledbright" min="1" max="100">
+      <span id="ledbrightv" class="stats" style="min-width:36px;text-align:right"></span>
+    </div>
     <div class="row" style="margin-top:10px"><button id="ledai">Показать режим ИИ</button></div>
   </div>
 
@@ -242,6 +248,11 @@ function renderLED(l) {
   for (const sel of document.querySelectorAll("select[data-led]")) {
     if (document.activeElement !== sel) sel.value = l.settings[sel.dataset.led];
   }
+  const b = l.settings.brightness || 0, slider = $("ledbright");
+  $("ledauto").checked = b === 0;
+  slider.disabled = b === 0;
+  if (document.activeElement !== slider) slider.value = b || 30;
+  $("ledbrightv").textContent = b ? slider.value + "%" : "";
   $("ledai").textContent = l.ai ? "Выключить режим ИИ" : "Показать режим ИИ";
   $("ledai").dataset.on = l.ai ? "1" : "";
 }
@@ -249,14 +260,25 @@ async function refreshLED() {
   try { renderLED(await api("GET", "/api/led")); }
   catch (e) { msg($("ledmsg"), "ledd не отвечает", "bad"); }
 }
+// ledSettings collects the whole settings object from the card.
+function ledSettings() {
+  const settings = {};
+  for (const sel of document.querySelectorAll("select[data-led]")) settings[sel.dataset.led] = sel.value;
+  settings.brightness = $("ledauto").checked ? 0 : +$("ledbright").value;
+  return settings;
+}
+function saveLED(t) {
+  run(null, async () => { renderLED(await api("POST", "/api/led/settings", ledSettings())); if (t) t.blur(); });
+}
 $("ledsel").onchange = (ev) => {
   const t = ev.target;
   if (!t.dataset.led) return;
   ev.stopPropagation();
-  const settings = {};
-  for (const sel of document.querySelectorAll("select[data-led]")) settings[sel.dataset.led] = sel.value;
-  run(null, async () => { renderLED(await api("POST", "/api/led/settings", settings)); t.blur(); });
+  saveLED(t);
 };
+$("ledauto").onchange = (ev) => { ev.stopPropagation(); saveLED($("ledauto")); };
+$("ledbright").oninput = () => { $("ledbrightv").textContent = $("ledbright").value + "%"; };
+$("ledbright").onchange = (ev) => { ev.stopPropagation(); saveLED($("ledbright")); };
 $("ledai").onclick = () => run($("ledai"), async () => renderLED(await api("POST", "/api/led/ai", { on: !$("ledai").dataset.on })));
 
 async function refresh() {

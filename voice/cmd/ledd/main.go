@@ -247,6 +247,7 @@ func render(ctx context.Context, w *hw.Writer, sc *scene.Scene, fps int) {
 	errLog := &rateLog{every: time.Minute}
 	luxLog := &rateLog{every: time.Minute}
 	ringScale := 1.0
+	level := sc.Brightness() // 0 = automatic, 1..100 = fixed by the user
 	updateBrightness := func() {
 		lux, err := w.ReadLux()
 		if err != nil {
@@ -256,6 +257,9 @@ func render(ctx context.Context, w *hw.Writer, sc *scene.Scene, fps int) {
 			luxLog.printf("ledd: lux %.1f", lux)
 		}
 		bl, rs := hw.Brightness(lux)
+		if level > 0 {
+			bl, rs = hw.FixedBrightness(level)
+		}
 		ringScale = rs
 		if err := w.SetBacklight(bl); err != nil {
 			errLog.printf("ledd: backlight: %v", err)
@@ -274,6 +278,10 @@ func render(ctx context.Context, w *hw.Writer, sc *scene.Scene, fps int) {
 		case <-bright.C:
 			updateBrightness()
 		case <-frame.C:
+			if l := sc.Brightness(); l != level { // apply a new setting at once
+				level = l
+				updateBrightness()
+			}
 			s, r := sc.Frame()
 			if err := w.Draw(s, r, ringScale); err != nil {
 				errLog.printf("ledd: draw: %v", err)

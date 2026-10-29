@@ -155,6 +155,13 @@ func Brightness(lux float64) (backlight int, ringScale float64) {
 	return backlight, loRS + t*(hiRS-loRS)
 }
 
+// FixedBrightness maps a user-chosen level 1..100 to the backlight and a ring
+// scale on the same footing as Brightness (level 3 ≈ dark room, 100 = full).
+func FixedBrightness(level int) (backlight int, ringScale float64) {
+	backlight = min(max(level, 1), 100)
+	return backlight, 0.15 + 0.85*float64(backlight-1)/99
+}
+
 // SetBacklightPath writes a backlight level (clamped to 1..100) to path
 // without needing open framebuffers.
 func SetBacklightPath(path string, v int) error {

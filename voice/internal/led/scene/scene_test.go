@@ -274,3 +274,26 @@ func TestValidateRejectsUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestBrightnessSetting(t *testing.T) {
+	if DefaultSettings().Brightness != 0 {
+		t.Fatal("default brightness must be automatic (0)")
+	}
+	for _, b := range []int{-1, 101} {
+		st := DefaultSettings()
+		st.Brightness = b
+		if st.Validate() == nil {
+			t.Fatalf("brightness %d accepted", b)
+		}
+	}
+	st := DefaultSettings()
+	st.Brightness = 40
+	if err := st.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	sc := New(Assets{}, time.Now)
+	sc.SetSettings(st)
+	if sc.Brightness() != 40 {
+		t.Fatalf("Brightness() = %d, want 40", sc.Brightness())
+	}
+}

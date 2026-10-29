@@ -280,3 +280,20 @@ func TestSetBacklightPath(t *testing.T) {
 		t.Fatal("want error for missing path")
 	}
 }
+
+func TestFixedBrightness(t *testing.T) {
+	for _, c := range []struct {
+		level, bl int
+		rs        float64
+	}{{-5, 1, 0.15}, {1, 1, 0.15}, {100, 100, 1}, {500, 100, 1}} {
+		bl, rs := FixedBrightness(c.level)
+		if bl != c.bl || math.Abs(rs-c.rs) > 1e-9 {
+			t.Fatalf("FixedBrightness(%d) = %d, %v; want %d, %v", c.level, bl, rs, c.bl, c.rs)
+		}
+	}
+	_, lo := FixedBrightness(20)
+	_, hi := FixedBrightness(60)
+	if !(lo < hi) {
+		t.Fatal("ring scale must grow with the level")
+	}
+}

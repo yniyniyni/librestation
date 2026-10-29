@@ -17,6 +17,8 @@ type Settings struct {
 	AIScreen     string `json:"ai_screen"`     // "dots" | "eq"
 	Flash        string `json:"flash"`         // "sweep" | "white" | "color"
 	Music        string `json:"music"`         // "spectrum" | "scope" | "clockbar"
+	// Brightness of the screen: 0 = automatic (light sensor), 1..100 = fixed.
+	Brightness int `json:"brightness"`
 }
 
 // DefaultSettings returns the default styles.
@@ -47,7 +49,13 @@ func (s Settings) Validate() error {
 	if err := oneOf("flash", s.Flash, "sweep", "white", "color"); err != nil {
 		return err
 	}
-	return oneOf("music", s.Music, "spectrum", "scope", "clockbar")
+	if err := oneOf("music", s.Music, "spectrum", "scope", "clockbar"); err != nil {
+		return err
+	}
+	if s.Brightness < 0 || s.Brightness > 100 {
+		return fmt.Errorf("scene: brightness %d out of 0..100", s.Brightness)
+	}
+	return nil
 }
 
 // Assets are the optional on-device animations; nil entries are allowed.
@@ -156,6 +164,13 @@ func (s *Scene) SetSettings(st Settings) {
 	s.mu.Lock()
 	s.set = st
 	s.mu.Unlock()
+}
+
+// Brightness is the configured screen brightness: 0 = automatic, 1..100 = fixed.
+func (s *Scene) Brightness() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.set.Brightness
 }
 
 // Frame returns the screen and ring to show now.
