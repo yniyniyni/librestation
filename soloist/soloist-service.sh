@@ -71,6 +71,8 @@ supervise soloist sh $S/chroot.sh /bin/sh -c \
         --data-dir /var/lib/soloist --cache-dir /var/cache/soloist --cache-size 300 \
         --initial-volume 15 --ws 127.0.0.1:9771 $1' "$NAME" "$SOLOIST_FLAGS" "$PROXY_ENV" &
 
+# LED daemon: clock, volume ring and carousel on the front panel
+supervise ledd /data/local/tmp/voice/ledd &
 supervise voiced /data/local/tmp/voice/voiced run &
 
 wait

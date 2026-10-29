@@ -12,6 +12,7 @@ py=${NEG_PYTHON:-python3}
 dst=/data/local/tmp/voice
 
 (cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/voiced ./cmd/voiced)
+(cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/ledd ./cmd/ledd)
 sh "$here/mic/build.sh"
 ndk=${NDK:-$(ls -d "$HOME"/Library/Android/sdk/ndk/* | tail -1)}
 "$ndk"/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android28-clang -O2 -Wall \
@@ -21,10 +22,27 @@ if [ ! -s "$here/dist/negatives.bin" ]; then
 fi
 
 adb -s "$dev" shell "mkdir -p $dst/data"
-for f in dist/voiced dist/mic.dex dist/negatives.bin mic/mic.sh mic/hwvol.sh; do
+for f in dist/voiced dist/ledd dist/mic.dex dist/negatives.bin mic/mic.sh mic/hwvol.sh; do
     adb -s "$dev" push "$here/$f" "$dst/$(basename "$f")"
 done
-adb -s "$dev" shell "chmod 755 $dst/voiced; ls -l $dst"
+adb -s "$dev" shell "chmod 755 $dst/voiced $dst/ledd; ls -l $dst"
+
+# stock LED assets (25x16 frames, fonts) live in the io.sdk app data, readable only by root.
+# Copy them once into $dst/assets; the copy is best-effort and never fails the deploy.
+cat > "$here/dist/ledd-assets.sh" <<EOF
+#!/system/bin/sh
+src=/data/data/com.yandex.io.sdk/files/system/frontal_animation
+dst=$dst/assets
+if [ -d "\$src" ]; then
+    mkdir -p "\$dst" && cp -r "\$src/25x16" "\$src/fonts" "\$dst/" && chmod -R a+rX "\$dst"
+    echo "ledd assets copied to \$dst"
+else
+    echo "ledd assets: \$src is missing, keeping existing \$dst"
+fi
+EOF
+adb -s "$dev" push "$here/dist/ledd-assets.sh" /data/local/tmp/ledd-assets.sh
+adb -s "$dev" shell -tt "mysudo -n sh /data/local/tmp/ledd-assets.sh" \
+    || echo "warning: ledd asset copy failed, keeping existing assets"
 
 sdst=/data/local/tmp/soloist
 for f in soloist-service.sh stop.sh; do
