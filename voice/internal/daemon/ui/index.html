@@ -106,6 +106,14 @@
   </div>
 
   <div class="card">
+    <div class="row">
+      <div class="grow"><h2>Громкость <span id="volnow" class="muted"></span></h2><div class="muted">Одна громкость на всё: Spotify, кольцо и голос.</div></div>
+      <span class="stats">Шаг кольца:</span>
+      <select id="knobstep"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Последние срабатывания</h2>
     <div class="muted" id="nohits">Пока не было. Скажите слово — здесь появится запись.</div>
     <table id="hits"></table>
@@ -221,6 +229,9 @@ async function refresh() {
     $("atext").textContent = s.audio.ok ? "звук есть" : "нет звука";
     $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
     renderWords(s); renderHits(s); renderEnroll(s); renderTrain(s);
+    const v = await api("GET", "/api/volume");
+    $("volnow").textContent = v.volume + "%";
+    if (document.activeElement !== $("knobstep")) $("knobstep").value = String(v.knob_step);
     if (prev && prev.train.active && !s.train.active && !s.train.error) {
       msg($("trainmsg"), "");
     }
@@ -237,6 +248,7 @@ async function run(btn, fn) {
   try { await fn(); } catch (e) { alert(e.message); }
   finally { busy = false; if (btn) btn.disabled = false; refresh(); }
 }
+$("knobstep").onchange = (e) => run(null, () => api("POST", "/api/volume", { knob_step: +e.target.value }));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 $("newbtn").onclick = () => run(null, async () => {

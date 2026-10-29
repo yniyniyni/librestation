@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,7 +31,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&opt.Soloist, "soloist", "ws://127.0.0.1:9771", "Soloist WebSocket URL")
 	fs.StringVar(&opt.Negatives, "negatives", filepath.Join(filepath.Dir(exe), "negatives.bin"), "bundled negative set")
 	fs.StringVar(&opt.Listen, "listen", ":8780", "web UI address")
-	fs.StringVar(&hwCmd, "hw-cmd", "sh /data/local/tmp/voice/hwvol.sh", "sets the amplifier volume (0..100 appended); empty = leave it")
+	fs.StringVar(&hwCmd, "hw-cmd", "sh /data/local/tmp/voice/hwvol.sh -", "amplifier helper reading 0..100 per stdin line; empty = leave it")
 	fs.StringVar(&gainFile, "gain-file", "/data/local/tmp/soloist/gain", "aaudio_pipe gain that undoes Soloist's software volume; empty = none")
 	fs.StringVar(&knob, "knob", "/dev/input/event2", "volume knob evdev device; empty = none")
 	fs.Parse(args)
@@ -67,7 +69,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	srv := &http.Server{Addr: opt.Listen, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: opt.Listen, Handler: withVolumeAPI(d.Handler(), vol), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -92,6 +94,32 @@ type actuator struct {
 var _ daemon.Actuator = actuator{}
 
 func (a actuator) Step(delta int) error { return a.vol.Step(delta) }
+
+// withVolumeAPI adds /api/volume (current volume and knob step) to the UI.
+func withVolumeAPI(h http.Handler, vol *volume.Sync) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/", h)
+	state := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"volume": vol.Volume(), "knob_step": vol.KnobStep()})
+	}
+	mux.HandleFunc("GET /api/volume", func(w http.ResponseWriter, r *http.Request) { state(w) })
+	mux.HandleFunc("POST /api/volume", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			KnobStep int `json:"knob_step"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := vol.SetKnobStep(req.KnobStep); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		state(w)
+	})
+	return mux
+}
 
 // readKnob reads knob presses, reopening the device after errors.
 func readKnob(ctx context.Context, path string, onKey func(uint16)) {

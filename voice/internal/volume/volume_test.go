@@ -47,6 +47,9 @@ func newSync(t *testing.T, saved string) (*Sync, *fakeSetter, string) {
 	}
 	f := &fakeSetter{}
 	s := New(f, path)
+	if err := s.SetKnobStep(5); err != nil { // the tests below count in 5s
+		t.Fatal(err)
+	}
 	if err := s.Apply(); err != nil {
 		t.Fatal(err)
 	}
@@ -206,8 +209,8 @@ func TestUnmatchedEventAdoptedAfterTimeout(t *testing.T) {
 	if err := s.Apply(); err != nil {
 		t.Fatal(err)
 	}
-	s.Key(input.KeyPageUp) // 20 in flight, never echoed
-	s.OnEvent(vol(15))     // stale, ignored while in flight
+	s.Step(5)          // 20 in flight, never echoed
+	s.OnEvent(vol(15)) // stale, ignored while in flight
 	if s.Volume() != 20 {
 		t.Fatalf("volume = %d, want 20", s.Volume())
 	}
@@ -287,5 +290,30 @@ func TestOutGetsEveryCurrentVolume(t *testing.T) {
 	s.OnEvent(vol(60)) // the Spotify slider
 	if !equal(outs, []int{15, 20, 60}) {
 		t.Fatalf("outs = %v, want [15 20 60]", outs)
+	}
+}
+
+func TestKnobStepDefaultsTo2AndIsSaved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "volume")
+	f := &fakeSetter{}
+	s := New(f, path)
+	if s.KnobStep() != 2 {
+		t.Fatalf("default knob step %d, want 2", s.KnobStep())
+	}
+	s.Apply()
+	s.Key(input.KeyPageUp)
+	if got := f.got(); !equal(got, []int{15, 17}) {
+		t.Fatalf("sets = %v, want [15 17]", got)
+	}
+	for _, bad := range []int{0, -1, 11} {
+		if s.SetKnobStep(bad) == nil {
+			t.Fatalf("SetKnobStep(%d) accepted", bad)
+		}
+	}
+	if err := s.SetKnobStep(3); err != nil {
+		t.Fatal(err)
+	}
+	if again := New(f, path); again.KnobStep() != 3 {
+		t.Fatalf("reloaded knob step %d, want 3", again.KnobStep())
 	}
 }

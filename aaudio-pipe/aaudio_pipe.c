@@ -7,8 +7,10 @@
 // the output path busy while Spotify is paused, and reopened if audioserver
 // disconnects it (e.g. audioserver restart).
 
+#define _GNU_SOURCE // F_SETPIPE_SZ
 #include <aaudio/AAudio.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +24,12 @@
 #define CHUNK_FRAMES 1024
 #define IDLE_PAUSE_MS 1500
 #define WRITE_TIMEOUT_NS (500LL * 1000 * 1000)
-#define GAIN_CHECK_NS (50LL * 1000 * 1000)
+#define GAIN_CHECK_NS (10LL * 1000 * 1000)
+// The output buffer rides out scheduling hiccups (~185 ms); the FIFO in front
+// of us is kept small so the gain stays in step with Soloist's own volume.
+#define BUFFER_FRAMES 8192
+#define FIFO_BYTES 4096
+#define XRUN_LOG_NS (10LL * 1000 * 1000 * 1000)
 
 static int sample_rate = 44100;
 static const char *gain_file;
@@ -53,6 +60,7 @@ static int open_stream(void) {
     AAudioStreamBuilder_setSampleRate(b, sample_rate);
     AAudioStreamBuilder_setUsage(b, AAUDIO_USAGE_MEDIA);
     AAudioStreamBuilder_setContentType(b, AAUDIO_CONTENT_TYPE_MUSIC);
+    AAudioStreamBuilder_setBufferCapacityInFrames(b, BUFFER_FRAMES);
     r = AAudioStreamBuilder_openStream(b, &stream);
     AAudioStreamBuilder_delete(b);
     if (r != AAUDIO_OK) {
@@ -60,8 +68,10 @@ static int open_stream(void) {
         stream = NULL;
         return -1;
     }
-    fprintf(stderr, "aaudio_pipe: stream open, rate=%d burst=%d\n",
-            AAudioStream_getSampleRate(stream), AAudioStream_getFramesPerBurst(stream));
+    AAudioStream_setBufferSizeInFrames(stream, AAudioStream_getBufferCapacityInFrames(stream));
+    fprintf(stderr, "aaudio_pipe: stream open, rate=%d burst=%d buffer=%d\n",
+            AAudioStream_getSampleRate(stream), AAudioStream_getFramesPerBurst(stream),
+            AAudioStream_getBufferSizeInFrames(stream));
     return 0;
 }
 
@@ -124,8 +134,23 @@ static void apply_gain(float *s, int n) {
     }
 }
 
+// log_xruns reports output underruns now and then, so dropouts show in the log.
+static void log_xruns(void) {
+    static long long next;
+    static int32_t last;
+    long long t = now_ns();
+    if (!stream || t < next)
+        return;
+    next = t + XRUN_LOG_NS;
+    int32_t x = AAudioStream_getXRunCount(stream);
+    if (x > last)
+        fprintf(stderr, "aaudio_pipe: %d underruns (+%d)\n", x, x - last);
+    last = x;
+}
+
 static void play(unsigned char *buf, int frames) {
     update_gain();
+    log_xruns();
     apply_gain((float *)buf, frames * CHANNELS);
     while (frames > 0) {
         if (ensure_playing() != 0) {
@@ -149,6 +174,8 @@ int main(int argc, char **argv) {
         sample_rate = atoi(argv[1]);
     if (argc > 2)
         gain_file = argv[2];
+    if (fcntl(STDIN_FILENO, F_SETPIPE_SZ, FIFO_BYTES) < 0)
+        perror("aaudio_pipe: F_SETPIPE_SZ");
 
     static float fbuf[CHUNK_FRAMES * CHANNELS];
     unsigned char *buf = (unsigned char *)fbuf;

@@ -23,6 +23,7 @@ package volume
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"os"
@@ -39,8 +40,10 @@ import (
 const (
 	// Default is the volume applied at start when nothing is saved.
 	Default = 15
-	// Step is the change of one knob detent.
-	Step = 5
+	// DefaultKnobStep is the change of one knob detent unless set otherwise.
+	DefaultKnobStep = 2
+	// MaxKnobStep bounds SetKnobStep.
+	MaxKnobStep = 10
 	// echoWindow is how long a value we sent is expected to come back from
 	// Soloist; reports that disagree with it meanwhile are stale.
 	echoWindow  = 2 * time.Second
@@ -81,6 +84,7 @@ type Sync struct {
 
 	mu       sync.Mutex
 	cur      int
+	knobStep int
 	applied  bool
 	inflight []sent
 }
@@ -88,13 +92,41 @@ type Sync struct {
 // New loads the saved volume from path (Default if missing or invalid).
 // Nothing is sent until Apply or Run.
 func New(set Setter, path string) *Sync {
-	s := &Sync{set: set, path: path, now: time.Now, retry: time.Second, cur: Default}
-	if b, err := os.ReadFile(path); err == nil {
-		if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v >= 0 && v <= 100 {
-			s.cur = v
-		}
+	s := &Sync{set: set, path: path, now: time.Now, retry: time.Second, cur: Default, knobStep: DefaultKnobStep}
+	if v, ok := readInt(path); ok && v >= 0 && v <= 100 {
+		s.cur = v
+	}
+	if v, ok := readInt(path + "-knob-step"); ok && v >= 1 && v <= MaxKnobStep {
+		s.knobStep = v
 	}
 	return s
+}
+
+func readInt(path string) (int, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return v, err == nil
+}
+
+// KnobStep is the change of one knob detent.
+func (s *Sync) KnobStep() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.knobStep
+}
+
+// SetKnobStep sets and saves the knob step, 1..MaxKnobStep.
+func (s *Sync) SetKnobStep(n int) error {
+	if n < 1 || n > MaxKnobStep {
+		return fmt.Errorf("knob step must be 1..%d", MaxKnobStep)
+	}
+	s.mu.Lock()
+	s.knobStep = n
+	s.mu.Unlock()
+	return writeAtomic(s.path+"-knob-step", n)
 }
 
 // Volume is the current volume 0..100.
@@ -139,11 +171,12 @@ func (s *Sync) Step(delta int) error {
 
 // Key handles a knob key press: PAGEUP louder, PAGEDOWN quieter.
 func (s *Sync) Key(code uint16) {
+	n := s.KnobStep()
 	switch code {
 	case input.KeyPageUp:
-		s.Step(Step)
+		s.Step(n)
 	case input.KeyPageDown:
-		s.Step(-Step)
+		s.Step(-n)
 	}
 }
 
@@ -204,17 +237,21 @@ func (s *Sync) sendLocked(v int) error {
 	return nil
 }
 
-// save writes the volume atomically; a failure only costs persistence.
+// save writes the volume; a failure only costs persistence.
 func (s *Sync) save() {
-	tmp := s.path + ".tmp"
-	err := os.MkdirAll(filepath.Dir(s.path), 0o755)
-	if err == nil {
-		err = os.WriteFile(tmp, []byte(strconv.Itoa(s.cur)+"\n"), 0o644)
-	}
-	if err == nil {
-		err = os.Rename(tmp, s.path)
-	}
-	if err != nil {
+	if err := writeAtomic(s.path, s.cur); err != nil {
 		log.Printf("volume: save: %v", err)
 	}
+}
+
+func writeAtomic(path string, v int) error {
+	tmp := path + ".tmp"
+	err := os.MkdirAll(filepath.Dir(path), 0o755)
+	if err == nil {
+		err = os.WriteFile(tmp, []byte(strconv.Itoa(v)+"\n"), 0o644)
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	return err
 }
