@@ -17,6 +17,7 @@ import (
 
 	"voice/internal/daemon"
 	"voice/internal/input"
+	"voice/internal/led/proto"
 	"voice/internal/soloist"
 	"voice/internal/volume"
 )
@@ -25,7 +26,7 @@ func cmdRun(args []string) error {
 	exe, _ := os.Executable()
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var opt daemon.Options
-	var micCmd, hwCmd, gainFile, knob string
+	var micCmd, hwCmd, gainFile, knob, ledSock, leddURL string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
 	fs.StringVar(&micCmd, "mic-cmd", "sh /data/local/tmp/voice/mic.sh", "mic capture helper command")
 	fs.StringVar(&opt.Soloist, "soloist", "ws://127.0.0.1:9771", "Soloist WebSocket URL")
@@ -34,6 +35,8 @@ func cmdRun(args []string) error {
 	fs.StringVar(&hwCmd, "hw-cmd", "sh /data/local/tmp/voice/hwvol.sh -", "amplifier helper reading 0..100 per stdin line; empty = leave it")
 	fs.StringVar(&gainFile, "gain-file", "/data/local/tmp/soloist/gain", "aaudio_pipe gain that undoes Soloist's software volume; empty = none")
 	fs.StringVar(&knob, "knob", "/dev/input/event2", "volume knob evdev device; empty = none")
+	fs.StringVar(&ledSock, "led-sock", "/data/local/tmp/voice/ledd.sock", "ledd event socket; empty = no LED events")
+	fs.StringVar(&leddURL, "ledd", "http://127.0.0.1:8781", "ledd HTTP API behind /api/led")
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	opt.MicCmd = strings.Fields(micCmd)
@@ -44,6 +47,11 @@ func cmdRun(args []string) error {
 	// Soloist's volume is the master (see package volume); the amplifier
 	// follows it and aaudio_pipe undoes Soloist's own attenuation.
 	out := newOutput(strings.Fields(hwCmd), gainFile)
+	if ledSock != "" {
+		sender := proto.NewSender(ledSock)
+		out.led = sender.Send
+		opt.OnLED = sender.Send
+	}
 	go out.run(ctx)
 	var vol *volume.Sync
 	volReady := make(chan struct{})
@@ -69,7 +77,14 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	srv := &http.Server{Addr: opt.Listen, Handler: withVolumeAPI(d.Handler(), vol), ReadHeaderTimeout: 10 * time.Second}
+	led, err := ledProxy(leddURL)
+	if err != nil {
+		return fmt.Errorf("-ledd: %w", err)
+	}
+	mux := withVolumeAPI(d.Handler(), vol)
+	mux.Handle("/api/led", led)
+	mux.Handle("/api/led/", led)
+	srv := &http.Server{Addr: opt.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -96,7 +111,7 @@ var _ daemon.Actuator = actuator{}
 func (a actuator) Step(delta int) error { return a.vol.Step(delta) }
 
 // withVolumeAPI adds /api/volume (current volume and knob step) to the UI.
-func withVolumeAPI(h http.Handler, vol *volume.Sync) http.Handler {
+func withVolumeAPI(h http.Handler, vol *volume.Sync) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/", h)
 	state := func(w http.ResponseWriter) {

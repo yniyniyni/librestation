@@ -113,6 +113,15 @@
     </div>
   </div>
 
+  <div class="card" id="ledcard">
+    <div class="row">
+      <div class="grow"><h2>Экран и кольцо</h2><div class="muted">Как светятся экран и кольцо станции.</div></div>
+      <span id="ledmsg" class="msg bad"></span>
+    </div>
+    <div id="ledsel"></div>
+    <div class="row" style="margin-top:10px"><button id="ledai">Показать режим ИИ</button></div>
+  </div>
+
   <div class="card">
     <h2>Последние срабатывания</h2>
     <div class="muted" id="nohits">Пока не было. Скажите слово — здесь появится запись.</div>
@@ -217,7 +226,41 @@ function renderTrain(s) {
   $("tstage").textContent = t.error ? "Ошибка: " + t.error : (names[t.stage] || t.stage) + "…";
 }
 
+
+const LED_FIELDS = [
+  ["volume_screen", "Громкость на экране", [["pulse", "Сток: пульс"], ["number", "Число"]]],
+  ["ai_ring", "Кольцо ИИ", [["carousel", "Карусель"], ["flow", "Перелив"], ["stock", "Как сток"]]],
+  ["ai_screen", "Экран ИИ", [["dots", "Четыре точки"], ["eq", "Эквалайзер"]]],
+  ["flash", "Вспышка команд", [["sweep", "Пробег"], ["white", "Белая"], ["color", "Цвет команды"]]],
+  ["music", "Музыка на экране", [["spectrum", "Спектр"], ["scope", "Осциллограф"], ["clockbar", "Часы + полоска"]]],
+];
+$("ledsel").innerHTML = LED_FIELDS.map(([k, label, opts]) => `<div class="row" style="margin-top:8px">
+  <span class="stats grow">${label}</span>
+  <select data-led="${k}">${opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>`).join("");
+function renderLED(l) {
+  msg($("ledmsg"), "");
+  for (const sel of document.querySelectorAll("select[data-led]")) {
+    if (document.activeElement !== sel) sel.value = l.settings[sel.dataset.led];
+  }
+  $("ledai").textContent = l.ai ? "Выключить режим ИИ" : "Показать режим ИИ";
+  $("ledai").dataset.on = l.ai ? "1" : "";
+}
+async function refreshLED() {
+  try { renderLED(await api("GET", "/api/led")); }
+  catch (e) { msg($("ledmsg"), "ledd не отвечает", "bad"); }
+}
+$("ledsel").onchange = (ev) => {
+  const t = ev.target;
+  if (!t.dataset.led) return;
+  ev.stopPropagation();
+  const settings = {};
+  for (const sel of document.querySelectorAll("select[data-led]")) settings[sel.dataset.led] = sel.value;
+  run(null, async () => { renderLED(await api("POST", "/api/led/settings", settings)); t.blur(); });
+};
+$("ledai").onclick = () => run($("ledai"), async () => renderLED(await api("POST", "/api/led/ai", { on: !$("ledai").dataset.on })));
+
 async function refresh() {
+  refreshLED();
   try {
     const s = await api("GET", "/api/state");
     const prev = state; state = s;

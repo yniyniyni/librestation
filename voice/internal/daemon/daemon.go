@@ -19,8 +19,10 @@ import (
 	"time"
 
 	miccap "voice/internal/capture"
+	"voice/internal/dsp"
 	"voice/internal/frontend"
 	"voice/internal/kws"
+	"voice/internal/led/proto"
 	"voice/internal/wav"
 )
 
@@ -31,6 +33,8 @@ type Options struct {
 	MicCmd    []string // capture helper command
 	Soloist   string   // Soloist WebSocket URL (used by the real Actuator)
 	Actuator  Actuator // runs word actions; nil = actions are only logged
+	// OnLED receives events for the LED daemon (nil = off). It must not block.
+	OnLED func(proto.Event)
 }
 
 // Settings is persisted in <data>/settings.json.
@@ -95,6 +99,9 @@ type Daemon struct {
 	enrollTouched time.Time
 
 	rec recorder
+
+	bands   *dsp.Bands // playback reference spectrum; nil without OnLED
+	lastLED time.Time  // last audio event sent (audio goroutine only)
 }
 
 // actionDebounce is how long the same action is ignored after it ran: several
@@ -147,6 +154,9 @@ func New(opt Options) (*Daemon, error) {
 	}
 	if d.settings.Words == nil {
 		d.settings.Words = map[string]*WordSettings{}
+	}
+	if opt.OnLED != nil {
+		d.bands = dsp.NewBands(miccap.Rate)
 	}
 	if err := d.loadWords(); err != nil {
 		return nil, err
@@ -258,6 +268,30 @@ func (d *Daemon) Run(ctx context.Context) {
 
 // onAudio takes a block of frontend output (16 kHz mono, gain applied).
 func (d *Daemon) onAudio(pcm []int16) {
+	level := d.process(pcm)
+	d.sendAudioLED(level)
+}
+
+// sendAudioLED sends the level and the playback spectrum to ledd, at most
+// once per ledAudioEvery. It runs on the audio goroutine without d.mu.
+func (d *Daemon) sendAudioLED(dbfs float64) {
+	if d.opt.OnLED == nil {
+		return
+	}
+	now := d.now()
+	if !d.lastLED.IsZero() && now.Sub(d.lastLED) < ledAudioEvery {
+		return
+	}
+	d.lastLED = now
+	lv := d.bands.Levels()
+	d.opt.OnLED(proto.Event{T: "audio", Level: min(max((dbfs+60)/50, 0), 1), Bands: lv[:]})
+}
+
+// ledAudioEvery is the minimum gap between audio events sent to ledd.
+const ledAudioEvery = 40 * time.Millisecond
+
+// process handles one block of frontend output and returns its level in dBFS.
+func (d *Daemon) process(pcm []int16) float64 {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	var e float64
@@ -275,9 +309,10 @@ func (d *Daemon) onAudio(pcm []int16) {
 		}
 	}
 	if d.det == nil || d.paused > 0 {
-		return
+		return d.level
 	}
 	d.det.Push(pcm, func(i int, score float32) { d.onHit(d.detWords[i], score) })
+	return d.level
 }
 
 // onHit records a detection and runs the word's action off the audio
@@ -296,6 +331,12 @@ func (d *Daemon) onHit(id string, score float32) {
 	if action != "" && !d.settings.DryRun {
 		h.Fired = true
 		d.lastAction[action] = d.now()
+		switch action {
+		case "pause", "play", "next", "prev":
+			if d.opt.OnLED != nil {
+				d.opt.OnLED(proto.Event{T: "cmd", A: action})
+			}
+		}
 		act := d.opt.Actuator
 		go func() {
 			if err := runAction(act, action); err != nil {
