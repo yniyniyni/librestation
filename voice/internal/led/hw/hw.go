@@ -143,6 +143,12 @@ func Brightness(lux float64) (backlight int, ringScale float64) {
 
 // SetBacklight writes the backlight level, only when it changed.
 func (w *Writer) SetBacklight(v int) error {
+	if v < 1 {
+		v = 1
+	}
+	if v > 100 {
+		v = 100
+	}
 	if v == w.backlight {
 		return nil
 	}

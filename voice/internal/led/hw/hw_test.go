@@ -215,3 +215,20 @@ func TestReadLux(t *testing.T) {
 		t.Fatalf("%v %v", v, err)
 	}
 }
+
+func TestSetBacklightClamps(t *testing.T) {
+	p := tmpPaths(t)
+	w, _ := Open(p, 0, true)
+	defer w.Close()
+	for _, c := range []struct {
+		in   int
+		want string
+	}{{500, "100"}, {-5, "1"}, {0, "1"}} {
+		if err := w.SetBacklight(c.in); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(read(t, p.Backlight)); got != c.want {
+			t.Fatalf("SetBacklight(%d) wrote %q, want %q", c.in, got, c.want)
+		}
+	}
+}
