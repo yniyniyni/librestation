@@ -10,14 +10,27 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 
 	miccap "voice/internal/capture"
 )
 
 const (
-	maxRecordSecs   = 60
-	maxSessionFiles = 10
+	maxRecordSecs   = 30
+	maxSessionFiles = 5
+	// minFreeBytes stays free on /data after a recording, so a session
+	// can never fill the speaker's storage.
+	minFreeBytes = 300 << 20
 )
+
+// freeBytes reports the space available to us on the filesystem holding dir.
+var freeBytes = func(dir string) (uint64, error) {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return 0, err
+	}
+	return uint64(st.Bavail) * uint64(st.Bsize), nil
+}
 
 // recorder saves the next N seconds of raw 16-channel capture blocks as a WAV
 // so a session can be replayed on the Mac (`voiced replay`).
@@ -56,6 +69,14 @@ func (d *Daemon) startRecording(secs int) error {
 	dir := filepath.Join(d.opt.DataDir, "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	// make room for the new file first, then check it fits
+	pruneSessions(dir, maxSessionFiles-1)
+	need := uint64(len(wavHeader(0))+secs*miccap.Rate*miccap.Channels*2) + minFreeBytes
+	if free, err := freeBytes(dir); err != nil {
+		return err
+	} else if free < need {
+		return fmt.Errorf("not enough free space: %d MB free, need %d MB", free>>20, need>>20)
 	}
 	base := d.now().Format("20060102-150405")
 	path := filepath.Join(dir, base+".wav")
@@ -118,18 +139,18 @@ func (d *Daemon) finishRecordingLocked(werr error) {
 	if err != nil {
 		r.err = err.Error()
 		log.Printf("recording %s: %v", r.path, err)
+		os.Remove(r.path) // a truncated file is useless and takes space
 	} else {
 		r.done = true
 		log.Printf("recording saved: %s (%d frames)", r.path, r.frames)
 	}
-	pruneSessions(filepath.Dir(r.path))
 }
 
-// pruneSessions keeps the newest maxSessionFiles recordings.
-func pruneSessions(dir string) {
+// pruneSessions keeps the newest keep recordings.
+func pruneSessions(dir string, keep int) {
 	files, _ := filepath.Glob(filepath.Join(dir, "*.wav"))
 	sort.Strings(files)
-	for len(files) > maxSessionFiles {
+	for len(files) > keep {
 		os.Remove(files[0])
 		files = files[1:]
 	}

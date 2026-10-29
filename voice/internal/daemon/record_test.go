@@ -50,7 +50,7 @@ func TestRecordRejectsBadSeconds(t *testing.T) {
 	d, _ := newTest(t, nil, "", false)
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	for _, body := range []string{`{"seconds":0}`, `{"seconds":61}`, `{"seconds":-3}`, `{}`, `nope`} {
+	for _, body := range []string{`{"seconds":0}`, `{"seconds":31}`, `{"seconds":-3}`, `{}`, `nope`} {
 		if r := post(t, srv.URL+"/api/record", body); r.StatusCode != 400 {
 			t.Fatalf("%s: status %d", body, r.StatusCode)
 		}
@@ -60,7 +60,7 @@ func TestRecordRejectsBadSeconds(t *testing.T) {
 	}
 }
 
-func TestRecordKeepsTenFiles(t *testing.T) {
+func TestRecordKeepsFiveFiles(t *testing.T) {
 	d, _ := newTest(t, nil, "", false)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	n := 0
@@ -75,7 +75,27 @@ func TestRecordKeepsTenFiles(t *testing.T) {
 		}
 	}
 	files, _ := filepath.Glob(filepath.Join(d.opt.DataDir, "sessions", "*.wav"))
-	if len(files) != 10 {
+	if len(files) != 5 {
 		t.Fatalf("%d files", len(files))
+	}
+}
+
+func TestRecordRefusesWhenDiskLow(t *testing.T) {
+	d, _ := newTest(t, nil, "", false)
+	old := freeBytes
+	defer func() { freeBytes = old }()
+	freeBytes = func(string) (uint64, error) { return minFreeBytes + 1<<20, nil } // only 1 MB spare
+	if err := d.startRecording(30); err == nil {
+		t.Fatal("30 s must be refused when space is short")
+	}
+	if d.recordStatus().Active {
+		t.Fatal("must not be active")
+	}
+	if err := d.startRecording(1); err == nil {
+		t.Fatal("1 s (~1.5 MB) must also be refused with 1 MB spare")
+	}
+	freeBytes = func(string) (uint64, error) { return minFreeBytes + 100<<20, nil }
+	if err := d.startRecording(30); err != nil {
+		t.Fatalf("30 s with 100 MB spare: %v", err)
 	}
 }
