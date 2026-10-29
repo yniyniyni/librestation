@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"voice/internal/led/proto"
 	"voice/internal/volume"
 )
 
@@ -30,10 +31,13 @@ type output struct {
 	mu     sync.Mutex
 	target int
 	wake   chan struct{}
+
+	led  func(proto.Event) // optional; must not block
+	prev int               // last volume passed to set; -1 = none yet
 }
 
 func newOutput(hwCmd []string, gainFile string) *output {
-	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, wake: make(chan struct{}, 1)}
+	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, prev: -1, wake: make(chan struct{}, 1)}
 }
 
 // set is volume.Sync.Out: it must not block.
@@ -51,7 +55,18 @@ func (o *output) set(v int) {
 	}
 	o.mu.Lock()
 	o.target = v
+	dir := 0
+	if o.prev >= 0 && v != o.prev {
+		dir = 1
+		if v < o.prev {
+			dir = -1
+		}
+	}
+	o.prev = v
 	o.mu.Unlock()
+	if o.led != nil {
+		o.led(proto.Event{T: "volume", V: v, Dir: dir})
+	}
 	select {
 	case o.wake <- struct{}{}:
 	default:

@@ -100,6 +100,7 @@ func (d *Daemon) startRecording(secs int) error {
 // onRaw sees every raw capture block (the slice is reused by the caller, so
 // it is serialised right here).
 func (d *Daemon) onRaw(b []int16) {
+	d.pushRef(b)
 	r := &d.rec
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -176,3 +177,21 @@ func wavHeader(frames int) []byte {
 	binary.LittleEndian.PutUint32(b[40:], uint32(data))
 	return b
 }
+
+// pushRef feeds the playback reference (channels 11 and 12, averaged) to the
+// spectrum analyser behind the LED events.
+func (d *Daemon) pushRef(b []int16) {
+	if d.bands == nil {
+		return
+	}
+	n := len(b) / miccap.Channels
+	x := make([]float64, n)
+	for i := range x {
+		f := b[i*miccap.Channels:]
+		x[i] = (float64(f[refL]) + float64(f[refR])) / (2 * 32768)
+	}
+	d.bands.Push(x)
+}
+
+// refL and refR are the playback reference channels in the raw capture.
+const refL, refR = 11, 12

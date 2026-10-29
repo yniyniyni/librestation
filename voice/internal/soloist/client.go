@@ -37,6 +37,7 @@ type Client struct {
 
 	mu     sync.Mutex
 	conn   *websocket.Conn
+	gen    uint64 // number of connections established so far
 	vol    int
 	volSet bool
 }
@@ -66,6 +67,7 @@ func (c *Client) run(ctx context.Context) {
 			conn.SetReadLimit(1 << 20)
 			c.mu.Lock()
 			c.conn = conn
+			c.gen++
 			c.mu.Unlock()
 			c.readLoop(ctx, conn)
 			c.mu.Lock()
@@ -119,6 +121,14 @@ func (c *Client) Connected() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.conn != nil
+}
+
+// Generation counts the connections made so far; it changes on every
+// (re)connect, even one too short for Connected polling to notice.
+func (c *Client) Generation() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
 }
 
 func (c *Client) send(v any) error {

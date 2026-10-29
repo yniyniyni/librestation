@@ -23,6 +23,11 @@ supervise() {
     done
 }
 
+# Android Go binaries have no zoneinfo and TZ is unset: derive it from the system property
+TZ=$(getprop persist.sys.timezone)
+[ -n "$TZ" ] || TZ=Europe/Moscow
+export TZ
+
 until getprop init.svc.audioserver | grep -q running && ip -4 addr show wlan0 | grep -q inet; do
     sleep 5
 done
@@ -71,6 +76,8 @@ supervise soloist sh $S/chroot.sh /bin/sh -c \
         --data-dir /var/lib/soloist --cache-dir /var/cache/soloist --cache-size 300 \
         --initial-volume 15 --ws 127.0.0.1:9771 $1' "$NAME" "$SOLOIST_FLAGS" "$PROXY_ENV" &
 
+# LED daemon: clock, volume ring and carousel on the front panel
+supervise ledd /data/local/tmp/voice/ledd &
 supervise voiced /data/local/tmp/voice/voiced run &
 
 wait
