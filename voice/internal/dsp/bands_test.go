@@ -41,3 +41,48 @@ func TestBandsSilence(t *testing.T) {
 		}
 	}
 }
+
+func sineBlock(amp, hz float64, n int) []float64 {
+	x := make([]float64, n)
+	for i := range x {
+		x[i] = amp * math.Sin(2*math.Pi*hz*float64(i)/48000)
+	}
+	return x
+}
+
+// Post-amplifier reference at normal volume is far below full scale: the
+// auto-gain must still lift a -40 dBFS tone to the top of its band.
+func TestBandsAutoGainQuietSine(t *testing.T) {
+	b := NewBands(48000)
+	var l [bandsCount]float64
+	for i := 0; i < 10; i++ {
+		b.Push(sineBlock(0.01, 1000, 1920))
+		l = b.Levels()
+	}
+	best := 0
+	for i, v := range l {
+		if v > l[best] {
+			best = i
+		}
+	}
+	if l[best] < 0.9 {
+		t.Fatalf("quiet sine peak %.3f < 0.9 (levels %v)", l[best], l)
+	}
+}
+
+func TestBandsAutoGainSilenceAfterLoud(t *testing.T) {
+	b := NewBands(48000)
+	b.Push(sineBlock(0.0003, 3000, 1024)) // -70 dBFS
+	for i := 0; i < 5; i++ {
+		b.Levels()
+	}
+	b.Push(make([]float64, 1024))
+	for i := 0; i < 10; i++ {
+		b.Levels()
+	}
+	for i, v := range b.Levels() {
+		if v > 0.01 {
+			t.Fatalf("band %d = %.3f on silence", i, v)
+		}
+	}
+}

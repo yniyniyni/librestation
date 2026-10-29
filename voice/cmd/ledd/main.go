@@ -10,11 +10,15 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
+	_ "time/tzdata" // Android has no zoneinfo; embed it
 
 	"voice/internal/led/asset"
 	"voice/internal/led/hw"
@@ -47,6 +51,10 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	setLocalZone()
+	// A broken framebuffer must not leave the screen at full brightness.
+	safeBacklight(hw.DevicePaths())
 
 	w, err := hw.Open(hw.DevicePaths(), 0, true)
 	if err != nil {
@@ -145,25 +153,76 @@ func (p *playback) onEvent(e soloist.Event) {
 	}
 }
 
+// playerScene is the part of the scene the Soloist watcher drives.
+type playerScene interface{ Playing(bool) }
+
+// soloistSync decides, once per tick, when to ask Soloist for its state: after
+// every (re)connect, retried each tick until the request goes out.
+type soloistSync struct {
+	sc      playerScene
+	send    func() error
+	lastGen uint64
+	pending bool
+}
+
+func (s *soloistSync) step(connected bool, gen uint64) {
+	if gen != s.lastGen {
+		s.lastGen = gen
+		s.pending = true // reconnected, possibly between two ticks
+	}
+	if !connected {
+		s.sc.Playing(false)
+		return
+	}
+	if s.pending && s.send() == nil {
+		s.pending = false
+	}
+}
+
 // watchSoloist marks playback stopped while Soloist is unreachable and asks
 // for the current state after every (re)connect.
 func watchSoloist(ctx context.Context, sol *soloist.Client, pb *playback) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
-	was := false
+	s := &soloistSync{sc: pb.sc, send: func() error { return sol.Command("get_state") }}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
 		}
-		now := sol.Connected()
-		if !now {
-			pb.sc.Playing(false)
-		} else if !was {
-			sol.Command("get_state")
+		s.step(sol.Connected(), sol.Generation())
+	}
+}
+
+// safeBacklight sets a dark-safe backlight: from the light sensor when it is
+// readable, otherwise the darkest level.
+func safeBacklight(p hw.Paths) {
+	lux := 0.0
+	if b, err := os.ReadFile(p.Lux); err == nil {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(string(b)), 64); err == nil {
+			lux = v
 		}
-		was = now
+	}
+	bl, _ := hw.Brightness(lux)
+	if err := hw.SetBacklightPath(p.Backlight, bl); err != nil {
+		log.Printf("ledd: initial backlight: %v", err)
+	}
+}
+
+// setLocalZone fixes time.Local on Android, where there is no /etc/localtime
+// and TZ is usually unset: ask the system property instead.
+func setLocalZone() {
+	if os.Getenv("TZ") != "" {
+		return
+	}
+	out, err := exec.Command("getprop", "persist.sys.timezone").Output()
+	name := strings.TrimSpace(string(out))
+	if err != nil || name == "" {
+		return
+	}
+	if loc, err := time.LoadLocation(name); err == nil {
+		time.Local = loc
 	}
 }
 

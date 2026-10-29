@@ -6,16 +6,20 @@ import (
 )
 
 const (
-	bandsN     = 1024
-	bandsCount = 12
-	bandsLoHz  = 60.0
-	bandsHiHz  = 16000.0
-	bandsFloor = -60.0 // dBFS mapped to 0
+	bandsN         = 1024
+	bandsCount     = 12
+	bandsLoHz      = 60.0
+	bandsHiHz      = 16000.0
+	bandsRange     = 40.0  // dB window below the running peak mapped to 0..1
+	bandsTilt      = 2.0   // dB added per band index: highs carry less energy
+	bandsDecay     = 0.25  // dB the running peak falls per Levels call (~6 dB/s at 25 calls/s)
+	bandsPeakFloor = -85.0 // running peak never drops below this, so silence stays dark
 )
 
 // Bands is a small spectrum analyser: it keeps the latest 1024 samples and,
 // on Levels, returns 12 log-spaced band levels between 60 Hz and 16 kHz.
-// Push is cheap; the FFT runs only in Levels. Safe for concurrent use.
+// Push is cheap; the FFT runs only in Levels. Push may run concurrently with
+// Levels, but Levels itself keeps auto-gain state and is for one caller.
 type Bands struct {
 	mu     sync.Mutex
 	win    [bandsN]float64
@@ -24,11 +28,12 @@ type Bands struct {
 	lo, hi [bandsCount]int
 	norm   float64
 	re, im []float64
+	peak   float64 // running peak in dBFS for auto-gain (Levels caller only)
 }
 
 // NewBands makes an analyser for samples at the given rate.
 func NewBands(rate int) *Bands {
-	b := &Bands{re: make([]float64, bandsN), im: make([]float64, bandsN)}
+	b := &Bands{re: make([]float64, bandsN), im: make([]float64, bandsN), peak: bandsPeakFloor}
 	var sum float64
 	for i := range b.win {
 		b.win[i] = 0.5 - 0.5*math.Cos(2*math.Pi*float64(i)/bandsN)
@@ -59,7 +64,10 @@ func (b *Bands) Push(x []float64) {
 	}
 }
 
-// Levels returns each band's peak level, dBFS −60..0 mapped to 0..1.
+// Levels returns each band's peak level as 0..1. The playback reference is
+// post-amplifier, so its absolute level follows the volume; levels are
+// relative to a running peak (auto-gain) over a 40 dB window, with a small
+// per-band tilt. Stateful: call it from one goroutine.
 func (b *Bands) Levels() [bandsCount]float64 {
 	b.mu.Lock()
 	for i := 0; i < bandsN; i++ {
@@ -68,14 +76,21 @@ func (b *Bands) Levels() [bandsCount]float64 {
 	}
 	b.mu.Unlock()
 	FFT(b.re, b.im)
-	var out [bandsCount]float64
-	for i := range out {
+	var dbs [bandsCount]float64
+	maxDB := math.Inf(-1)
+	for i := range dbs {
 		var m float64
 		for k := b.lo[i]; k < b.hi[i]; k++ {
 			m = max(m, math.Hypot(b.re[k], b.im[k]))
 		}
-		db := 20 * math.Log10(max(m*b.norm, 1e-9))
-		out[i] = min(max((db-bandsFloor)/-bandsFloor, 0), 1)
+		dbs[i] = 20 * math.Log10(max(m*b.norm, 1e-9))
+		maxDB = max(maxDB, dbs[i])
+	}
+	b.peak = max(maxDB, b.peak-bandsDecay, bandsPeakFloor)
+	bottom := b.peak - bandsRange
+	var out [bandsCount]float64
+	for i := range out {
+		out[i] = min(max((dbs[i]+bandsTilt*float64(i)-bottom)/bandsRange, 0), 1)
 	}
 	return out
 }

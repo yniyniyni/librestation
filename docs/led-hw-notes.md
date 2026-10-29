@@ -53,3 +53,9 @@ Test script: `voice/tools/fbtest.sh` (push to /data/local/tmp, run as root).
 - `get_state` request gets a `playback_state` reply on connect.
 - Other events seen: `auth_state`, `volume_changed`, `position_sync`, `track_changed`,
   `queue_changed`, `context_changed`, `error`.
+
+## Reference channels and volume
+
+The playback reference (mic-array channels 11/12) is taken after the amplifier, so its level
+follows the volume setting: at normal volume music sits around -50..-70 dBFS. The spectrum
+therefore uses auto-gain (running peak, 40 dB window, 2 dB/band tilt), not a fixed scale.

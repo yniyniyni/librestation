@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	_ "time/tzdata" // Android has no zoneinfo; embed it
 )
 
 const usage = `usage:

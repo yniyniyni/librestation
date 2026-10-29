@@ -40,8 +40,8 @@ else
     echo "ledd assets: \$src is missing, keeping existing \$dst"
 fi
 EOF
-adb -s "$dev" push "$here/dist/ledd-assets.sh" /data/local/tmp/ledd-assets.sh
-adb -s "$dev" shell -tt "mysudo -n sh /data/local/tmp/ledd-assets.sh" \
+{ adb -s "$dev" push "$here/dist/ledd-assets.sh" /data/local/tmp/ledd-assets.sh \
+    && adb -s "$dev" shell -tt "mysudo -n sh /data/local/tmp/ledd-assets.sh"; } \
     || echo "warning: ledd asset copy failed, keeping existing assets"
 
 sdst=/data/local/tmp/soloist

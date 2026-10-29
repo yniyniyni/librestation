@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"voice/internal/led/anim"
 )
@@ -39,7 +40,18 @@ type Writer struct {
 	lastRing   []byte
 	backlight  int // last value written; 0 = none yet
 	writes     int // number of device writes, for tests
+
+	now      func() time.Time // injectable clock
+	screenAt time.Time        // last screen write
+	ringAt   time.Time        // last ring write
 }
+
+// The ring driver can drop a frame written right after a fast stream, so an
+// unchanged frame is rewritten once the last write is this old.
+const (
+	ringRefresh   = 250 * time.Millisecond
+	screenRefresh = time.Second
+)
 
 // Open opens both framebuffers. Logical ring index i maps to hardware index
 // (ringTop+i) mod 24 when clockwise, (ringTop-i) mod 24 otherwise.
@@ -53,7 +65,7 @@ func Open(p Paths, ringTop int, clockwise bool) (*Writer, error) {
 		s.Close()
 		return nil, err
 	}
-	return &Writer{p: p, screen: s, ring: r, ringTop: ringTop, clockwise: clockwise}, nil
+	return &Writer{p: p, screen: s, ring: r, ringTop: ringTop, clockwise: clockwise, now: time.Now}, nil
 }
 
 // Close closes the framebuffers.
@@ -85,7 +97,8 @@ func scale(c uint8, f float64) byte {
 }
 
 // Draw writes the screen (gray to RGB) and ring (remapped, BGR, scaled by
-// ringScale) frames, skipping each device when its frame is unchanged.
+// ringScale) frames, skipping each device when its frame is unchanged and was written
+// recently (see ringRefresh, screenRefresh).
 func (w *Writer) Draw(s anim.Screen, r anim.Ring, ringScale float64) error {
 	sb := make([]byte, 0, len(s)*3)
 	for _, g := range s {
@@ -96,18 +109,19 @@ func (w *Writer) Draw(s anim.Screen, r anim.Ring, ringScale float64) error {
 		o := w.hwIndex(i) * 3
 		rb[o], rb[o+1], rb[o+2] = scale(c.B, ringScale), scale(c.G, ringScale), scale(c.R, ringScale)
 	}
-	if !bytes.Equal(sb, w.lastScreen) {
+	now := w.now()
+	if !bytes.Equal(sb, w.lastScreen) || now.Sub(w.screenAt) >= screenRefresh {
 		if _, err := w.screen.WriteAt(sb, 0); err != nil {
 			return err
 		}
-		w.lastScreen = sb
+		w.lastScreen, w.screenAt = sb, now
 		w.writes++
 	}
-	if !bytes.Equal(rb, w.lastRing) {
+	if !bytes.Equal(rb, w.lastRing) || now.Sub(w.ringAt) >= ringRefresh {
 		if _, err := w.ring.WriteAt(rb, 0); err != nil {
 			return err
 		}
-		w.lastRing = rb
+		w.lastRing, w.ringAt = rb, now
 		w.writes++
 	}
 	return nil
@@ -141,18 +155,11 @@ func Brightness(lux float64) (backlight int, ringScale float64) {
 	return backlight, loRS + t*(hiRS-loRS)
 }
 
-// SetBacklight writes the backlight level, only when it changed.
-func (w *Writer) SetBacklight(v int) error {
-	if v < 1 {
-		v = 1
-	}
-	if v > 100 {
-		v = 100
-	}
-	if v == w.backlight {
-		return nil
-	}
-	f, err := os.OpenFile(w.p.Backlight, os.O_WRONLY|os.O_TRUNC, 0)
+// SetBacklightPath writes a backlight level (clamped to 1..100) to path
+// without needing open framebuffers.
+func SetBacklightPath(path string, v int) error {
+	v = min(max(v, 1), 100)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return err
 	}
@@ -160,7 +167,16 @@ func (w *Writer) SetBacklight(v int) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err != nil {
+	return err
+}
+
+// SetBacklight writes the backlight level, only when it changed.
+func (w *Writer) SetBacklight(v int) error {
+	v = min(max(v, 1), 100)
+	if v == w.backlight {
+		return nil
+	}
+	if err := SetBacklightPath(w.p.Backlight, v); err != nil {
 		return err
 	}
 	w.backlight = v

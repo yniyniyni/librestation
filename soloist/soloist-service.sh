@@ -23,6 +23,11 @@ supervise() {
     done
 }
 
+# Android Go binaries have no zoneinfo and TZ is unset: derive it from the system property
+TZ=$(getprop persist.sys.timezone)
+[ -n "$TZ" ] || TZ=Europe/Moscow
+export TZ
+
 until getprop init.svc.audioserver | grep -q running && ip -4 addr show wlan0 | grep -q inet; do
     sleep 5
 done

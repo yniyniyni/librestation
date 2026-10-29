@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"voice/internal/led/anim"
 	"voice/internal/led/asset"
@@ -230,5 +231,52 @@ func TestSetBacklightClamps(t *testing.T) {
 		if got := string(read(t, p.Backlight)); got != c.want {
 			t.Fatalf("SetBacklight(%d) wrote %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+func TestDrawRefreshesUnchangedFrameWhenStale(t *testing.T) {
+	p := tmpPaths(t)
+	w, _ := Open(p, 0, true)
+	defer w.Close()
+	now := time.Unix(1000, 0)
+	w.now = func() time.Time { return now }
+	var s anim.Screen
+	s[3] = 50
+	var r anim.Ring
+	r[0].R = 7
+	w.Draw(s, r, 1)
+	n := w.writes
+	now = now.Add(100 * time.Millisecond)
+	w.Draw(s, r, 1)
+	if w.writes != n {
+		t.Fatalf("rewrote after 100 ms: %d -> %d", n, w.writes)
+	}
+	now = now.Add(200 * time.Millisecond) // 300 ms since the write
+	w.Draw(s, r, 1)
+	if w.writes != n+1 {
+		t.Fatalf("ring should refresh once after 300 ms, writes %d -> %d", n, w.writes)
+	}
+	now = now.Add(800 * time.Millisecond) // 1.1 s since the screen write
+	w.Draw(s, r, 1)
+	if w.writes != n+3 {
+		t.Fatalf("screen and ring should refresh after 1.1 s, writes %d -> %d", n, w.writes)
+	}
+}
+
+func TestSetBacklightPath(t *testing.T) {
+	p := tmpPaths(t)
+	for _, c := range []struct {
+		in   int
+		want string
+	}{{36, "36"}, {500, "100"}, {0, "1"}, {-3, "1"}} {
+		if err := SetBacklightPath(p.Backlight, c.in); err != nil {
+			t.Fatal(err)
+		}
+		if got := string(read(t, p.Backlight)); got != c.want {
+			t.Fatalf("SetBacklightPath(%d) wrote %q, want %q", c.in, got, c.want)
+		}
+	}
+	if err := SetBacklightPath(filepath.Join(t.TempDir(), "nope", "b"), 5); err == nil {
+		t.Fatal("want error for missing path")
 	}
 }
