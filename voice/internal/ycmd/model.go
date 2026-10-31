@@ -110,6 +110,9 @@ func Load(dir string) (*Model, error) {
 	if m.net, err = parseNnet(data); err != nil {
 		return nil, fmt.Errorf("ycmd: acoustic_model.nnet: %w", err)
 	}
+	if n := posteriors(m.net); n != len(words) {
+		return nil, fmt.Errorf("ycmd: acoustic_model.nnet gives %d posteriors, words.txt has %d words", n, len(words))
+	}
 	return m, nil
 }
 
@@ -298,6 +301,9 @@ func parseNnet(d []byte) ([]*node, error) {
 	if err != nil {
 		return nil, err
 	}
+	if graph.inputDim != numMel {
+		return nil, fmt.Errorf("input dim %d, want %d log-mel bins", graph.inputDim, numMel)
+	}
 	r := &nnetReader{d: d, i: p}
 	r.tok()
 	nc := r.int32()
@@ -337,6 +343,7 @@ func parseNnet(d []byte) ([]*node, error) {
 // readComponent fills c from its tagged fields up to the closing tag.
 func readComponent(r *nnetReader, c *node) {
 	var s float32
+	haveS := false
 	for r.err == nil {
 		t := r.tok()
 		if strings.HasPrefix(t, "</") {
@@ -344,8 +351,12 @@ func readComponent(r *nnetReader, c *node) {
 		}
 		switch t {
 		case "<S>":
-			s = r.float()
+			s, haveS = r.float(), true
 		case "<LinearParams>":
+			if !haveS {
+				r.fail("<LinearParams> without <S>")
+				return
+			}
 			c.rows, c.cols, c.w = r.sim(s)
 		case "<BiasParams>", "<Bias>":
 			c.bias = r.fv()
@@ -440,6 +451,33 @@ func wire(g *graph, comps map[string]*node) ([]*node, error) {
 		net = append(net, &nd)
 	}
 	return net, nil
+}
+
+// heads returns the nodes no other node reads, in graph order: the network's
+// outputs, whose concatenation is the posterior vector.
+func heads(net []*node) []int {
+	used := make([]bool, len(net))
+	for _, n := range net {
+		if n.input >= 0 {
+			used[n.input] = true
+		}
+	}
+	var h []int
+	for i, u := range used {
+		if !u {
+			h = append(h, i)
+		}
+	}
+	return h
+}
+
+// posteriors is the width of the network output.
+func posteriors(net []*node) int {
+	n := 0
+	for _, i := range heads(net) {
+		n += net[i].dim
+	}
+	return n
 }
 
 // checkWidths verifies c can take an in-wide input and returns its output width.
