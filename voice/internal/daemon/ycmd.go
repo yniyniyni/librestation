@@ -33,6 +33,16 @@ var quickCommands = map[string]quickCommand{
 	"продолжи":  {"play", "play"},
 }
 
+// quickGroups are the panel's switches in display order, with the words
+// each one covers.
+var quickGroups = []struct{ id, words string }{
+	{"pause", "стоп, хватит, пауза"},
+	{"next", "дальше, следующий"},
+	{"prev", "назад"},
+	{"volume", "громче, тише"},
+	{"play", "продолжи"},
+}
+
 // spotCommands runs the spotter over one raw capture block. It runs on the
 // audio goroutine without d.mu.
 func (d *Daemon) spotCommands(block []int16) {

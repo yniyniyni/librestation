@@ -16,6 +16,7 @@ import (
 	"voice/internal/assistant"
 	"voice/internal/judge"
 	"voice/internal/spotifyapi"
+	"voice/internal/ycmd"
 )
 
 type fakeAssistant struct {
@@ -309,5 +310,90 @@ func TestPiperMissingShown(t *testing.T) {
 	d.opt.PiperMissing = func() bool { return true }
 	if !d.state().Assistant.PiperMissing {
 		t.Fatal("not shown")
+	}
+}
+
+func TestQuickViewWithoutModel(t *testing.T) {
+	d, _ := newTest(t, &fakeAct{}, "", false)
+	d.opt.CommandsErr = "нет модели"
+	q := d.state().Quick
+	if q.Available || q.Error != "нет модели" || q.Off {
+		t.Fatalf("quick %+v", q)
+	}
+	var ids []string
+	for _, g := range q.Groups {
+		if !g.On || g.Words == "" {
+			t.Fatalf("group %+v", g)
+		}
+		ids = append(ids, g.ID)
+	}
+	if strings.Join(ids, ",") != "pause,next,prev,volume,play" {
+		t.Fatalf("groups %v", ids)
+	}
+	if q.Groups[0].Words != "стоп, хватит, пауза" {
+		t.Fatalf("words %q", q.Groups[0].Words)
+	}
+}
+
+func TestQuickGroupsCoverCommands(t *testing.T) {
+	seen := map[string]bool{}
+	for _, g := range quickGroups {
+		for _, w := range strings.Split(g.words, ", ") {
+			if quickCommands[w].group != g.id {
+				t.Errorf("%q listed under %s, command table says %q", w, g.id, quickCommands[w].group)
+			}
+			seen[w] = true
+		}
+	}
+	for w := range quickCommands {
+		if !seen[w] {
+			t.Errorf("%q is in no group", w)
+		}
+	}
+}
+
+func TestQuickSettingsSaved(t *testing.T) {
+	d, _ := newTest(t, &fakeAct{}, "", false)
+	d.opt.Commands = &ycmd.Model{}
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	for _, body := range []string{`{"quick":{"group":"next","on":false}}`, `{"quick":{"off":true}}`} {
+		if r := post(t, srv.URL+"/api/settings", body); r.StatusCode != 200 {
+			t.Fatalf("%s: status %d", body, r.StatusCode)
+		}
+	}
+	q := d.state().Quick
+	if !q.Available || !q.Off {
+		t.Fatalf("quick %+v", q)
+	}
+	for _, g := range q.Groups {
+		if g.On != (g.ID != "next") {
+			t.Fatalf("group %+v", g)
+		}
+	}
+	b, err := os.ReadFile(d.settingsPath())
+	var saved Settings
+	if err != nil || json.Unmarshal(b, &saved) != nil || !saved.Quick.Off || !saved.Quick.Disabled["next"] {
+		t.Fatalf("settings.json %+v %v", saved.Quick, err)
+	}
+	if r := post(t, srv.URL+"/api/settings", `{"quick":{"group":"next","on":true}}`); r.StatusCode != 200 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	if d.state().Quick.Groups[1].On != true || len(d.settings.Quick.Disabled) != 0 {
+		t.Fatalf("disabled %v", d.settings.Quick.Disabled)
+	}
+}
+
+func TestQuickSettingsUnknownGroup(t *testing.T) {
+	d, _ := newTest(t, &fakeAct{}, "", false)
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	for _, body := range []string{`{"quick":{"group":"nope","on":false}}`, `{"quick":{"on":false}}`} {
+		if r := post(t, srv.URL+"/api/settings", body); r.StatusCode != 400 {
+			t.Fatalf("%s: status %d", body, r.StatusCode)
+		}
+	}
+	if len(d.settings.Quick.Disabled) != 0 {
+		t.Fatalf("disabled %v", d.settings.Quick.Disabled)
 	}
 }

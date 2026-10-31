@@ -148,6 +148,15 @@
     </div>
   </div>
 
+  <div class="card" id="quickcard">
+    <div class="row">
+      <div class="grow"><h2>Быстрые команды</h2><div class="muted">Стандартные команды Яндекса: скажите «стоп» или «дальше» — без слова-пробуждения.</div></div>
+      <label class="switch stats" id="quickoffrow"><input type="checkbox" id="quickon"> включены</label>
+    </div>
+    <div class="stats" id="quickerr" hidden></div>
+    <div id="quickgroups"></div>
+  </div>
+
   <div class="card">
     <h2>Последние срабатывания</h2>
     <label class="switch stats"><input type="checkbox" id="judge"> проверять срабатывания через Gemini</label>
@@ -223,6 +232,7 @@ function renderWords(s) {
 }
 
 function hitStatus(h) {
+  if (h.action === "hush") return "ассистент замолчал";
   if (h.error) return `<span class="msg bad">${esc(h.error)}</span>`;
   if (h.undone) return `отменено через ${h.undone.toFixed(1)} с`;
   if (h.fired) return "действие выполнено";
@@ -260,10 +270,25 @@ function renderHits(s) {
   $("judgestat").textContent = !j.available ? "нет ключа: запустите ./setup, он спросит ключ Gemini" :
     !j.on ? "выключено" : (j.pending ? `в очереди ${j.pending}` : "");
   $("hits").innerHTML = s.hits.map(h => `<tr${h.undone && !h.verdict ? ' class="suspect"' : ""}>
-    <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»</td>
+    <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»${h.source === "yandex" ? ' <span class="stats">Яндекс</span>' : ""}</td>
     <td title="уверенность">${h.score.toFixed(2)}${h.playback ? ' <span class="stats" title="играла музыка">♪</span>' : ""}</td>
     <td>${hitStatus(h)}${hitJudge(h)}</td>
     <td>${hitVerdict(h)}</td></tr>`).join("");
+}
+
+function renderQuick(s) {
+  const q = s.quick;
+  $("quickerr").hidden = q.available;
+  $("quickerr").textContent = q.available ? "" : "быстрые команды недоступны: " + (q.error || "модель Яндекса не загружена");
+  $("quickoffrow").hidden = !q.available;
+  $("quickgroups").hidden = !q.available;
+  if (!q.available) return;
+  if (document.activeElement !== $("quickon")) $("quickon").checked = !q.off;
+  const html = q.groups.map(g => `<label class="switch stats" style="display:block;margin:4px 0"><input type="checkbox" data-quick="${g.id}"${g.on ? " checked" : ""}${q.off ? " disabled" : ""}> ${esc(g.words)}</label>`).join("");
+  if ($("quickgroups").dataset.html !== html && !$("quickgroups").contains(document.activeElement)) {
+    $("quickgroups").innerHTML = html;
+    $("quickgroups").dataset.html = html;
+  }
 }
 
 const ASST_STATES = { idle: "ждёт", listening: "слушает", thinking: "думает", speaking: "говорит", followup: "ждёт продолжения" };
@@ -393,7 +418,7 @@ async function refresh() {
     $("adot").className = "dot" + (s.audio.ok ? " on" : "");
     $("atext").textContent = s.audio.ok ? "звук есть" : "нет звука";
     $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
-    renderWords(s); renderHits(s); renderAssistant(s); renderEnroll(s); renderTrain(s);
+    renderWords(s); renderHits(s); renderAssistant(s); renderQuick(s); renderEnroll(s); renderTrain(s);
     const v = await api("GET", "/api/volume");
     $("volnow").textContent = v.volume + "%";
     if (document.activeElement !== $("knobstep")) $("knobstep").value = String(v.knob_step);
@@ -457,6 +482,8 @@ document.addEventListener("change", (ev) => {
   if (t.id === "assttts") run(null, async () => { await api("POST", "/api/settings", { assistant: { tts: t.value } }); t.blur(); });
   if (t.id === "asstvoice") run(null, async () => { await api("POST", "/api/settings", { assistant: { voice: t.value } }); t.blur(); });
   if (t.id === "asstcity") run(null, async () => { await api("POST", "/api/settings", { assistant: { city: t.value } }); t.blur(); });
+  if (t.id === "quickon") run(null, async () => { await api("POST", "/api/settings", { quick: { off: !t.checked } }); t.blur(); });
+  if (t.dataset.quick) run(null, async () => { await api("POST", "/api/settings", { quick: { group: t.dataset.quick, on: t.checked } }); t.blur(); });
   if (t.id === "autoundo") run(null, async () => { await api("POST", "/api/settings", { auto_false_undo: t.checked }); t.blur(); });
   if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
   if (t.dataset.action !== undefined) run(null, async () => { await api("POST", "/api/words/" + t.dataset.action, { action: t.value || "none" }); t.blur(); });

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"path/filepath"
 	"strconv"
@@ -61,6 +62,62 @@ type stateView struct {
 	Judge     judgeView     `json:"judge"`
 	Settings  settingsView  `json:"settings"`
 	Assistant assistantView `json:"assistant"`
+	Quick     quickView     `json:"quick"`
+}
+
+// quickView is the quick-commands card.
+type quickView struct {
+	Available bool         `json:"available"` // Yandex's model is loaded
+	Error     string       `json:"error,omitempty"`
+	Off       bool         `json:"off"`
+	Groups    []quickGroup `json:"groups"`
+}
+
+type quickGroup struct {
+	ID    string `json:"id"`
+	Words string `json:"words"`
+	On    bool   `json:"on"`
+}
+
+// quickPatch is a partial update of QuickSettings from the panel: Off, and/or
+// one group switched by Group and On.
+type quickPatch struct {
+	Off   *bool   `json:"off"`
+	Group *string `json:"group"`
+	On    *bool   `json:"on"`
+}
+
+func (p *quickPatch) apply(s *QuickSettings) error {
+	if p.Off != nil {
+		s.Off = *p.Off
+	}
+	if p.Group == nil && p.On == nil {
+		return nil
+	}
+	if p.Group == nil || p.On == nil {
+		return errors.New("для группы нужны group и on")
+	}
+	known := false
+	for _, g := range quickGroups {
+		known = known || g.id == *p.Group
+	}
+	if !known {
+		return fmt.Errorf("неизвестная группа %q", *p.Group)
+	}
+	disabled := maps.Clone(s.Disabled)
+	if *p.On {
+		delete(disabled, *p.Group)
+	} else {
+		if disabled == nil {
+			disabled = map[string]bool{}
+		}
+		disabled[*p.Group] = true
+	}
+	if len(disabled) == 0 {
+		disabled = nil
+	}
+	s.Disabled = disabled
+	return nil
 }
 
 // assistantView is the assistant card: no keys or tokens, only state.
@@ -119,6 +176,11 @@ func (d *Daemon) state() stateView {
 	}
 	v.Train = d.train
 	v.Assistant = d.assistantViewLocked()
+	v.Quick = quickView{Available: d.opt.Commands != nil, Error: d.opt.CommandsErr, Off: d.settings.Quick.Off,
+		Groups: make([]quickGroup, 0, len(quickGroups))}
+	for _, g := range quickGroups {
+		v.Quick.Groups = append(v.Quick.Groups, quickGroup{ID: g.id, Words: g.words, On: !d.settings.Quick.Disabled[g.id]})
+	}
 	return v
 }
 
@@ -309,6 +371,7 @@ func (d *Daemon) Handler() http.Handler {
 			JudgeModel    *string         `json:"judge_model"`
 			AutoFalseUndo *bool           `json:"auto_false_undo"`
 			Assistant     *assistantPatch `json:"assistant"`
+			Quick         *quickPatch     `json:"quick"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
@@ -319,6 +382,13 @@ func (d *Daemon) Handler() http.Handler {
 		asst := d.settings.Assistant
 		if a := req.Assistant; a != nil {
 			if err := a.apply(&asst); err != nil {
+				httpErr(w, err)
+				return
+			}
+		}
+		quick := d.settings.Quick
+		if q := req.Quick; q != nil {
+			if err := q.apply(&quick); err != nil {
 				httpErr(w, err)
 				return
 			}
@@ -337,6 +407,7 @@ func (d *Daemon) Handler() http.Handler {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo
 		}
 		d.settings.Assistant = asst
+		d.settings.Quick = quick
 		if err := d.saveSettings(); err != nil {
 			httpErr(w, err)
 			return
