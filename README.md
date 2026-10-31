@@ -46,8 +46,11 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 - Root через `mysudo` и ADB по сети.
 - Около 1,7 ГБ свободного места на `/data`: rootfs занимает ~1,5 ГБ, остальное —
   кэш Soloist (до 300 МБ), модели, записи и логи.
-- Подготовленный Debian rootfs для `linux/aarch64` с PulseAudio (`rootfs.tar.xz`;
-  с уже работающей колонки его снимает `./setup export-rootfs`, см. ниже).
+- Подготовленный Debian rootfs для `linux/aarch64` с PulseAudio (`rootfs.tar.xz`):
+  `./setup` скачивает его сам из
+  [релиза](https://github.com/yniyniyni/librestation/releases/tag/rootfs-2026-10-31)
+  и сверяет sha256. Свой можно снять с работающей колонки командой
+  `./setup export-rootfs`, см. ниже.
 - Сборка Spotify Soloist для `linux/aarch64` и **свой** developer API key Soloist.
   Soloist и ключ в репозитории не распространяются.
 - Прокси, если Spotify без него недоступен: на роутере или Xray прямо на колонке
@@ -85,8 +88,9 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 1. инструменты на компьютере (adb, Go, javac, python3, Android SDK и NDK);
 2. root на колонке и свободное место;
 3. сборка и заливка `voiced`, `ledd`, `aaudio_pipe` и скриптов (`voice/deploy.sh`);
-4. Debian rootfs с PulseAudio — спросит путь к `rootfs.tar.xz` (если архив лежит
-   в корне репозитория, предложит его сам);
+4. Debian rootfs с PulseAudio — если `rootfs.tar.xz` нет в корне репозитория,
+   предложит скачать его из релиза (хеш проверяется, готовый файл переиспользуется),
+   либо спросит путь к своему архиву;
 5. Spotify Soloist — спросит путь к бинарнику `linux/aarch64`;
 6. ключ Soloist и, по желанию, ключ Gemini — ввод скрытый, ключи хранятся
    только на колонке;
@@ -103,7 +107,7 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 ```
 
 Без терминала (`./setup < /dev/null`, CI) установщик тоже только проверяет.
-Rootfs, Soloist и ключи в репозиторий не входят, их нужно получить отдельно.
+Rootfs скачивается из релиза, а Soloist и ключи в репозиторий не входят, их нужно получить отдельно.
 
 **Rootfs для другой колонки.** На колонке, где всё уже работает:
 
