@@ -235,7 +235,7 @@ func askXrayConfig(e *env) ([]byte, error) {
 	if link != "" {
 		return vlessConfig(link)
 	}
-	p := e.u.ask("  Путь к xray.json на этом компьютере", "")
+	p := hostPath(e.u.ask("  Путь к xray.json на этом компьютере", ""))
 	if p == "" {
 		return nil, fmt.Errorf("настройки прокси не заданы")
 	}
