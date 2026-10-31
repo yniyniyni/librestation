@@ -69,7 +69,8 @@ type Assets struct {
 const (
 	volumeHold  = 1500 * time.Millisecond
 	commandHold = time.Second
-	aiErrorHold = 1500 * time.Millisecond
+	// AIErrorHold is how long the AI error state shows before it ends.
+	AIErrorHold = 1500 * time.Millisecond
 	defaultDT   = 40 * time.Millisecond
 )
 
@@ -209,7 +210,7 @@ func (s *Scene) Frame() (anim.Screen, anim.Ring) {
 	switch {
 	case s.ai:
 		t := now.Sub(s.aiStart)
-		if s.aiState == "error" && t >= aiErrorHold {
+		if s.aiState == "error" && t >= AIErrorHold {
 			s.ai = false
 			break
 		}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"voice/internal/led/proto"
 	"voice/internal/led/scene"
 )
 
@@ -144,11 +145,23 @@ func TestAIDemoTurnsOffAfter30s(t *testing.T) {
 	}
 }
 
-func TestSocketAIHasNoTimeout(t *testing.T) {
+func TestSocketAITimesOut(t *testing.T) {
 	a, fs, timers := newTestAPI(t)
-	a.setAI(true, "thinking", 0)
-	if len(*timers) != 0 || !fs.ai[0] || fs.aiState[0] != "thinking" {
-		t.Fatalf("timers %d ai %v", len(*timers), fs.ai)
+	handleEvent(nil, a, proto.Event{T: "ai", On: true, A: "thinking"})
+	if len(*timers) != 1 || (*timers)[0].d != aiSafetyTimeout || !fs.ai[0] || fs.aiState[0] != "thinking" {
+		t.Fatalf("timers %v ai %v", len(*timers), fs.ai)
+	}
+	handleEvent(nil, a, proto.Event{T: "ai", On: true, A: "error"})
+	if len(*timers) != 2 || (*timers)[1].d != scene.AIErrorHold || !(*timers)[0].stopped {
+		t.Fatalf("error: timers %d", len(*timers))
+	}
+	(*timers)[1].f()
+	if fs.ai[len(fs.ai)-1] || a.ai {
+		t.Fatal("error state did not expire")
+	}
+	handleEvent(nil, a, proto.Event{T: "ai"})
+	if len(*timers) != 2 || fs.ai[len(fs.ai)-1] {
+		t.Fatalf("off: timers %d ai %v", len(*timers), fs.ai)
 	}
 }
 
