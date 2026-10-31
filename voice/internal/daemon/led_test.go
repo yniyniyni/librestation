@@ -33,6 +33,7 @@ func newLEDTest(t *testing.T, action string, dry bool) (*Daemon, *ledLog) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(d.waitIO)
 	d.settings.Words["x"] = &WordSettings{Enabled: true, Action: action}
 	d.settings.DryRun = dry
 	return d, l

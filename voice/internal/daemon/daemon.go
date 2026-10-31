@@ -42,6 +42,12 @@ type Settings struct {
 	Gain   float64                  `json:"gain"`    // frontend output gain
 	DryRun bool                     `json:"dry_run"` // log hits without acting
 	Words  map[string]*WordSettings `json:"words"`
+	// RefCheck scores each hit against what the speaker itself is playing
+	// and skips the action when the word is in the song (default on).
+	RefCheck bool `json:"ref_check"`
+	// AutoFalseUndo marks hits whose action the user took back as false
+	// alarms without asking.
+	AutoFalseUndo bool `json:"auto_false_undo"`
 }
 
 type WordSettings struct {
@@ -57,16 +63,31 @@ type word struct {
 
 // Hit is one detection, kept for the UI (with audio for false-alarm marking).
 type Hit struct {
-	ID    int       `json:"id"`
-	Word  string    `json:"word"`
-	Name  string    `json:"name"`
-	Score float32   `json:"score"`
-	At    time.Time `json:"at"`
-	Fired bool      `json:"fired"` // the word's action was run
+	ID     int       `json:"id"`
+	Word   string    `json:"word"`
+	Name   string    `json:"name"`
+	Score  float32   `json:"score"`
+	At     time.Time `json:"at"`
+	Action string    `json:"action,omitempty"`
+	Fired  bool      `json:"fired"` // the word's action was run
 	// Debounced: the same action ran moments ago, so this hit was only logged.
 	Debounced bool   `json:"debounced,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// RefScore is the word's score on what the speaker was playing; -1 when
+	// it was silent or the check is off.
+	RefScore float32 `json:"ref_score"`
+	Blocked  bool    `json:"blocked,omitempty"` // the word was in the playback: action skipped
+	Undone   float64 `json:"undone,omitempty"`  // seconds until the user took the action back
+	// Verdict is "false" or "ok" once decided; Auto when the station
+	// decided it. FalseFile is the clip saved as the word's hard negative.
+	Verdict   string `json:"verdict,omitempty"`
+	Auto      bool   `json:"auto,omitempty"`
+	FalseFile string `json:"false_file,omitempty"`
+
 	audio     []int16
+	volBefore int  // volume when the hit fired, -1 unknown
+	volMoved  bool // the volume has moved the action's way since
+	pruned    bool // dropped from the list: its files go
 }
 
 type Daemon struct {
@@ -99,6 +120,12 @@ type Daemon struct {
 	enrollTouched time.Time
 
 	rec recorder
+
+	refw     *refWatch
+	io       sync.WaitGroup // background hit writes
+	ioMu     sync.Mutex     // serialises hit writes; taken before mu
+	playback string         // last Soloist status
+	volume   int            // last observed volume, -1 unknown
 
 	bands   *dsp.Bands // playback reference spectrum; nil without OnLED
 	lastLED time.Time  // last audio event sent (audio goroutine only)
@@ -145,8 +172,8 @@ func New(opt Options) (*Daemon, error) {
 		return nil, err
 	}
 	d := &Daemon{opt: opt, ring: newRing(ringSecs * kws.SampleRate),
-		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout}
-	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
+		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout, volume: -1}
+	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}, RefCheck: true}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
 			return nil, fmt.Errorf("settings: %w", err)
@@ -157,6 +184,14 @@ func New(opt Options) (*Daemon, error) {
 	}
 	if opt.OnLED != nil {
 		d.bands = dsp.NewBands(miccap.Rate)
+	}
+	rw, err := newRefWatch(func() time.Time { return d.now() })
+	if err != nil {
+		return nil, err
+	}
+	d.refw = rw
+	if err := d.loadHits(); err != nil {
+		return nil, err
 	}
 	if err := d.loadWords(); err != nil {
 		return nil, err
@@ -253,10 +288,16 @@ func (d *Daemon) Run(ctx context.Context) {
 	}
 	d.mu.Unlock()
 	fe := frontend.New(cfg)
+	go d.refw.run(ctx)
 	killYandex()
 	r := &miccap.Runner{
-		Cmd:       d.opt.MicCmd,
-		OnBlock:   func(b []int16) { d.onRaw(b); d.onAudio(fe.Process(b)) },
+		Cmd: d.opt.MicCmd,
+		OnBlock: func(b []int16) {
+			d.onRaw(b)
+			clean, ref := fe.ProcessRef(b)
+			d.onRef(ref)
+			d.onAudio(clean)
+		},
 		OnSilence: killYandex,
 	}
 	err := r.Run(ctx)
@@ -264,6 +305,16 @@ func (d *Daemon) Run(ctx context.Context) {
 	d.audioOK = false
 	d.audioErr = fmt.Sprint(err)
 	d.mu.Unlock()
+}
+
+// onRef hands a block of the playback reference to the music check.
+func (d *Daemon) onRef(ref []float32) {
+	d.mu.Lock()
+	on := d.settings.RefCheck
+	d.mu.Unlock()
+	if on {
+		d.refw.offer(ref)
+	}
 }
 
 // onAudio takes a block of frontend output (16 kHz mono, gain applied).
@@ -318,19 +369,31 @@ func (d *Daemon) process(pcm []int16) float64 {
 // onHit records a detection and runs the word's action off the audio
 // goroutine; caller holds d.mu.
 func (d *Daemon) onHit(id string, score float32) {
-	h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: time.Now()}
-	h.audio = d.ring.last(3 * kws.SampleRate)
+	h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: d.now(), RefScore: -1, volBefore: d.volume}
+	h.audio = d.ring.last(hitSecs * kws.SampleRate)
 	var action string
 	if s := d.settings.Words[id]; s != nil {
 		action = s.Action
+	}
+	h.Action = action
+	if rs, bar, ok := d.refScoreLocked(id); ok {
+		h.RefScore = rs
+		h.Blocked = rs >= bar
 	}
 	if t, ok := d.lastAction[action]; ok && action != "" && !d.settings.DryRun && d.now().Sub(t) < actionDebounce {
 		h.Debounced = true
 		action = ""
 	}
+	if h.Blocked {
+		// The song said the word: a false alarm by construction, and the
+		// mic clip is exactly what the model must learn to ignore.
+		d.markFalseLocked(h, true)
+		action = ""
+	}
 	if action != "" && !d.settings.DryRun {
 		h.Fired = true
 		d.lastAction[action] = d.now()
+		d.revertedLocked(action) // this command may take back the previous one
 		switch action {
 		case "pause", "play", "next", "prev":
 			if d.opt.OnLED != nil {
@@ -344,17 +407,13 @@ func (d *Daemon) onHit(id string, score float32) {
 				d.mu.Lock()
 				h.Error = err.Error()
 				d.mu.Unlock()
+				d.persist(h)
 			}
 			d.actionDone()
 		}()
 	}
-	d.hitSeq++
-	h.ID = d.hitSeq
-	d.hits = append(d.hits, h)
-	if len(d.hits) > 20 {
-		d.hits = d.hits[len(d.hits)-20:]
-	}
-	log.Printf("hit %s score %.3f action %q debounced %v", id, score, action, h.Debounced)
+	d.addHitLocked(h)
+	log.Printf("hit %s score %.3f ref %.3f action %q debounced %v blocked %v", id, score, h.RefScore, action, h.Debounced, h.Blocked)
 }
 
 // actionDone is a test hook called after each action finished.

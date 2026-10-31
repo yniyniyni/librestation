@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -53,9 +54,15 @@ func cmdRun(args []string) error {
 		opt.OnLED = sender.Send
 	}
 	go out.run(ctx)
+	// The daemon watches playback and volume changes from every source to
+	// tell when the user takes a voice command back; it is created last.
+	var dmn atomic.Pointer[daemon.Daemon]
 	var vol *volume.Sync
 	volReady := make(chan struct{})
 	sol := soloist.Dial(ctx, opt.Soloist, func(e soloist.Event) {
+		if d := dmn.Load(); d != nil && (e.Type == "playback_state" || e.Type == "playback_changed") {
+			d.ObservePlayback(e.Status)
+		}
 		select {
 		case <-volReady:
 			vol.OnEvent(e)
@@ -64,7 +71,12 @@ func cmdRun(args []string) error {
 	})
 	defer sol.Close()
 	vol = volume.New(sol, filepath.Join(opt.DataDir, "volume"))
-	vol.Out = out.set
+	vol.Out = func(v int) {
+		out.set(v)
+		if d := dmn.Load(); d != nil {
+			d.ObserveVolume(v)
+		}
+	}
 	close(volReady)
 	go vol.Run(ctx)
 	if knob != "" {
@@ -76,6 +88,7 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	dmn.Store(d)
 
 	led, err := ledProxy(leddURL)
 	if err != nil {

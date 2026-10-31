@@ -51,10 +51,18 @@ type stateView struct {
 		Error string  `json:"error,omitempty"`
 		Level float64 `json:"level"`
 	} `json:"audio"`
-	Words  []wordView  `json:"words"`
-	Hits   []*Hit      `json:"hits"`
-	Enroll *enrollView `json:"enroll"`
-	Train  trainState  `json:"train"`
+	Words    []wordView   `json:"words"`
+	Hits     []Hit        `json:"hits"`
+	Enroll   *enrollView  `json:"enroll"`
+	Train    trainState   `json:"train"`
+	Ref      refView      `json:"ref"`
+	Settings settingsView `json:"settings"`
+}
+
+// settingsView is the part of Settings the hits card edits.
+type settingsView struct {
+	RefCheck      bool `json:"ref_check"`
+	AutoFalseUndo bool `json:"auto_false_undo"`
 }
 
 func (d *Daemon) state() stateView {
@@ -80,10 +88,12 @@ func (d *Daemon) state() stateView {
 			Score: scores[w.ID], Notes: w.Model.TrainNotes,
 		})
 	}
-	v.Hits = make([]*Hit, len(d.hits))
+	v.Hits = make([]Hit, len(d.hits))
 	for i, h := range d.hits {
-		v.Hits[len(d.hits)-1-i] = h // newest first
+		v.Hits[len(d.hits)-1-i] = *h // newest first; copied, it changes after unlock
 	}
+	v.Settings = settingsView{RefCheck: d.settings.RefCheck, AutoFalseUndo: d.settings.AutoFalseUndo}
+	v.Ref = d.refw.view(d.settings.RefCheck)
 	if e := d.enroll; e != nil {
 		ev := &enrollView{Name: e.Name, HasAmbient: len(e.Ambient) > 0, MinTakes: minTakes,
 			SpeechSecs: float64(len(e.Speech)) / kws.SampleRate, Takes: []float64{}}
@@ -185,28 +195,49 @@ func (d *Daemon) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		a, err := d.hitAudio(h)
+		if err != nil {
+			httpErr(w, err)
+			return
+		}
 		w.Header().Set("Content-Type", "audio/wav")
-		w.Write(wav.Encode(h.audio, kws.SampleRate))
+		w.Write(wav.Encode(a, kws.SampleRate))
 	})
-	mux.HandleFunc("POST /api/hits/{n}/false", func(w http.ResponseWriter, r *http.Request) {
+	// {verdict} is "false" (keep the clip as a hard negative of the word) or
+	// "ok" (the hit was right; takes back a clip saved for it).
+	mux.HandleFunc("POST /api/hits/{n}/{verdict}", func(w http.ResponseWriter, r *http.Request) {
 		h := d.hit(r.PathValue("n"))
 		if h == nil {
 			http.NotFound(w, r)
 			return
 		}
-		p := filepath.Join(d.wordDir(h.Word), fmt.Sprintf("false-%d.wav", h.At.Unix()))
-		if err := wav.WriteFile(p, h.audio, kws.SampleRate); err != nil {
+		if err := d.setVerdict(h, r.PathValue("verdict")); err != nil {
+			httpErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			RefCheck      *bool `json:"ref_check"`
+			AutoFalseUndo *bool `json:"auto_false_undo"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
 			return
 		}
 		d.mu.Lock()
-		for i, x := range d.hits {
-			if x == h {
-				d.hits = append(d.hits[:i], d.hits[i+1:]...)
-				break
-			}
+		defer d.mu.Unlock()
+		if req.RefCheck != nil {
+			d.settings.RefCheck = *req.RefCheck
 		}
-		d.mu.Unlock()
+		if req.AutoFalseUndo != nil {
+			d.settings.AutoFalseUndo = *req.AutoFalseUndo
+		}
+		if err := d.saveSettings(); err != nil {
+			httpErr(w, err)
+			return
+		}
 		writeJSON(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /api/record", func(w http.ResponseWriter, r *http.Request) {

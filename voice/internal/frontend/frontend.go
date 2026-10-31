@@ -55,14 +55,21 @@ func New(cfg Config) *Frontend {
 // Process consumes one block (BlockFrames*Channels interleaved int16) and
 // returns BlockFrames/3 fresh 16 kHz samples. It does not retain block.
 func (f *Frontend) Process(block []int16) []int16 {
+	out, _ := f.ProcessRef(block)
+	return out
+}
+
+// ProcessRef is Process that also returns the playback reference at 16 kHz
+// (int16 scale, no gain): what the speaker itself played in this block.
+func (f *Frontend) ProcessRef(block []int16) (out []int16, ref []float32) {
 	mic := f.micDec.Process(f.micMix.Mix(dsp.Deinterleave(block, capture.Channels, f.cfg.MicChannels)))
-	ref := f.refDec.Process(f.refMix.Mix(dsp.Deinterleave(block, capture.Channels, f.cfg.RefChannels)))
+	ref = f.refDec.Process(f.refMix.Mix(dsp.Deinterleave(block, capture.Channels, f.cfg.RefChannels)))
 	clean := f.canceler.Process(mic, ref)
-	out := make([]int16, len(clean))
+	out = make([]int16, len(clean))
 	for i, v := range clean {
 		out[i] = sat(float64(v) * f.cfg.Gain)
 	}
-	return out
+	return out, ref
 }
 
 func sat(x float64) int16 {
