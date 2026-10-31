@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"voice/internal/assistant"
 )
 
 const (
@@ -33,8 +35,9 @@ const (
 	liveLead = 200 * time.Millisecond
 )
 
-// errFlushed cancels the Play, PlayLive or FinishLive that Flush interrupts.
-var errFlushed = errors.New("speaker: flushed")
+// errFlushed is what a Play, PlayLive or FinishLive interrupted by Flush
+// returns.
+var errFlushed = assistant.ErrFlushed
 
 // speaker plays replies through a resident aaudio_pipe. It runs without a
 // gain file, so the loudness of a reply is only the amplifier's, the same as
@@ -53,8 +56,9 @@ type speaker struct {
 	lead    []float32 // Live audio held back before the reply's first write
 	liveEnd time.Time // when the Live reply written so far ends playing; zero = none
 
-	op       sync.Mutex              // guards cancelOp
+	op       sync.Mutex              // guards the fields below
 	cancelOp context.CancelCauseFunc // the running call under s.play, for Flush; nil = none
+	flushing int                     // Flushes not yet done killing; calls begun meanwhile start cancelled
 }
 
 // speakerProc is one run of the helper.
@@ -139,32 +143,42 @@ func (s *speaker) kill() {
 }
 
 // Flush drops all queued audio at once: the held-back Live lead-in and, by
-// killing the helper, what is in the device. A write or wait in progress
-// returns nil. The next Play or PlayLive starts a fresh helper.
+// killing the helper, what is in the device. The call in progress, and any
+// that takes the lock before the kill, returns errFlushed at once, so Flush
+// never waits out a write or a drain. The next Play or PlayLive starts a
+// fresh helper.
 func (s *speaker) Flush() {
 	s.op.Lock()
+	s.flushing++
 	if s.cancelOp != nil {
 		s.cancelOp(errFlushed)
 	}
 	s.op.Unlock()
 	s.play.Lock()
-	defer s.play.Unlock()
 	s.kill()
+	s.play.Unlock()
+	s.op.Lock()
+	s.flushing--
+	s.op.Unlock()
 }
 
-// begin makes ctx cancellable by Flush for one call under s.play. The
-// returned func ends the call and turns a flushed result into nil.
+// begin makes ctx cancellable by Flush for one call under s.play; during a
+// Flush it starts cancelled. The returned func ends the call and makes a
+// flushed result errFlushed.
 func (s *speaker) begin(ctx context.Context) (context.Context, func(*error)) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	s.op.Lock()
 	s.cancelOp = cancel
+	if s.flushing > 0 {
+		cancel(errFlushed)
+	}
 	s.op.Unlock()
 	return ctx, func(err *error) {
 		s.op.Lock()
 		s.cancelOp = nil
 		s.op.Unlock()
 		if *err != nil && context.Cause(ctx) == errFlushed {
-			*err = nil
+			*err = errFlushed
 		}
 		cancel(nil)
 	}
@@ -251,6 +265,9 @@ func (s *speaker) FinishLive(ctx context.Context) (err error) {
 	defer s.play.Unlock()
 	ctx, done := s.begin(ctx)
 	defer done(&err)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	frames := s.lead
 	s.lead = nil
 	if err := s.writeLive(ctx, frames); err != nil {

@@ -324,12 +324,41 @@ func TestFinishLiveWaitsForAll(t *testing.T) {
 	}
 }
 
+// realSleep makes s wait in real time and closes the returned channel when a
+// wait has begun.
+func realSleep(s *speaker) <-chan struct{} {
+	started := make(chan struct{})
+	var once sync.Once
+	s.now = time.Now
+	s.sleep = func(ctx context.Context, d time.Duration) error {
+		once.Do(func() { close(started) })
+		return sleepCtx(ctx, d)
+	}
+	return started
+}
+
+// returnsSoon waits for one result from res and checks it is errFlushed.
+func returnsSoon(t *testing.T, what string, res <-chan error, ok ...error) {
+	t.Helper()
+	select {
+	case err := <-res:
+		if err != errFlushed && (len(ok) == 0 || err != ok[0]) {
+			t.Fatalf("flushed %s = %v, want errFlushed", what, err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("%s did not return after Flush", what)
+	}
+}
+
 // Flush drops the held-back lead-in and the helper with its queue, releases a
 // blocked write and a drain wait at once, and the next PlayLive starts a fresh
 // helper.
 func TestFlushKillsAndRestarts(t *testing.T) {
+	dir := t.TempDir()
+	reading := filepath.Join(dir, "reading")
 	var wakes int
-	s, _, waited := newTestSpeaker([]string{"sh", "-c", "exec sleep 30"}, &wakes) // never reads
+	// Reads one frame, then never again.
+	s, _, waited := newTestSpeaker([]string{"sh", "-c", "head -c 8 > /dev/null; touch " + reading + "; exec sleep 30"}, &wakes)
 	defer s.Close()
 	ctx := context.Background()
 
@@ -342,20 +371,13 @@ func TestFlushKillsAndRestarts(t *testing.T) {
 		t.Fatalf("FinishLive after Flush = %v, waited %v; want nil, 0", err, *waited)
 	}
 
-	// A write blocked on the helper returns at once, without an error.
+	// A write stuck on the helper returns at once with errFlushed.
 	res := make(chan error, 1)
 	go func() { res <- s.PlayLive(ctx, make([]int16, 24000*5), 24000) }()
-	time.Sleep(100 * time.Millisecond)
+	waitFor(t, func() bool { _, err := os.Stat(reading); return err == nil })
 	start := time.Now()
 	s.Flush()
-	select {
-	case err := <-res:
-		if err != nil {
-			t.Fatalf("flushed PlayLive = %v, want nil", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("PlayLive did not return after Flush")
-	}
+	returnsSoon(t, "PlayLive", res)
 	if d := time.Since(start); d > 500*time.Millisecond {
 		t.Fatalf("Flush took %v", d)
 	}
@@ -364,9 +386,8 @@ func TestFlushKillsAndRestarts(t *testing.T) {
 	}
 
 	// The next reply starts a fresh helper and wakes the output again.
-	s.sleep = sleepCtx
-	s.now = time.Now
-	out := filepath.Join(t.TempDir(), "out")
+	started := realSleep(s)
+	out := filepath.Join(dir, "out")
 	s.cmd = []string{"sh", "-c", "cat > " + out}
 	if err := s.PlayLive(ctx, make([]int16, 4800), 24000); err != nil {
 		t.Fatal(err)
@@ -378,14 +399,73 @@ func TestFlushKillsAndRestarts(t *testing.T) {
 
 	// The wait for a reply to play out ends at once too.
 	go func() { res <- s.FinishLive(ctx) }()
-	time.Sleep(50 * time.Millisecond)
+	<-started
 	s.Flush()
-	select {
-	case err := <-res:
-		if err != nil {
-			t.Fatalf("flushed FinishLive = %v, want nil", err)
+	returnsSoon(t, "FinishLive", res)
+}
+
+// Flush interrupts a regular Play waiting for its audio to play.
+func TestFlushInterruptsPlay(t *testing.T) {
+	var wakes int
+	s, _, _ := newTestSpeaker([]string{"sh", "-c", "cat > /dev/null"}, &wakes)
+	defer s.Close()
+	started := realSleep(s)
+	res := make(chan error, 1)
+	go func() { res <- s.Play(context.Background(), make([]int16, 24000*5), 24000) }()
+	<-started
+	s.Flush()
+	returnsSoon(t, "Play", res)
+}
+
+// A Flush that lands between two calls is not waited out by the next one:
+// a FinishLive that takes the lock before the Flush's kill returns at once
+// instead of draining the reply.
+func TestFlushBetweenCalls(t *testing.T) {
+	var wakes int
+	s, _, _ := newTestSpeaker([]string{"sh", "-c", "cat > /dev/null"}, &wakes)
+	defer s.Close()
+	started := realSleep(s)
+	ctx := context.Background()
+	if err := s.PlayLive(ctx, make([]int16, 4800), 24000); err != nil {
+		t.Fatal(err)
+	}
+
+	s.play.Lock() // a call between done and Unlock: nothing for Flush to cancel
+	locked := true
+	defer func() {
+		if locked {
+			s.play.Unlock()
 		}
-	case <-time.After(150 * time.Millisecond):
-		t.Fatal("FinishLive did not return after Flush")
+	}()
+	s.liveEnd = time.Now().Add(5 * time.Second)
+	flushed := make(chan struct{})
+	go func() { s.Flush(); close(flushed) }()
+	waitFor(t, func() bool { s.op.Lock(); defer s.op.Unlock(); return s.flushing > 0 })
+	// A call that gets the lock before the Flush's kill starts cancelled.
+	opCtx, done := s.begin(ctx)
+	if context.Cause(opCtx) != errFlushed {
+		t.Fatalf("call begun during a Flush: cause %v, want errFlushed", context.Cause(opCtx))
+	}
+	var err error = opCtx.Err()
+	done(&err)
+	if err != errFlushed {
+		t.Fatalf("call begun during a Flush returned %v, want errFlushed", err)
+	}
+	res := make(chan error, 1)
+	go func() { res <- s.FinishLive(ctx) }()
+	locked = false
+	s.play.Unlock()
+
+	// Whichever takes the lock first, neither waits out the reply.
+	returnsSoon(t, "FinishLive", res, nil)
+	select {
+	case <-flushed:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Flush waited out the next call")
+	}
+	select {
+	case <-started:
+		t.Fatal("FinishLive drained after a Flush")
+	default:
 	}
 }

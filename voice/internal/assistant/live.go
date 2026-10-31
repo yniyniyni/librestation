@@ -24,11 +24,17 @@ type LiveSession interface {
 
 // livePlayer streams Live PCM without waiting after every small audio chunk.
 // The existing Player interface remains blocking for regular TTS replies.
+// Flush drops all queued audio at once (barge-in); the calls it interrupts, or
+// that race with it, return ErrFlushed, and the rest of that turn should be
+// dropped.
 type livePlayer interface {
 	PlayLive(context.Context, []int16, int) error
 	FinishLive(context.Context) error
-	Flush() // drop all queued audio at once (barge-in)
+	Flush()
 }
+
+// ErrFlushed is returned by a livePlayer call cut short by Flush.
+var ErrFlushed = errors.New("assistant: playback flushed")
 
 var errLiveDone = errors.New("assistant: Live conversation ended")
 
