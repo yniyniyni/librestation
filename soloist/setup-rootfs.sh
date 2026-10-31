@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # One-time: stop the old librespot receiver and unpack the Debian rootfs.
-# Run as: mysudo su shell -c 'sh /path/setup-rootfs.sh'
+# Run as: mysudo sh -c 'sh /path/setup-rootfs.sh'
 BB=${BUSYBOX:-/vendor/xbin/busybox}
 BASE=${SOLOIST_BASE:-${1:-/data/local/tmp/soloist}}
 ARCHIVE=${ROOTFS_ARCHIVE:-$BASE/rootfs.tar.xz}

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build the station binaries and push them to a rooted Yandex Station.
-# Remote commands that need root are always run through mysudo su shell.
+# Remote commands that need root are always run through mysudo sh.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -24,7 +24,7 @@ adb_cmd() { adb -s "$dev" "$@"; }
 root_shell() {
     # Call only with commands made from trusted local variables; no user input is
     # interpolated into the command string except validated absolute paths.
-    adb_cmd shell -tt "mysudo su shell -c \"$*\""
+    adb_cmd shell -tt "mysudo sh -c \"$*\""
 }
 
 need_cmd() {

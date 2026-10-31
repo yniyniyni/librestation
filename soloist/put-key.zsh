@@ -16,6 +16,6 @@ if [ -z "$KEY" ]; then
     exit 1
 fi
 # The key is sent over stdin, never interpolated into the remote shell command.
-printf '%s' "$KEY" | adb -s "$ADB_DEVICE" shell -tt "mysudo su shell -c 'mkdir -p "$soloist_dir" && cat > "$soloist_dir/api-key" && chmod 600 "$soloist_dir/api-key"'"
+printf '%s' "$KEY" | adb -s "$ADB_DEVICE" shell -tt "mysudo sh -c 'mkdir -p "$soloist_dir" && cat > "$soloist_dir/api-key" && chmod 600 "$soloist_dir/api-key"'"
 unset KEY
 echo "ok, key saved on speaker"
