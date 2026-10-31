@@ -163,3 +163,10 @@ func TestWebAnswer(t *testing.T) {
 		t.Error("empty question: want error")
 	}
 }
+
+func TestPlaybackDescriptionSaysWhenToPlay(t *testing.T) {
+	d := Playback{}.Decl().Description
+	if !strings.Contains(d, "play continues whatever played last") {
+		t.Errorf("description does not steer bare \"play music\" to play: %q", d)
+	}
+}

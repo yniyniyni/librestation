@@ -27,8 +27,10 @@ type Playback struct {
 
 func (Playback) Decl() agent.FuncDecl {
 	return agent.FuncDecl{
-		Name:        "playback",
-		Description: "Control music playback and volume: pause, play, next or previous track, louder, quieter, or set the volume to a value.",
+		Name: "playback",
+		Description: "Control music playback and volume: pause, play, next or previous track, louder, quieter, or set the volume to a value. " +
+			"play continues whatever played last: use it for \"turn on the music\" with no title, artist or genre; " +
+			"to start something specific use play_music instead.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

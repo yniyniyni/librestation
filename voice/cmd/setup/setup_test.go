@@ -350,3 +350,45 @@ func TestCheckAssistantStockSounds(t *testing.T) {
 		t.Fatalf("bad: ok=%v %q %v", ok, detail, err)
 	}
 }
+
+func TestCheckYcmd(t *testing.T) {
+	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=0\n")}
+	if ok, _, err := checkYcmd(e); err != nil || !ok {
+		t.Fatalf("in place: ok=%v err=%v", ok, err)
+	}
+	e.d = fakeDevice("__librestation_rc=1\n")
+	if ok, _, err := checkYcmd(e); err != nil || ok {
+		t.Fatalf("missing: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestFixYcmdWithoutAPK(t *testing.T) {
+	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=1\n")}
+	err := fixYcmd(e)
+	if err == nil || !strings.Contains(err.Error(), "нет ServicesIosdk.apk") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFixYcmdExtractsFromAPK(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "scripts")
+	d := &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+		// Everything pushed to the fake speaker lands in log; every root
+		// script succeeds, so the services count as running.
+		return exec.Command("sh", "-c", "cat >>\"$1\"; printf '__librestation_rc=0\\n'", "sh", log)
+	}}
+	e := &env{u: newUI(false), d: d}
+	if err := fixYcmd(e); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	for _, want := range []string{
+		"/vendor/xbin/busybox unzip -o -j " + ycmdAPK,
+		"'assets/quark/spotter_models/command/*'",
+		"-d " + ycmdDir,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("no %q in the scripts sent to the speaker:\n%s", want, b)
+		}
+	}
+}

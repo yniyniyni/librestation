@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	iofs "io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"voice/internal/led/proto"
 	"voice/internal/soloist"
 	"voice/internal/volume"
+	"voice/internal/ycmd"
 )
 
 func cmdRun(args []string) error {
@@ -30,6 +32,7 @@ func cmdRun(args []string) error {
 	var opt daemon.Options
 	var micCmd, hwCmd, gainFile, knob, ledSock, leddURL, judgeKey, judgeModel string
 	var ac assistantConfig
+	var ycmdDir string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
 	fs.StringVar(&micCmd, "mic-cmd", "sh /data/local/tmp/voice/mic.sh", "mic capture helper command")
 	fs.StringVar(&opt.Soloist, "soloist", "ws://127.0.0.1:9771", "Soloist WebSocket URL")
@@ -48,6 +51,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&ac.piperCmd, "piper-cmd", "sh /data/local/tmp/soloist/chroot.sh /opt/piper/piper --model /opt/piper/voice.onnx --json-input", "resident Piper command")
 	fs.StringVar(&ac.piperOut, "piper-out", "/data/local/tmp/soloist/rootfs/tmp/tts", "where Piper writes, as voiced sees it (inside the chroot's rootfs)")
 	fs.StringVar(&ac.sounds, "sounds", "/data/local/tmp/voice/sounds", "stock phrases <name>.wav")
+	fs.StringVar(&ycmdDir, "ycmd-dir", "/data/local/tmp/voice/yandex/command", "Yandex quick-command model extracted from the firmware by setup")
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	opt.MicCmd = strings.Fields(micCmd)
@@ -61,6 +65,21 @@ func cmdRun(args []string) error {
 		jc.Model = judgeModel
 		opt.Judge, opt.JudgeModel = jc, judgeModel
 		log.Printf("judge: hits are labelled by %s", judgeModel)
+	}
+
+	// A missing or broken model only turns quick commands off.
+	if m, err := ycmd.Load(ycmdDir); err != nil {
+		opt.CommandsErr = "не удалось загрузить модель: " + err.Error()
+		if errors.Is(err, iofs.ErrNotExist) {
+			opt.CommandsErr = "модель не найдена — запусти ./setup"
+		}
+		log.Printf("ycmd: %v; quick commands are off", err)
+	} else {
+		opt.Commands = m
+		log.Printf("ycmd: model %s", m.Version)
+		if m.Version != ycmd.TestedVersion {
+			log.Printf("ycmd: warning: model %q is not the tested %q", m.Version, ycmd.TestedVersion)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

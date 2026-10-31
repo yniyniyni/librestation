@@ -74,6 +74,8 @@ func steps() []step {
 			hint: "добавьте `" + startLine + "` в загрузочный скрипт вашего рута (от root)"},
 		{name: "Яндекс: голосовой стек io.sdk удалён", check: checkIOSDK, fix: fixIOSDK,
 			ask: "Удалить com.yandex.io.sdk? Он держит микрофон и рисует на кольце; обратимо: " + restoreIOSDK},
+		{name: "Быстрые команды Яндекса", optional: true, check: checkYcmd, fix: fixYcmd,
+			ask: "Достать модель быстрых команд из прошивки колонки?"},
 		{name: "Яндекс: лишние приложения удалены", optional: true, check: checkYandexApps, fix: fixYandexApps,
 			ask: "Удалить их? Проверено на Станции Макс: звук, сеть и команды работают; обратимо: " + restoreApp},
 		{name: "Старые файлы прежних версий", optional: true, check: checkLeftovers, fix: fixLeftovers,
@@ -303,6 +305,44 @@ func fixIOSDK(e *env) error {
 	}
 	_, err = e.d.Root("pm uninstall -k --user 0 com.yandex.io.sdk")
 	return err
+}
+
+// The stock quick-command model ships in the firmware; it is taken from the
+// user's own speaker and is not kept in the repository.
+const (
+	ycmdAPK = "/system/priv-app/ServicesIosdk/ServicesIosdk.apk"
+	ycmdDir = voiceDir + "/yandex/command"
+)
+
+var ycmdFiles = []string{"acoustic_model.nnet", "flags.txt", "words.txt"}
+
+func checkYcmd(e *env) (bool, string, error) {
+	var tests []string
+	for _, f := range ycmdFiles {
+		tests = append(tests, "test -s "+ycmdDir+"/"+f)
+	}
+	ok, err := e.d.RootOK(strings.Join(tests, "\n"))
+	return ok, "", err
+}
+
+func fixYcmd(e *env) error {
+	have, err := e.d.RootOK("test -f " + ycmdAPK)
+	if err != nil {
+		return err
+	}
+	if !have {
+		return fmt.Errorf("в прошивке нет ServicesIosdk.apk — быстрые команды Яндекса недоступны")
+	}
+	// The speaker has no unzip of its own; busybox does.
+	if _, err := e.d.Root(fmt.Sprintf("mkdir -p %[1]s\n/vendor/xbin/busybox unzip -o -j %[2]s 'assets/quark/spotter_models/command/*' -d %[1]s\nchmod -R a+rX %[3]s/yandex", ycmdDir, ycmdAPK, voiceDir)); err != nil {
+		return err
+	}
+	// voiced reads the model at start, like the keys.
+	if up, _, _ := checkServices(e); up {
+		e.u.say("  Перезапускаю сервисы, чтобы подхватить модель…")
+		return fixServices(e)
+	}
+	return nil
 }
 
 // cacheLimitMB matches soloist-service.sh, which clears a bigger cache at
