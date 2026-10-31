@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -27,6 +28,7 @@ type Declaration struct {
 }
 type Config struct {
 	Key, Model, Voice, Prompt, URL string
+	Handle                         string // session resumption handle; "" starts a new session
 	Tools                          []Declaration
 	HTTP                           *http.Client // nil uses DefaultClient, including environment proxy settings
 }
@@ -73,6 +75,10 @@ type Message struct {
 	VoiceActivity *struct {
 		Type string `json:"type"`
 	} `json:"voiceActivity,omitempty"`
+	SessionResumptionUpdate *struct {
+		NewHandle string `json:"newHandle"`
+		Resumable bool   `json:"resumable"`
+	} `json:"sessionResumptionUpdate,omitempty"`
 	GoAway *struct {
 		TimeLeft string `json:"timeLeft"`
 	} `json:"goAway,omitempty"`
@@ -85,6 +91,7 @@ type Message struct {
 type Client struct {
 	conn *websocket.Conn
 	key  string
+	wmu  sync.Mutex // coder/websocket allows one concurrent writer
 }
 
 func Dial(ctx context.Context, cfg Config) (*Client, error) {
@@ -119,14 +126,18 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 	}
 	conn.SetReadLimit(4 << 20)
 	c := &Client{conn: conn, key: cfg.Key}
+	resumption := map[string]any{}
+	if cfg.Handle != "" {
+		resumption["handle"] = cfg.Handle
+	}
 	setup := map[string]any{
 		"model":                   "models/" + strings.TrimPrefix(cfg.Model, "models/"),
 		"generationConfig":        map[string]any{"responseModalities": []string{"AUDIO"}, "speechConfig": map[string]any{"voiceConfig": map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": cfg.Voice}}}},
 		"systemInstruction":       map[string]any{"parts": []any{map[string]any{"text": cfg.Prompt}}},
 		"inputAudioTranscription": map[string]any{}, "outputAudioTranscription": map[string]any{},
-		// The station already segments each utterance with its local VAD.
-		// Disable server VAD and use explicit activity boundaries below.
-		"realtimeInputConfig": map[string]any{"automaticActivityDetection": map[string]any{"disabled": true}},
+		// Server VAD stays at its default (on): audio is streamed continuously.
+		"sessionResumption":        resumption,
+		"contextWindowCompression": map[string]any{"slidingWindow": map[string]any{}},
 	}
 	if len(cfg.Tools) > 0 {
 		setup["tools"] = []any{map[string]any{"functionDeclarations": cfg.Tools}}
@@ -150,6 +161,8 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 func (c *Client) write(ctx context.Context, v any) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
 	if err := wsjson.Write(ctx, c.conn, v); err != nil {
 		return c.safe(err)
 	}
@@ -160,19 +173,19 @@ func (c *Client) safe(err error) error {
 	s = strings.ReplaceAll(s, url.QueryEscape(c.key), "[redacted]")
 	return fmt.Errorf("live: %s", s)
 }
-func (c *Client) SendAudio(ctx context.Context, pcm []int16) error {
+
+// StreamAudio sends one chunk of 16 kHz PCM16 mic audio; the server detects speech boundaries.
+func (c *Client) StreamAudio(ctx context.Context, pcm []int16) error {
 	b := make([]byte, len(pcm)*2)
 	for i, s := range pcm {
 		binary.LittleEndian.PutUint16(b[2*i:], uint16(s))
 	}
-	if err := c.write(ctx, map[string]any{"realtimeInput": map[string]any{"activityStart": map[string]any{}}}); err != nil {
-		return err
-	}
-	if err := c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audio": Blob{MimeType: "audio/pcm;rate=16000", Data: b}}}); err != nil {
-		return err
-	}
-	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"activityEnd": map[string]any{}}})
+	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audio": Blob{MimeType: "audio/pcm;rate=16000", Data: b}}})
 }
+
+// SendAudio is a thin shim for the old per-phrase caller.
+// Deprecated: removed in Task 5 together with the per-phrase flow in assistant/live.go.
+func (c *Client) SendAudio(ctx context.Context, pcm []int16) error { return c.StreamAudio(ctx, pcm) }
 func (c *Client) Respond(ctx context.Context, r []FunctionResponse) error {
 	return c.write(ctx, map[string]any{"toolResponse": map[string]any{"functionResponses": r}})
 }
