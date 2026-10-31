@@ -46,6 +46,7 @@
   td { padding: 6px 4px; border-top: 1px solid var(--line); }
   input[type=range] { width: 160px; accent-color: var(--accent); }
   .switch { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
+  tr.suspect td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
   .station { font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: .02em; min-height: 18px; }
 </style>
 </head>
@@ -130,12 +131,19 @@
 
   <div class="card">
     <h2>Последние срабатывания</h2>
-    <div class="muted" id="nohits">Пока не было. Скажите слово — здесь появится запись.</div>
+    <label class="switch stats"><input type="checkbox" id="judge"> проверять срабатывания через Gemini</label>
+    <div class="stats" id="judgestat" style="margin:2px 0 4px 24px"></div>
+    <label class="switch stats"><input type="checkbox" id="autoundo"> отменённую вами команду сразу считать ложной</label>
+    <div class="muted" id="nohits" style="margin-top:10px">Пока не было. Скажите слово — здесь появится запись.</div>
     <table id="hits"></table>
   </div>
 
   <div class="row muted" style="font-size:13px">
-    <span class="grow">Если команда сработала зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.</span>
+    <span class="grow">Если команда сработала зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.
+      Через 10 с после срабатывания Gemini слушает запись и сам ставит «ложное» или «верное», если уверен;
+      ложные записи идут в обучение. Ваш выбор Gemini не меняет.
+      Команды, отменённые в течение 10 с (пауза → продолжить, следующий → назад, громче → обратно колёсиком),
+      подсвечены.</span>
   </div>
 </main>
 <script>
@@ -192,12 +200,39 @@ function renderWords(s) {
   }).join("");
 }
 
+function hitStatus(h) {
+  if (h.error) return `<span class="msg bad">${esc(h.error)}</span>`;
+  if (h.undone) return `отменено через ${h.undone.toFixed(1)} с`;
+  if (h.fired) return "действие выполнено";
+  return h.debounced ? "повтор" : "";
+}
+function hitJudge(h) {
+  if (h.judge_error) return `<div class="msg bad" title="${esc(h.judge_error)}">Gemini: ошибка <button data-rejudge="${h.id}">Ещё раз</button></div>`;
+  const j = h.judge;
+  if (!j) return "";
+  const call = j.command ? "команда" : "ложное";
+  const heard = j.heard ? ` · слышно «${esc(j.heard)}»` : "";
+  return `<div class="stats" title="${esc(j.reason)}">Gemini: ${call} (${Math.round(j.confidence * 100)}%)${heard}${j.reason ? ` — ${esc(j.reason)}` : ""}</div>`;
+}
+function hitVerdict(h) {
+  const play = `<button data-play="/api/hits/${h.id}">▶</button>`;
+  if (h.verdict === "false") return `${play} <span class="stats">ложное${h.auto ? " (авто)" : ""}</span> <button data-verdict="ok" data-hit="${h.id}">Не ложное</button>`;
+  if (h.verdict === "ok") return `${play} <span class="stats">верное</span> <button data-verdict="false" data-hit="${h.id}">Ложное</button>`;
+  return `${play} <button data-verdict="false" data-hit="${h.id}">Ложное</button>${h.undone ? ` <button data-verdict="ok" data-hit="${h.id}">Верно</button>` : ""}`;
+}
 function renderHits(s) {
   $("nohits").hidden = s.hits.length > 0;
-  $("hits").innerHTML = s.hits.map(h => `<tr>
-    <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»</td><td>${h.score.toFixed(2)}</td>
-    <td>${h.error ? `<span class="msg bad">${esc(h.error)}</span>` : (h.fired ? "действие выполнено" : "")}</td>
-    <td><button data-play="/api/hits/${h.id}">▶</button> <button data-false="${h.id}">Ложное</button></td></tr>`).join("");
+  if (document.activeElement !== $("judge")) $("judge").checked = s.settings.judge;
+  if (document.activeElement !== $("autoundo")) $("autoundo").checked = s.settings.auto_false_undo;
+  const j = s.judge;
+  $("judge").disabled = !j.available;
+  $("judgestat").textContent = !j.available ? "нет ключа: положите его командой zsh voice/tools/put-gemini-key.zsh" :
+    !j.on ? "выключено" : `модель ${j.model}${j.pending ? ` · в очереди ${j.pending}` : ""}`;
+  $("hits").innerHTML = s.hits.map(h => `<tr${h.undone && !h.verdict ? ' class="suspect"' : ""}>
+    <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»</td>
+    <td title="уверенность">${h.score.toFixed(2)}${h.playback ? ' <span class="stats" title="играла музыка">♪</span>' : ""}</td>
+    <td>${hitStatus(h)}${hitJudge(h)}</td>
+    <td>${hitVerdict(h)}</td></tr>`).join("");
 }
 
 function renderEnroll(s) {
@@ -351,6 +386,8 @@ $("enrollaction").innerHTML = actionOptions("");
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
+  if (t.id === "judge") run(null, async () => { await api("POST", "/api/settings", { judge: t.checked }); t.blur(); });
+  if (t.id === "autoundo") run(null, async () => { await api("POST", "/api/settings", { auto_false_undo: t.checked }); t.blur(); });
   if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
   if (t.dataset.action !== undefined) run(null, async () => { await api("POST", "/api/words/" + t.dataset.action, { action: t.value || "none" }); t.blur(); });
   if (t.dataset.sens) run(null, async () => { await api("POST", "/api/words/" + t.dataset.sens, { sensitivity: parseFloat(t.value) }); t.blur(); });
@@ -361,7 +398,8 @@ document.addEventListener("click", (ev) => {
   const ds = t.dataset;
   if (ds.play) new Audio(ds.play + "?t=" + Date.now()).play();
   if (ds.deltake) run(null, () => api("DELETE", "/api/enroll/take/" + ds.deltake));
-  if (ds.false) run(null, () => api("POST", `/api/hits/${ds.false}/false`));
+  if (ds.verdict) run(null, () => api("POST", `/api/hits/${ds.hit}/${ds.verdict}`));
+  if (ds.rejudge) run(null, () => api("POST", `/api/hits/${ds.rejudge}/judge`));
   if (ds.retrain) run(null, () => api("POST", `/api/words/${ds.retrain}/retrain`));
   if (ds.more) run(null, async () => {
     await api("POST", "/api/enroll/start", { name: ds.more });
