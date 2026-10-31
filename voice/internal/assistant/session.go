@@ -85,6 +85,7 @@ type Session struct {
 
 	amu    sync.Mutex // guards the audio fields; held only for appends and swaps
 	open   bool       // audio is wanted
+	lv     levels     // fed always, for the noise floor
 	buf    []int16
 	spare  []int16
 	notify chan struct{}
@@ -106,10 +107,11 @@ func New(d Deps) *Session {
 }
 
 // Audio takes a 16 kHz block from the audio goroutine. It never blocks:
-// the block is copied only while the session listens, and dropped otherwise
-// or when the buffer is full.
+// the block's level is noted, and the block is copied only while the session
+// listens, and dropped otherwise or when the buffer is full.
 func (s *Session) Audio(pcm []int16) {
 	s.amu.Lock()
+	s.lv.push(pcm)
 	if s.open {
 		n := min(len(pcm), maxBuffered-len(s.buf))
 		s.buf = append(s.buf, pcm[:n]...)
@@ -182,7 +184,7 @@ func (s *Session) listening() bool {
 }
 
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRequest func()) {
-	s.duck(duckGain)
+	s.duck(gen, duckGain)
 	noRequest := func(first bool) {
 		if first && onNoRequest != nil {
 			onNoRequest()
@@ -193,12 +195,12 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 		if !first {
 			limit, state = followLimit, "followup"
 		}
-		audio, ok := s.listen(ctx, gen, state, limit)
-		if ctx.Err() != nil {
+		audio, res := s.listen(ctx, gen, state, limit)
+		if ctx.Err() != nil || res == epStalled {
 			s.idle(gen)
 			return
 		}
-		if !ok {
+		if res == epNoSpeech {
 			noRequest(first)
 			s.idle(gen)
 			return
@@ -251,11 +253,12 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 	}
 }
 
-// listen takes audio until the endpointer has an utterance; ok is false for
-// no speech or a cancel.
-func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration) (utt []int16, ok bool) {
+// listen takes audio until the endpointer has an utterance (epDone), finds
+// none (epNoSpeech) or audio stops (epStalled). A cancel gives epPending.
+func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration) ([]int16, epResult) {
 	s.amu.Lock()
 	s.buf, s.open = s.buf[:0], true
+	floor := s.lv.floor()
 	s.amu.Unlock()
 	defer func() {
 		s.amu.Lock()
@@ -263,26 +266,26 @@ func (s *Session) listen(ctx context.Context, gen int, state string, limit time.
 		s.amu.Unlock()
 	}()
 	s.set(gen, state, "listening")
-	ep := newEndpointer(limit)
+	ep := newEndpointer(limit, floor)
 	guard := s.after(limit + maxUtterance + listenSlack)
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, false
+			return nil, epPending
 		case <-guard:
-			log.Printf("assistant: no audio while listening")
-			return nil, false
+			log.Printf("assistant: audio stalled while listening")
+			return nil, epStalled
 		case <-s.notify:
 		}
 		s.amu.Lock()
 		blk := s.buf
 		s.buf, s.spare = s.spare[:0], blk
 		s.amu.Unlock()
-		switch ep.push(blk) {
+		switch r := ep.push(blk); r {
 		case epNoSpeech:
-			return nil, false
+			return nil, r
 		case epDone:
-			return ep.utterance(), true
+			return ep.utterance(), r
 		}
 	}
 }
@@ -353,12 +356,16 @@ func (s *Session) idle(gen int) {
 	s.setLocked("idle")
 	s.hist = nil
 	s.mu.Unlock()
-	s.duck(1)
+	s.duck(gen, 1)
 	s.led(gen, proto.Event{T: "ai"})
 }
 
-func (s *Session) duck(f float64) {
-	if s.d.Duck != nil {
+// duck sets the music's gain unless gen is stale, as led does.
+func (s *Session) duck(gen int, f float64) {
+	s.mu.Lock()
+	stale := gen != s.gen
+	s.mu.Unlock()
+	if !stale && s.d.Duck != nil {
 		s.d.Duck(f)
 	}
 }

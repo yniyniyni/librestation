@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"net/url"
 	"slices"
@@ -117,7 +118,9 @@ func (f *fakeTTS) Synth(_ context.Context, text string) ([]int16, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.texts = append(f.texts, text)
-	return make([]int16, 2400), 24000, nil
+	pcm := make([]int16, 2400)
+	pcm[0] = int16(len(f.texts)) // which synthesis this was
+	return pcm, 24000, nil
 }
 
 func (f *fakeTTS) said() []string {
@@ -131,6 +134,7 @@ func (f *fakeTTS) said() []string {
 type player struct {
 	mu        sync.Mutex
 	plays     int
+	order     []int16 // pcm[0] of each play
 	cancelled int
 	hold      chan struct{}
 }
@@ -138,6 +142,7 @@ type player struct {
 func (p *player) Play(ctx context.Context, pcm []int16, rate int) error {
 	p.mu.Lock()
 	p.plays++
+	p.order = append(p.order, pcm[0])
 	hold := p.hold
 	p.mu.Unlock()
 	if hold == nil {
@@ -173,6 +178,7 @@ type rig struct {
 	mu     sync.Mutex
 	leds   []proto.Event
 	ducks  []float64
+	events []string // LED states and ducks, in order
 	stocks []string
 }
 
@@ -185,11 +191,13 @@ func newRig(t *testing.T, steps ...func(context.Context, agent.Request, func(str
 		Duck: func(f float64) {
 			g.mu.Lock()
 			g.ducks = append(g.ducks, f)
+			g.events = append(g.events, fmt.Sprintf("duck %g", f))
 			g.mu.Unlock()
 		},
 		LED: func(e proto.Event) {
 			g.mu.Lock()
 			g.leds = append(g.leds, e)
+			g.events = append(g.events, "led "+map[bool]string{true: e.A, false: "off"}[e.On])
 			g.mu.Unlock()
 		},
 		Stock: func(name string) ([]int16, int, error) {
@@ -308,7 +316,7 @@ func TestHappyPath(t *testing.T) {
 	if d := g.duckLog(); len(d) < 2 || d[0] != duckGain || d[len(d)-1] != 1 || slices.Contains(d[:len(d)-1], 1) {
 		t.Errorf("duck %v, want 0.2 … 1", d)
 	}
-	if reqs := g.llm.requests(); len(reqs) != 1 || !near(audioLen(reqs[0]), 1300*time.Millisecond, 60*time.Millisecond) {
+	if reqs := g.llm.requests(); len(reqs) != 1 || !near(audioLen(reqs[0]), 1450*time.Millisecond, 60*time.Millisecond) {
 		t.Errorf("requests %d, audio %v", len(reqs), audioLen(reqs[0]))
 	}
 	st := g.s.Status()
@@ -411,7 +419,7 @@ func TestFollowUpStartsAfterPlaybackDrains(t *testing.T) {
 	if n := len(reqs[1].Contents); n != 3 {
 		t.Errorf("second turn has %d contents, want the first turn's history and new audio", n)
 	}
-	if d := audioLen(reqs[1]); !near(d, 1300*time.Millisecond, 60*time.Millisecond) {
+	if d := audioLen(reqs[1]); !near(d, 1450*time.Millisecond, 60*time.Millisecond) {
 		t.Errorf("follow-up audio %v: audio from before the follow-up leaked in", d)
 	}
 }
@@ -469,4 +477,145 @@ func TestStartConversationNotReadyYet(t *testing.T) {
 	}
 	g.clock.Advance(followDelay)
 	g.untilState("followup")
+}
+
+func (g *rig) eventLog() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.events)
+}
+
+// stuck is a model call that hangs until cancelled; started is closed when
+// it begins.
+func stuck(started chan struct{}) func(context.Context, agent.Request, func(string)) (agent.Content, error) {
+	return func(ctx context.Context, _ agent.Request, _ func(string)) (agent.Content, error) {
+		close(started)
+		<-ctx.Done()
+		return agent.Content{}, ctx.Err()
+	}
+}
+
+// toFollowUp runs one request through its reply into the follow-up listen.
+func (g *rig) toFollowUp() {
+	g.t.Helper()
+	g.untilListening()
+	g.say(g.utterance())
+	g.until("follow-up wait", func() bool { return g.clock.pending(followDelay) })
+	g.clock.Advance(followDelay)
+	g.untilState("followup")
+	g.untilListening()
+}
+
+func TestBargeInNoStaleLEDOrDuck(t *testing.T) {
+	g := newRig(t, reply("Ставлю."), reply("Хорошо."))
+	g.player.hold = make(chan struct{})
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.untilState("speaking")
+	g.wake(nil)
+	g.until("playback cancelled", func() bool { _, c := g.player.counts(); return c == 1 })
+	g.untilListening()
+	g.until("new run's LED", func() bool { ev := g.eventLog(); return ev[len(ev)-1] == "led listening" })
+	ev := g.eventLog()
+	if slices.Contains(ev, "led off") || slices.Contains(ev, "duck 1") {
+		t.Errorf("events %v: the cancelled run went idle", ev)
+	}
+	if want := []string{"duck 0.2", "led listening"}; !slices.Equal(ev[len(ev)-2:], want) {
+		t.Errorf("events %v, want the new run to end with %v", ev, want)
+	}
+}
+
+func TestWakeWhileThinkingDropsInFlightTurn(t *testing.T) {
+	started := make(chan struct{})
+	g := newRig(t, reply("Ставлю."), stuck(started), reply("Хорошо."))
+	g.wake(nil)
+	g.toFollowUp()
+	g.say(g.utterance())
+	<-started
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.until("third reply", func() bool { return len(g.tts.said()) == 2 })
+	reqs := g.llm.requests()
+	if len(reqs) != 3 {
+		t.Fatalf("%d model calls, want 3", len(reqs))
+	}
+	// The first turn (audio + reply) is kept; the cancelled one is not.
+	if n := len(reqs[2].Contents); n != 3 {
+		t.Errorf("third turn has %d contents, want 3", n)
+	}
+}
+
+func TestWakeFromIdleFreshHistory(t *testing.T) {
+	g := newRig(t, reply("Ставлю."), reply("Хорошо."))
+	g.wake(nil)
+	g.toFollowUp()
+	g.say(noise(g.r, followLimit+100*time.Millisecond, quietDB))
+	g.untilState("idle")
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.until("second reply", func() bool { return len(g.tts.said()) == 2 })
+	if reqs := g.llm.requests(); len(reqs) != 2 || len(reqs[1].Contents) != 1 {
+		t.Errorf("a wake from idle should start without history")
+	}
+}
+
+func TestFollowUpNoSpeechClearsHistory(t *testing.T) {
+	g := newRig(t, reply("Ставлю."))
+	g.wake(nil)
+	g.toFollowUp()
+	g.s.mu.Lock()
+	had := len(g.s.hist)
+	g.s.mu.Unlock()
+	g.say(noise(g.r, followLimit+100*time.Millisecond, quietDB))
+	g.untilState("idle")
+	g.s.mu.Lock()
+	left := len(g.s.hist)
+	g.s.mu.Unlock()
+	if had == 0 || left != 0 {
+		t.Errorf("history %d during follow-up, %d after; want kept, then cleared", had, left)
+	}
+	if d := g.duckLog(); d[len(d)-1] != 1 {
+		t.Errorf("duck %v, want restored", d)
+	}
+}
+
+func TestAudioStallGoesIdleQuietly(t *testing.T) {
+	g := newRig(t)
+	g.wake(func() { t.Error("onNoRequest called for a stall") })
+	g.untilListening()
+	stall := startLimit + maxUtterance + listenSlack
+	g.until("guard", func() bool { return g.clock.pending(stall) })
+	g.clock.Advance(stall)
+	g.untilState("idle")
+	if p, _ := g.player.counts(); p != 0 || len(g.stockLog()) != 0 {
+		t.Errorf("plays %d, stock %q; want silence", p, g.stockLog())
+	}
+}
+
+func TestMultiSentenceReplyPipelined(t *testing.T) {
+	g := newRig(t, reply("Ставлю. Готово."))
+	g.player.hold = make(chan struct{})
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.untilState("speaking")
+	// Sentence 2 is synthesised while sentence 1 is still playing.
+	g.until("second synthesis", func() bool { return len(g.tts.said()) == 2 })
+	if p, _ := g.player.counts(); p != 1 {
+		t.Errorf("plays %d while the first is held, want 1", p)
+	}
+	close(g.player.hold)
+	g.until("both played", func() bool { p, _ := g.player.counts(); return p == 2 })
+	if got := g.tts.said(); !slices.Equal(got, []string{"Ставлю.", "Готово."}) {
+		t.Errorf("tts got %q", got)
+	}
+	g.player.mu.Lock()
+	order := slices.Clone(g.player.order)
+	g.player.mu.Unlock()
+	if !slices.Equal(order, []int16{1, 2}) {
+		t.Errorf("play order %v, want [1 2]", order)
+	}
 }
