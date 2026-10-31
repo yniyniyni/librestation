@@ -5,10 +5,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
-	"voice/internal/dsp"
+	"voice/internal/capture"
 	"voice/internal/wav"
 )
 
@@ -96,28 +97,23 @@ func TestPushNoAlloc(t *testing.T) {
 	}
 }
 
-// rawGain is the spotter's input gain from the plan's global constraints.
-const rawGain = 1.0 / 64
-
-// rawCh0 reads channel 0 of a 16-channel 48 kHz capture the way voiced
-// feeds the spotter: DC-removing mixer, 3:1 decimator, then rawGain.
+// rawCh0 reads a 16-channel 48 kHz capture and runs it through Input the
+// way voiced feeds the spotter. The reader keeps channel 0 only, so the
+// other channels of each block are left silent.
 func rawCh0(t *testing.T, path string) []float32 {
 	t.Helper()
-	ch0, err := wav.ReadFile(path, 48000) // keeps channel 0
+	ch0, err := wav.ReadFile(path, capture.Rate) // keeps channel 0
 	if err != nil {
 		t.Fatal(err)
 	}
-	const block = 960
-	mix, dec := dsp.NewMixer(block), dsp.NewDecimator3()
+	in := NewInput()
+	blk := make([]int16, capture.BlockFrames*capture.Channels)
 	var out []float32
-	for p := 0; p+block <= len(ch0); p += block {
-		b := make([]float32, block)
-		for i, v := range ch0[p : p+block] {
-			b[i] = float32(v)
+	for p := 0; p+capture.BlockFrames <= len(ch0); p += capture.BlockFrames {
+		for i, v := range ch0[p : p+capture.BlockFrames] {
+			blk[i*capture.Channels] = v
 		}
-		for _, v := range dec.Process(mix.Mix([][]float32{b})) {
-			out = append(out, v*rawGain)
-		}
+		out = append(out, in.Process(blk)...)
 	}
 	return out
 }
@@ -135,7 +131,7 @@ func TestRealClips(t *testing.T) {
 	for _, c := range m.Commands {
 		single[c.Name] = len(c.Labels) == 1
 	}
-	spoken := "стоп пауза продолжи дальше назад громче тише хватит следующий"
+	spoken := strings.Fields("стоп пауза продолжи дальше назад громче тише хватит следующий")
 	for _, name := range []string{"near", "far", "music", "talk", "ambient"} {
 		pcm := rawCh0(t, filepath.Join(clips, name+".wav"))
 		var hits []string
@@ -146,7 +142,7 @@ func TestRealClips(t *testing.T) {
 			k := min(320, len(pcm))
 			s.Push(pcm[:k], func(cmd string, conf float64) {
 				hits = append(hits, fmt.Sprintf("%.2fs %s %.3f", float64(samples+k)/16000, cmd, conf))
-				if single[cmd] && (len(singles) == 0 || singles[len(singles)-1] != cmd) {
+				if single[cmd] {
 					singles = append(singles, cmd)
 				}
 			})
@@ -160,8 +156,10 @@ func TestRealClips(t *testing.T) {
 				t.Errorf("%s: %d fires, want none", name, len(hits))
 			}
 		default:
-			if got := strings.Join(singles, " "); got != spoken {
-				t.Errorf("%s: single commands %q, want %q", name, got, spoken)
+			// Exactly one fire per spoken command: a double fire would
+			// be a double volume step in the daemon.
+			if len(hits) != len(spoken) || !slices.Equal(singles, spoken) {
+				t.Errorf("%s: %d fires, single commands %q, want exactly %q", name, len(hits), singles, spoken)
 			}
 		}
 	}

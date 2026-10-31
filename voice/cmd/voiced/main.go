@@ -13,6 +13,7 @@ const usage = `usage:
   voiced train [flags]      train a word from WAV files
   voiced scan model.json... audio.wav
   voiced replay [flags] in16ch.wav [out16k.wav]
+  voiced ycmd [-dir model] in16ch.wav...
 `
 
 func main() {
@@ -33,6 +34,8 @@ func main() {
 		err = cmdTrain(os.Args[2:])
 	case "replay":
 		err = cmdReplay(os.Args[2:])
+	case "ycmd":
+		err = cmdYcmd(os.Args[2:])
 	case "scan":
 		err = cmdScan(os.Args[2:])
 	default:
