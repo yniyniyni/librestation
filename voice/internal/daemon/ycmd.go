@@ -50,29 +50,49 @@ type spotter interface {
 	Push(pcm []float32, fire func(cmd string, conf float64))
 }
 
-// spotCommands runs the spotter over one raw capture block. It runs on the
-// audio goroutine without d.mu.
+// LiveGain scales channel 0 (at its own level) for the assistant's Live
+// session. On the device user speech peaks at p99 about -22...-24 dBFS at
+// x1, which is too quiet for the model's voice detection; x2 is enough.
+const LiveGain = 2
+
+// spotCommands takes one raw capture block's channel 0 at 16 kHz, once, and
+// shares it: the Yandex spotter (when the model is loaded) and the
+// assistant's Live session (when there is one). It runs on the audio
+// goroutine without d.mu.
 func (d *Daemon) spotCommands(block []int16) {
-	if d.spot == nil {
+	asst := d.opt.Assistant
+	if d.spot == nil && asst == nil {
 		return
 	}
-	pcm := d.yin.Process(block)
-	// The clip keeps channel 0 at its own level, like our words' clips; the
-	// spotter gets it at InputGain.
-	clip := make([]int16, len(pcm))
-	for i, v := range pcm {
-		clip[i] = int16(max(min(math.Round(float64(v)/ycmd.InputGain), math.MaxInt16), math.MinInt16))
+	if d.yin == nil {
+		d.yin = ycmd.NewInput()
 	}
-	d.mu.Lock()
-	d.yring.write(clip)
-	d.mu.Unlock()
-	d.spot.Push(pcm, func(cmd string, conf float64) {
-		d.mu.Lock()
-		defer d.mu.Unlock()
-		if d.paused == 0 {
-			d.onCommand(cmd, conf)
+	pcm := d.yin.Process(block)
+	// Channel 0 at its own level (like our words' clips) is the spotter's
+	// input divided by InputGain.
+	level := func(gain float64) []int16 {
+		out := make([]int16, len(pcm))
+		for i, v := range pcm {
+			out[i] = int16(max(min(math.Round(float64(v)/ycmd.InputGain*gain), math.MaxInt16), math.MinInt16))
 		}
-	})
+		return out
+	}
+	if d.spot != nil {
+		clip := level(1)
+		d.mu.Lock()
+		d.yring.write(clip)
+		d.mu.Unlock()
+		d.spot.Push(pcm, func(cmd string, conf float64) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if d.paused == 0 {
+				d.onCommand(cmd, conf)
+			}
+		})
+	}
+	if asst != nil {
+		asst.LiveAudio(level(LiveGain))
+	}
 }
 
 // onCommand records a Yandex command and runs it when the situation allows;

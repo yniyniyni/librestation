@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"voice/internal/assistant"
+	miccap "voice/internal/capture"
 	"voice/internal/judge"
 	"voice/internal/spotifyapi"
 	"voice/internal/ycmd"
@@ -24,11 +26,17 @@ type fakeAssistant struct {
 	busy   bool
 	wakes  int
 	blocks int
+	live   [][]int16 // LiveAudio blocks
 	hushes int
 	state  string // "" = from busy
 	noReq  func()
 }
 
+func (f *fakeAssistant) LiveAudio(p []int16) {
+	f.mu.Lock()
+	f.live = append(f.live, append([]int16(nil), p...))
+	f.mu.Unlock()
+}
 func (f *fakeAssistant) Audio([]int16) { f.mu.Lock(); f.blocks++; f.mu.Unlock() }
 func (f *fakeAssistant) Wake(_ context.Context, n func()) {
 	f.mu.Lock()
@@ -115,6 +123,44 @@ func TestAssistantAudioEveryBlock(t *testing.T) {
 	d.onAudio(make([]int16, 320))
 	if a.blocks != 2 {
 		t.Fatalf("blocks %d", a.blocks)
+	}
+}
+
+// TestAssistantLiveAudio: channel 0 of a raw block reaches the assistant as
+// one 16 kHz block of 320 samples at x1 times LiveGain, with or without the
+// Yandex model; without an assistant nothing is computed.
+func TestAssistantLiveAudio(t *testing.T) {
+	blk := make([]int16, miccap.BlockFrames*miccap.Channels)
+	for i := 0; i < miccap.BlockFrames; i++ {
+		blk[i*miccap.Channels] = int16(8000 * math.Sin(2*math.Pi*1000*float64(i)/48000))
+		blk[i*miccap.Channels+1] = 30000 // other channels are not used
+	}
+	d, a := newAsst(t, &fakeAct{}, "")
+	for i := 0; i < 30; i++ { // let the DC-removing mixer and decimator settle
+		d.spotCommands(blk)
+	}
+	if len(a.live) != 30 || len(a.live[29]) != 320 {
+		t.Fatalf("blocks %d", len(a.live))
+	}
+	var peak int16
+	for _, v := range a.live[29] {
+		peak = max(peak, v)
+	}
+	// 8000 at 1 kHz passes the decimator about unchanged: x2 -> ~16000.
+	if peak < 13000 || peak > 18000 {
+		t.Fatalf("peak %d, want about 16000", peak)
+	}
+	if d.yin == nil || d.spot != nil {
+		t.Fatalf("yin %v spot %v", d.yin, d.spot)
+	}
+
+	d2, err := New(Options{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2.spotCommands(blk)
+	if d2.yin != nil {
+		t.Fatal("channel 0 computed without assistant and model")
 	}
 }
 

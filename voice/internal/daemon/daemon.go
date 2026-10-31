@@ -77,6 +77,9 @@ type Assistant interface {
 	Hush()
 	// State is idle|listening|thinking|speaking|followup.
 	State() string
+	// LiveAudio takes 16 kHz channel 0 of the raw capture (x LiveGain) for
+	// the Live session.
+	LiveAudio([]int16)
 }
 
 // Settings is persisted in <data>/settings.json.
