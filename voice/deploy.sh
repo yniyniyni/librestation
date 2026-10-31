@@ -43,8 +43,11 @@ need_cmd go
 need_cmd javac
 need_cmd "$py"
 
-(cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/voiced ./cmd/voiced)
-(cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/ledd ./cmd/ledd)
+# -buildvcs=false: under sudo git refuses a repo owned by another user
+# ("dubious ownership") and go build fails with "error obtaining VCS status".
+echo "building voiced, ledd"
+(cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -o dist/voiced ./cmd/voiced)
+(cd "$here" && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -o dist/ledd ./cmd/ledd)
 ANDROID_SDK="$sdk" sh "$here/mic/build.sh"
 
 ndk=${NDK:-}
@@ -59,12 +62,15 @@ if [ -z "$ndk" ] || [ ! -d "$ndk" ]; then
 fi
 clang=$(find "$ndk/toolchains/llvm/prebuilt" -type f -name aarch64-linux-android28-clang -print -quit)
 [ -n "$clang" ] || { echo "aarch64-linux-android28-clang not found under $ndk" >&2; exit 1; }
+echo "building aaudio_pipe"
 "$clang" -O2 -Wall \
     -o "$here/../aaudio-pipe/aaudio_pipe" "$here/../aaudio-pipe/aaudio_pipe.c" -laaudio
 if [ ! -s "$here/dist/negatives.bin" ]; then
+    echo "downloading negatives.bin (~25 MB from huggingface.co, once)"
     "$py" -I "$here/tools/build_negatives.py" "$here/dist/negatives.bin"
 fi
 
+echo "pushing to $dev"
 root_shell "mkdir -p $voice_dir/data $soloist_dir"
 for f in dist/voiced dist/ledd dist/mic.dex dist/negatives.bin mic/mic.sh mic/hwvol.sh; do
     adb_cmd push "$here/$f" "$voice_dir/$(basename "$f")"
