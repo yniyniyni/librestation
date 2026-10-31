@@ -131,6 +131,8 @@ func (d *Daemon) saveHit(h *Hit) {
 			os.MkdirAll(filepath.Dir(p), 0o755)
 			if err := wav.WriteFile(p, audio, kws.SampleRate); err != nil {
 				log.Printf("hits: false clip: %v", err)
+			} else {
+				go d.autoRetrain(word)
 			}
 		}
 	}

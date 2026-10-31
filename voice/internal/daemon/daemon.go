@@ -102,7 +102,8 @@ type Hit struct {
 type Daemon struct {
 	opt Options
 
-	onActionDone func() // test hook
+	onActionDone func()             // test hook
+	retrain      func(string) error // test hook for autoRetrain; nil = startTraining
 
 	mu       sync.Mutex
 	settings Settings

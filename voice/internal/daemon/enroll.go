@@ -263,6 +263,7 @@ func (d *Daemon) finishEnroll(action *string) error {
 // startTraining (re)trains a word from its saved recordings.
 // A non-nil action is saved into the word's settings once training succeeds.
 func (d *Daemon) startTraining(id string, action *string) error {
+	start := time.Now() // false clips saved after this are not in this training
 	dir := d.wordDir(id)
 	name, err := os.ReadFile(filepath.Join(dir, "name.txt"))
 	if err != nil {
@@ -292,7 +293,6 @@ func (d *Daemon) startTraining(id string, action *string) error {
 	d.mu.Unlock()
 
 	go func() {
-		start := time.Now()
 		m, err := d.trainWord(string(name), en, action)
 		d.mu.Lock()
 		d.train.Active = false
@@ -304,7 +304,9 @@ func (d *Daemon) startTraining(id string, action *string) error {
 		}
 		d.train.Done = id
 		d.mu.Unlock()
+		d.markTrained(id, start)
 		log.Printf("trained %s in %s: threshold %.2f recall %.2f", id, time.Since(start).Round(time.Second), m.Threshold, m.Recall)
+		d.autoRetrainAny() // clips that came in meanwhile, or another word's turn
 	}()
 	return nil
 }

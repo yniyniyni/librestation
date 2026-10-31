@@ -31,6 +31,7 @@ type wordView struct {
 	FalsePerH   float64   `json:"false_per_h"`
 	Takes       int       `json:"takes"`
 	FalseClips  int       `json:"false_clips"`
+	NewFalses   int       `json:"new_falses"` // since the last training; autoRetrainFalses retrains
 	Created     time.Time `json:"created"`
 	Score       float32   `json:"score"`
 	Notes       []string  `json:"notes,omitempty"`
@@ -84,7 +85,7 @@ func (d *Daemon) state() stateView {
 		v.Words = append(v.Words, wordView{
 			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity, Action: s.Action,
 			Threshold: w.Model.Threshold, Recall: w.Model.Recall, FalsePerH: w.Model.FalsePerH,
-			Takes: w.Model.Takes, FalseClips: len(falses), Created: w.Model.Created,
+			Takes: w.Model.Takes, FalseClips: len(falses), NewFalses: d.newFalses(w.ID), Created: w.Model.Created,
 			Score: scores[w.ID], Notes: w.Model.TrainNotes,
 		})
 	}
