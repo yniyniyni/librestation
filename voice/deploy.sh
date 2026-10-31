@@ -92,6 +92,7 @@ fi
 EOF2
 adb_cmd push "$here/dist/ledd-assets.sh" "$base/ledd-assets.sh"
 root_shell "sh $base/ledd-assets.sh" || echo "warning: ledd asset copy failed, keeping existing assets"
+adb_cmd shell "rm -f $base/ledd-assets.sh"
 
 root_shell "ls -l $voice_dir $soloist_dir"
 printf '%s\n' "deployed to $dev: voice=$voice_dir soloist=$soloist_dir"
