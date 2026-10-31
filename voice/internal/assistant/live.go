@@ -50,6 +50,9 @@ const (
 	liveStall = 15 * time.Second
 	// toolTimeout bounds one tool call.
 	toolTimeout = 15 * time.Second
+	// liveDialLimit bounds the first dial of a conversation: past it the
+	// agent takes over, with what the user said meanwhile.
+	liveDialLimit = 3 * time.Second
 )
 
 const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation.`
@@ -79,16 +82,37 @@ func pcm24(blob *geminilive.Blob) ([]int16, error) {
 }
 
 // liveOn makes LiveAudio queue for sending, starting with the pre-roll when
-// seed is set, and arms the voice watch.
-func (s *Session) liveOn(seed bool) {
+// seed is set, and arms the voice watch. It returns the pre-roll's length.
+func (s *Session) liveOn(seed bool) int {
 	s.amu.Lock()
 	s.live, s.lq = true, s.lq[:0]
 	if seed {
 		s.lq = s.lraw.appendTo(s.lq)
 	}
+	n := len(s.lq)
 	s.watch.arm()
 	s.amu.Unlock()
 	poke(s.lnote)
+	return n
+}
+
+// liveLeft is what a failed first dial leaves for the agent: the pre-roll
+// and what the user said while it was dialling, both from channel 0.
+type liveLeft struct {
+	tried       bool // the conversation tried Live first
+	seed, heard []int16
+}
+
+// liveTake stops the queue and hands back what was in it; seeded samples at
+// its front are the pre-roll. The queue holds more than a dial may take, so
+// nothing was dropped from it.
+func (s *Session) liveTake(seeded int) liveLeft {
+	s.amu.Lock()
+	defer s.amu.Unlock()
+	q := append([]int16(nil), s.lq...)
+	s.live, s.lq = false, s.lq[:0]
+	seeded = min(seeded, len(q))
+	return liveLeft{tried: true, seed: q[:seeded], heard: q[seeded:]}
 }
 
 func (s *Session) liveOff() {
@@ -144,6 +168,7 @@ type liveRun struct {
 
 	state     string
 	user      bool      // the voice watch hears the user
+	userAt    time.Time // when the user was last heard to start or transcribed
 	turn      *liveTurn // nil between turns
 	turns     int
 	drop      bool // a barge-in cut the reply: drop the rest of its audio
@@ -162,25 +187,26 @@ type liveRun struct {
 }
 
 type toolBatch struct {
-	ids []string
-	err error // from Respond
+	conn *liveConn // the connection the calls came on
+	ids  []string
+	err  error // from Respond
 }
 
 // runLive holds the conversation over one Live session. It reports false,
-// having done nothing else, when Live does not connect: the conversation then
-// goes to the agent.
-func (s *Session) runLive(ctx context.Context, gen int, lp livePlayer, seed bool, onNoRequest func()) bool {
-	s.liveOn(seed) // audio queues while the connection opens
+// having done nothing else, when Live does not connect within liveDialLimit:
+// the conversation then goes to the agent, with what Live would have heard.
+func (s *Session) runLive(ctx context.Context, gen int, lp livePlayer, seed bool, onNoRequest func()) (bool, liveLeft) {
+	seeded := s.liveOn(seed) // audio queues while the connection opens
 	started := time.Now()
-	c, err := s.d.Live(ctx, "")
+	c, err := s.dialFirst(ctx)
 	if err != nil {
-		s.liveOff()
+		left := s.liveTake(seeded)
 		if ctx.Err() != nil {
 			s.idle(gen)
-			return true
+			return true, liveLeft{}
 		}
 		log.Printf("assistant: Live unavailable, using the agent: %v", err)
-		return false
+		return false, left
 	}
 	log.Printf("assistant: Live session open in %v", time.Since(started).Round(time.Millisecond))
 	r := &liveRun{s: s, gen: gen, ctx: ctx, lp: lp, onNoRequest: onNoRequest,
@@ -189,7 +215,44 @@ func (s *Session) runLive(ctx context.Context, gen int, lp livePlayer, seed bool
 		r.byName[t.Decl().Name] = t
 	}
 	r.run(c)
-	return true
+	return true, liveLeft{}
+}
+
+// dialFirst opens the conversation's Live session, giving up after
+// liveDialLimit. The bound only cancels a dial still under way: the context
+// of one that succeeded is left alone, as the connection may depend on it.
+func (s *Session) dialFirst(ctx context.Context) (LiveSession, error) {
+	dctx, cancel := context.WithCancel(ctx)
+	var mu sync.Mutex
+	dialled, late := false, false
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-s.after(liveDialLimit):
+			mu.Lock()
+			if !dialled {
+				late = true
+				cancel()
+			}
+			mu.Unlock()
+		case <-stop:
+		}
+	}()
+	c, err := s.d.Live(dctx, "")
+	mu.Lock()
+	dialled = true
+	mu.Unlock()
+	close(stop)
+	if late {
+		if err == nil {
+			c.Close()
+		}
+		return nil, fmt.Errorf("assistant: Live did not connect in %v", liveDialLimit)
+	}
+	if err != nil {
+		cancel()
+	}
+	return c, err
 }
 
 func (r *liveRun) run(c LiveSession) {
@@ -250,6 +313,10 @@ func (r *liveRun) loop() {
 		case b := <-r.toolDone:
 			ok = r.toolsDone(b)
 		case <-r.window:
+			if r.user && r.s.d.Now().Sub(r.userAt) < maxUtterance {
+				r.listen(r.wait) // not while the user speaks
+				continue
+			}
 			r.why = "silence"
 			if r.turns == 0 && r.onNoRequest != nil && r.s.current(r.gen) {
 				r.onNoRequest()
@@ -287,6 +354,7 @@ func (r *liveRun) listen(wait time.Duration) {
 // followup waits wait for the user after a reply has played.
 func (r *liveRun) followup(wait time.Duration) {
 	r.s.rearm()
+	r.user = false // the reply's echo is forgotten with the watch's past
 	r.wait, r.window, r.stall = wait, r.s.after(wait), nil
 	r.to("followup")
 }
@@ -365,6 +433,7 @@ func (r *liveRun) message(lm liveMsg) bool {
 		if tr := c.InputTranscription; tr != nil && tr.Text != "" {
 			t := r.begin()
 			t.heard += tr.Text
+			r.userAt = r.s.d.Now()
 			r.s.recordLive(r.gen, t)
 			if r.waiting() {
 				if r.user {
@@ -491,6 +560,9 @@ func (r *liveRun) voice() {
 	if ev&evLoud != 0 && r.state == "speaking" {
 		r.bargeIn()
 	}
+	if ev&evStart != 0 {
+		r.userAt = r.s.d.Now()
+	}
 	if ev&evStart != 0 && r.waiting() {
 		r.listen(r.wait) // speech resets the window
 	}
@@ -516,6 +588,9 @@ func (r *liveRun) lost(err error) bool {
 	}
 	if r.turn != nil {
 		r.endTurn("connection ended")
+	}
+	if r.state == "speaking" || r.finishing {
+		r.out.flush() // the reply is not coming back
 	}
 	r.drop, r.finishing = false, false
 	if !r.resume() {
@@ -559,7 +634,7 @@ func (r *liveRun) call(calls []geminilive.FunctionCall) {
 		ctxs[i], stops[i] = context.WithTimeout(r.tctx, toolTimeout)
 		r.cancels[c.ID], ids[i] = stops[i], c.ID
 	}
-	conn := r.conn.c
+	lc := r.conn
 	r.twg.Add(1)
 	go func() {
 		defer r.twg.Done()
@@ -576,10 +651,10 @@ func (r *liveRun) call(calls []geminilive.FunctionCall) {
 		}
 		var err error
 		if len(resps) > 0 {
-			err = conn.Respond(r.tctx, resps)
+			err = lc.c.Respond(r.tctx, resps)
 		}
 		select {
-		case r.toolDone <- toolBatch{ids, err}:
+		case r.toolDone <- toolBatch{lc, ids, err}:
 		case <-r.tctx.Done():
 		}
 	}()
@@ -612,7 +687,13 @@ func (r *liveRun) toolsDone(b toolBatch) bool {
 		delete(r.cancels, id)
 	}
 	if b.err != nil {
-		return r.lost(b.err)
+		if b.conn != r.conn {
+			// The calls came on a connection since replaced: its answer is
+			// lost with it, the conversation goes on.
+			log.Printf("assistant: Live: tool answer for a replaced connection: %v", b.err)
+		} else {
+			return r.lost(b.err)
+		}
 	}
 	if r.tools == 0 && !r.finishing && (r.state == "thinking" || r.state == "speaking") {
 		r.stall = r.s.after(liveStall)

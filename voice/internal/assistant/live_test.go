@@ -22,9 +22,10 @@ type fakeLive struct {
 	closed chan struct{}
 	once   sync.Once
 
-	mu    sync.Mutex
-	sent  int // samples streamed
-	resps []geminilive.FunctionResponse
+	mu       sync.Mutex
+	sent     int // samples streamed
+	resps    []geminilive.FunctionResponse
+	attempts int // Respond calls, failed ones too
 }
 
 type fakeEvent struct {
@@ -55,8 +56,18 @@ func (f *fakeLive) Receive(context.Context) (geminilive.Message, error) {
 func (f *fakeLive) Respond(_ context.Context, r []geminilive.FunctionResponse) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.attempts++
+	if f.isClosed() {
+		return errors.New("fake live: write on a closed connection")
+	}
 	f.resps = append(f.resps, r...)
 	return nil
+}
+
+func (f *fakeLive) respondAttempts() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.attempts
 }
 
 func (f *fakeLive) Close() { f.once.Do(func() { close(f.closed) }) }
@@ -89,6 +100,8 @@ type fakeOut struct {
 	chunks   int
 	finishes int
 	flushes  int
+	hold     chan struct{} // while set, FinishLive waits for it, a Flush or ctx
+	cut      chan struct{} // closed by Flush
 }
 
 func (o *fakeOut) PlayLive(context.Context, []int16, int) error {
@@ -98,17 +111,42 @@ func (o *fakeOut) PlayLive(context.Context, []int16, int) error {
 	return nil
 }
 
-func (o *fakeOut) FinishLive(context.Context) error {
+func (o *fakeOut) FinishLive(ctx context.Context) error {
 	o.lmu.Lock()
-	defer o.lmu.Unlock()
 	o.finishes++
-	return nil
+	hold := o.hold
+	if o.cut == nil {
+		o.cut = make(chan struct{})
+	}
+	cut := o.cut
+	o.lmu.Unlock()
+	if hold == nil {
+		return nil
+	}
+	select {
+	case <-hold:
+		return nil
+	case <-cut:
+		return ErrFlushed
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (o *fakeOut) Flush() {
 	o.lmu.Lock()
 	defer o.lmu.Unlock()
 	o.flushes++
+	if o.cut != nil {
+		close(o.cut)
+		o.cut = nil
+	}
+}
+
+func (o *fakeOut) setHold(h chan struct{}) {
+	o.lmu.Lock()
+	defer o.lmu.Unlock()
+	o.hold = h
 }
 
 func (o *fakeOut) counts() (chunks, finishes, flushes int) {
@@ -122,11 +160,12 @@ type liveRig struct {
 	*rig
 	out *fakeOut
 
-	dmu     sync.Mutex
-	conns   []*fakeLive // handed out by Live, in order
-	handles []string    // what each Live call was given
-	dialErr error
-	base    int // goroutines before the conversation
+	dmu       sync.Mutex
+	conns     []*fakeLive // handed out by Live, in order
+	handles   []string    // what each Live call was given
+	dialErr   error
+	dialBlock bool // Live waits for its ctx, then fails
+	base      int  // goroutines before the conversation
 }
 
 func newLiveRig(t *testing.T, tools ...agent.Tool) *liveRig {
@@ -134,10 +173,16 @@ func newLiveRig(t *testing.T, tools ...agent.Tool) *liveRig {
 	g.out = &fakeOut{player: g.player}
 	g.s.d.Player = g.out
 	g.s.d.Agent.Tools = tools
-	g.s.d.Live = func(_ context.Context, handle string) (LiveSession, error) {
+	g.s.d.Live = func(ctx context.Context, handle string) (LiveSession, error) {
 		g.dmu.Lock()
 		defer g.dmu.Unlock()
 		g.handles = append(g.handles, handle)
+		if g.dialBlock {
+			g.dmu.Unlock()
+			<-ctx.Done()
+			g.dmu.Lock()
+			return nil, errors.New("live: connection failed")
+		}
 		if g.dialErr != nil {
 			return nil, g.dialErr
 		}
@@ -276,17 +321,23 @@ func mGoAway() geminilive.Message {
 	return m
 }
 
-// liveTool answers {"ok": true}, or err; with block it waits for its ctx.
+// liveTool answers {"ok": true}, or err; with block it waits for its ctx,
+// with release for that (ignoring ctx).
 type liveTool struct {
 	name    string
 	err     error
 	block   bool
 	stopped chan error // gets the ctx error of a blocked run
+	release chan struct{}
 }
 
 func (l liveTool) Decl() agent.FuncDecl { return agent.FuncDecl{Name: l.name} }
 
 func (l liveTool) Run(ctx context.Context, _ map[string]any) (map[string]any, error) {
+	if l.release != nil {
+		<-l.release
+		return map[string]any{"ok": true}, nil
+	}
 	if l.block {
 		<-ctx.Done()
 		l.stopped <- ctx.Err()
@@ -628,5 +679,199 @@ func TestLiveAudioNeverBlocks(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("LiveAudio blocked")
+	}
+}
+
+// count is the number of timers of duration d set so far, fired or not.
+func (c *fakeClock) count(d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.set[d]
+}
+
+// drop breaks the connection: its next Receive fails.
+func (g *liveRig) drop(f *fakeLive) {
+	g.t.Helper()
+	select {
+	case f.in <- fakeEvent{err: errors.New("live: connection reset")}:
+	case <-time.After(5 * time.Second):
+		g.t.Fatal("error not received")
+	}
+}
+
+// settle lets the session act on what it was just given when there is
+// nothing to wait for.
+func settle() { time.Sleep(30 * time.Millisecond) }
+
+// A tool started before a resume answers on the replaced connection; that
+// failure must not end the resumed conversation.
+func TestLiveToolAcrossResume(t *testing.T) {
+	release := make(chan struct{})
+	g := newLiveRig(t, liveTool{name: "web_answer", release: release})
+	f1, f2 := g.conn(), g.conn()
+	g.open()
+	g.send(f1, mHandle("h1"), mHeard("найди"), mTool("q1", "web_answer", `{}`), mGoAway())
+	g.untilState("thinking")
+	g.drop(f1)
+	g.until("resumed", func() bool { return len(g.dials()) == 2 })
+	close(release)
+	g.until("old answer tried", func() bool { return f1.respondAttempts() == 1 })
+	settle()
+	g.reply(f2, "найди ещё", "Нашёл.")
+	if f2.isClosed() {
+		t.Fatal("resumed session closed")
+	}
+}
+
+// The reply's echo made the watch hear "speech"; a follow-up that only the
+// server transcribes still waits for the reply as thinking.
+func TestLiveTranscribedFollowUpThinks(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("расскажи"), mAudio())
+	g.untilState("speaking")
+	g.speak(userSpeech())
+	settle()
+	g.send(f, mDone())
+	g.untilState("followup")
+	n := g.clock.count(liveStall)
+	g.send(f, mHeard("а ещё"))
+	g.untilState("thinking")
+	if g.clock.count(liveStall) == n {
+		t.Error("no stall timer while thinking")
+	}
+}
+
+// The silence window does not end the conversation while the user speaks.
+func TestLiveWindowWaitsForSpeech(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.speak(tone(time.Second, -30)) // untranscribed, still going
+	g.until("speech start", func() bool { return g.clock.count(startLimit) == 2 })
+	g.clock.Advance(startLimit)
+	settle()
+	if f.isClosed() || g.s.State() != "listening" {
+		t.Fatalf("closed mid-speech (state %s)", g.s.State())
+	}
+	g.speak(noise(g.r, time.Second, quietDB)) // the user stops
+	g.until("speech end", func() bool { return g.clock.count(startLimit) >= 4 })
+	g.clock.Advance(startLimit)
+	g.ended()
+}
+
+func TestLiveLostAfterGoAwayFlushes(t *testing.T) {
+	g := newLiveRig(t)
+	f1, f2 := g.conn(), g.conn()
+	g.open()
+	g.send(f1, mHandle("h1"), mHeard("расскажи"), mAudio(), mGoAway())
+	g.untilState("speaking")
+	g.drop(f1)
+	g.until("resumed", func() bool { return len(g.dials()) == 2 })
+	g.untilState("listening")
+	if n := g.flushes(); n != 1 {
+		t.Errorf("flushes %d, want 1: the reply stops while reconnecting", n)
+	}
+	if !f1.isClosed() {
+		t.Error("old connection not closed")
+	}
+	g.reply(f2, "дальше", "Хорошо.")
+}
+
+// A dial that does not answer in time hands what the user said meanwhile to
+// the agent.
+func TestLiveSlowDialFallsBackWithTheWords(t *testing.T) {
+	g := newLiveRig(t)
+	g.llm.steps = append(g.llm.steps, reply("Ставлю."))
+	g.dialBlock = true
+	g.wake(nil)
+	g.until("Live dial", func() bool { return len(g.dials()) == 1 })
+	g.speak(concat(tone(time.Second, -30), noise(g.r, time.Second, quietDB)))
+	g.until("dial bound", func() bool { return g.clock.count(liveDialLimit) == 1 })
+	g.clock.Advance(liveDialLimit)
+	g.until("agent asked", func() bool { return len(g.llm.requests()) == 1 })
+	if d := audioLen(g.llm.requests()[0]); d < time.Second {
+		t.Errorf("agent got %v of audio, want the 1 s said during the dial", d)
+	}
+	g.until("agent reply played", func() bool { p, _ := g.player.counts(); return p == 1 })
+}
+
+// The user speaks over a reply whose end has already arrived: it is cut, and
+// the next reply plays (nothing is left to drop).
+func TestLiveBargeInWhileFinishing(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.out.setHold(make(chan struct{}))
+	g.send(f, mHeard("расскажи"), mAudio(), mDone())
+	g.until("finishing", func() bool { return g.finishes() == 1 })
+	g.speak(loudSpeech())
+	g.until("flush", func() bool { return g.flushes() == 1 })
+	g.untilState("listening")
+	g.out.setHold(nil)
+	g.reply(f, "другое", "Хорошо.")
+	if c := g.chunks(); c != 2 {
+		t.Errorf("played %d chunks, want 2", c)
+	}
+}
+
+func TestLiveGoAwayBetweenTurns(t *testing.T) {
+	g := newLiveRig(t)
+	f1, f2 := g.conn(), g.conn()
+	g.open()
+	g.reply(f1, "привет", "Привет.")
+	g.send(f1, mHandle("h2"), mGoAway())
+	g.until("resumed", func() bool { return len(g.dials()) == 2 })
+	if d := g.dials(); d[1] != "h2" {
+		t.Fatalf("resumed with %q, want h2", d[1])
+	}
+	g.reply(f2, "ещё", "Да.")
+	if !f1.isClosed() || f2.isClosed() {
+		t.Error("want the old connection closed and the new one open")
+	}
+}
+
+func TestLiveWakeMidSession(t *testing.T) {
+	g := newLiveRig(t)
+	f1, f2 := g.conn(), g.conn()
+	g.open()
+	g.send(f1, mHeard("расскажи"), mAudio())
+	g.untilState("speaking")
+	g.wake(nil)
+	g.until("new session", func() bool { return len(g.dials()) == 2 })
+	if !f1.isClosed() {
+		t.Error("old session not closed")
+	}
+	if g.flushes() == 0 {
+		t.Error("old reply not flushed")
+	}
+	g.reply(f2, "привет", "Привет.")
+}
+
+func TestLiveStallWhileSpeaking(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("расскажи"), mAudio())
+	g.untilState("speaking")
+	g.clock.Advance(liveStall)
+	g.ended()
+	if s := g.stockLog(); !slices.Equal(s, []string{"no_internet"}) {
+		t.Errorf("stock %v, want [no_internet]", s)
+	}
+}
+
+func TestLiveStallAfterTools(t *testing.T) {
+	g := newLiveRig(t, liveTool{name: "get_time"})
+	f := g.conn()
+	g.open()
+	g.send(f, mTool("t1", "get_time", `{}`))
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.until("stall timer", func() bool { return g.clock.count(liveStall) == 1 })
+	g.clock.Advance(liveStall)
+	g.ended()
+	if s := g.stockLog(); !slices.Equal(s, []string{"no_internet"}) {
+		t.Errorf("stock %v, want [no_internet]", s)
 	}
 }

@@ -288,8 +288,10 @@ func (s *Session) listening() bool {
 
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
+	var left liveLeft
 	if lp, ok := s.d.Player.(livePlayer); ok && s.d.Live != nil {
-		if s.runLive(ctx, gen, lp, seed, onNoRequest) {
+		var done bool
+		if done, left = s.runLive(ctx, gen, lp, seed, onNoRequest); done {
 			return
 		}
 	}
@@ -306,7 +308,8 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed b
 		// The first listen after a wake from idle takes the audio from just
 		// before it opened as pre-roll; a follow-up's would be the reply's
 		// tail.
-		audio, res := s.listen(ctx, gen, state, limit, first && seed)
+		audio, res := s.listen(ctx, gen, state, limit, first && seed, left)
+		left = liveLeft{}
 		if ctx.Err() != nil || res == epStalled {
 			s.idle(gen)
 			return
@@ -394,11 +397,16 @@ func logTurn(out agent.Outcome, err, terr error, d time.Duration) {
 // listen takes audio until the endpointer has an utterance (epDone), finds
 // none (epNoSpeech) or audio stops (epStalled). A cancel gives epPending.
 // seed gives it the last seedLen samples from before it opened, as pre-roll.
-func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration, seed bool) ([]int16, epResult) {
+// After a failed Live dial, left gives the pre-roll instead and what the
+// user said during the dial, taken in before the live audio.
+func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration, seed bool, left liveLeft) ([]int16, epResult) {
 	s.amu.Lock()
 	s.buf, s.open = s.buf[:0], true
 	s.seed = s.seed[:0]
-	if seed {
+	switch {
+	case seed && left.tried:
+		s.seed = append(s.seed, left.seed...)
+	case seed:
 		s.seed = s.raw.appendTo(s.seed)
 	}
 	floor := s.lv.floor()
@@ -410,6 +418,12 @@ func (s *Session) listen(ctx context.Context, gen int, state string, limit time.
 	}()
 	s.set(gen, state, "listening")
 	ep := newEndpointer(limit, floor, s.seed)
+	switch r := ep.push(left.heard); r {
+	case epNoSpeech:
+		return nil, r
+	case epDone:
+		return ep.utterance(), r
+	}
 	guard := s.after(limit + maxUtterance + listenSlack)
 	for {
 		select {

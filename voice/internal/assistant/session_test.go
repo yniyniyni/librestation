@@ -21,6 +21,7 @@ type fakeClock struct {
 	mu     sync.Mutex
 	now    time.Time
 	timers []fakeTimer
+	set    map[time.Duration]int // timers set, by duration
 }
 
 type fakeTimer struct {
@@ -41,6 +42,10 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ch := make(chan time.Time, 1)
+	if c.set == nil {
+		c.set = map[time.Duration]int{}
+	}
+	c.set[d]++
 	c.timers = append(c.timers, fakeTimer{at: c.now.Add(d), d: d, ch: ch})
 	return ch
 }
