@@ -33,10 +33,15 @@ type assistantConfig struct {
 // spotifyLinkEvery is how often the panel's Spotify status is re-read.
 const spotifyLinkEvery = 30 * time.Second
 
+// piperWarmDelay holds the Piper warm-up back after voiced starts: at boot
+// chroot.sh's mounts race with Soloist's.
+const piperWarmDelay = 5 * time.Second
+
 type builtAssistant struct {
-	session *assistant.Session
-	speaker *speaker
-	link    *spotifyLink
+	session   *assistant.Session
+	speaker   *speaker
+	link      *spotifyLink
+	piperDown *atomic.Bool // Piper did not start or its last synthesis failed
 }
 
 // buildAssistant wires the session: the agent with its tools, Piper (started
@@ -66,23 +71,44 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		log.Printf("piper: %v", err)
 	}
 	piper := &tts.Piper{Cmd: strings.Fields(c.piperCmd), OutDir: chrootPath(c.piperOut), HostOutDir: c.piperOut}
+	piperDown := new(atomic.Bool)
 	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(piperWarmDelay):
+		}
 		if err := piper.Start(ctx); err != nil {
-			log.Printf("piper: %v", err)
+			piperDown.Store(true)
+			log.Printf("piper: %v (replies will use Gemini's voice)", err)
 		}
 	}()
 
 	spk := newSpeaker(strings.Fields(c.speakerCmd), func() { out.refresh(vol.Volume()) })
 	sess := assistant.New(assistant.Deps{
 		Agent:  ag,
-		TTS:    ttsChooser(settings, key, piper),
+		TTS:    ttsChooser(settings, key, piperHealth{piper, piperDown}),
 		Player: spk,
 		Duck:   out.duck,
 		LED:    led,
 		Stock:  newStockSounds(c.sounds).Load,
 	})
 	log.Printf("assistant: on, model %s", model())
-	return builtAssistant{sess, spk, link}
+	return builtAssistant{sess, spk, link, piperDown}
+}
+
+// piperHealth notes whether Piper's last synthesis worked, for the panel.
+type piperHealth struct {
+	tts.Engine
+	down *atomic.Bool
+}
+
+func (h piperHealth) Synth(ctx context.Context, text string) ([]int16, int, error) {
+	pcm, rate, err := h.Engine.Synth(ctx, text)
+	if ctx.Err() == nil {
+		h.down.Store(err != nil)
+	}
+	return pcm, rate, err
 }
 
 // chrootPath is a path under the chroot's rootfs as seen inside it.
@@ -95,16 +121,16 @@ func chrootPath(host string) string {
 }
 
 // ttsChooser picks the engine for a turn from the panel: Gemini with Piper
-// behind it, or Piper alone.
+// behind it, or Piper with Gemini behind it (Piper may not be installed).
 func ttsChooser(settings func() daemon.AssistantSettings, key string, piper tts.Engine) func() tts.Engine {
 	return func() tts.Engine {
 		s := settings()
-		if s.TTS != "gemini" {
-			return piper
-		}
 		g := tts.NewGeminiTTS(key)
 		if s.Voice != "" {
 			g.Voice = s.Voice
+		}
+		if s.TTS != "gemini" {
+			return tts.Fallback{Primary: piper, Backup: g}
 		}
 		return tts.Fallback{Primary: g, Backup: piper}
 	}

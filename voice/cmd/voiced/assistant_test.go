@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -50,8 +51,13 @@ func TestTTSChoice(t *testing.T) {
 	piper := &tts.Piper{}
 	var set daemon.AssistantSettings
 	choose := ttsChooser(func() daemon.AssistantSettings { return set }, "key", piper)
-	if e := choose(); e != tts.Engine(piper) {
-		t.Fatalf("default %T", e)
+	// Piper, with Gemini behind it should Piper be missing.
+	def, ok := choose().(tts.Fallback)
+	if !ok || def.Primary != tts.Engine(piper) {
+		t.Fatalf("default %#v", choose())
+	}
+	if g := def.Backup.(*tts.GeminiTTS); g.Voice != tts.DefaultVoice || g.Key != "key" {
+		t.Fatalf("default backup %+v", g)
 	}
 	set = daemon.AssistantSettings{TTS: "gemini"}
 	fb, ok := choose().(tts.Fallback)
@@ -64,6 +70,33 @@ func TestTTSChoice(t *testing.T) {
 	set.Voice = "Puck"
 	if g := choose().(tts.Fallback).Primary.(*tts.GeminiTTS); g.Voice != "Puck" {
 		t.Fatalf("voice %q", g.Voice)
+	}
+}
+
+type errEngine struct{ err error }
+
+func (e errEngine) Synth(context.Context, string) ([]int16, int, error) {
+	return []int16{1}, 22050, e.err
+}
+
+func TestPiperHealthFollowsStartAndSynth(t *testing.T) {
+	var down atomic.Bool
+	h := piperHealth{Engine: errEngine{errors.New("piper: exec: no such file")}, down: &down}
+	h.Synth(context.Background(), "a")
+	if !down.Load() {
+		t.Fatal("not down after a failed synth")
+	}
+	h.Engine = errEngine{}
+	h.Synth(context.Background(), "a")
+	if down.Load() {
+		t.Fatal("still down after a good synth")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.Engine = errEngine{context.Canceled}
+	h.Synth(ctx, "a")
+	if down.Load() {
+		t.Fatal("a cancelled synth marked Piper down")
 	}
 }
 

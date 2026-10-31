@@ -42,6 +42,9 @@ type Options struct {
 	// Both must return at once; nil = none.
 	AssistantStatus func() any
 	SpotifyLinked   func() (linked, known bool)
+	// PiperMissing is true while Piper cannot run (replies use Gemini's
+	// voice). It must return at once; nil = never.
+	PiperMissing func() bool
 	// OnLED receives events for the LED daemon (nil = off). It must not block.
 	OnLED func(proto.Event)
 	// Judge labels hits with an audio model (nil = off); JudgeModel names it

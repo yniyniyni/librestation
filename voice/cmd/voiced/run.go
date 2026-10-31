@@ -129,6 +129,7 @@ func cmdRun(args []string) error {
 		opt.Assistant = a.session
 		opt.AssistantStatus = func() any { return a.session.Status() }
 		opt.SpotifyLinked = a.link.Linked
+		opt.PiperMissing = a.piperDown.Load
 	}
 
 	d, err := daemon.New(opt)

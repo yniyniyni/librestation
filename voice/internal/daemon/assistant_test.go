@@ -280,3 +280,14 @@ func TestSpotifyLinkUnknownIsNull(t *testing.T) {
 		t.Fatalf("known: %v", v)
 	}
 }
+
+func TestPiperMissingShown(t *testing.T) {
+	d, _ := newAsst(t, &fakeAct{}, "")
+	if d.state().Assistant.PiperMissing {
+		t.Fatal("missing without a callback")
+	}
+	d.opt.PiperMissing = func() bool { return true }
+	if !d.state().Assistant.PiperMissing {
+		t.Fatal("not shown")
+	}
+}

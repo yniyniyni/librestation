@@ -138,6 +138,7 @@
     <div class="stats" id="asstoff" hidden>нет ключа Gemini — ассистент выключен</div>
     <div id="asston">
       <div class="stats" style="margin:2px 0 6px">Spotify: <span id="asstspotify"></span></div>
+      <div class="stats" id="asstnopiper" style="margin:2px 0 6px" hidden>Piper не установлен — ответы голосом Gemini</div>
       <div class="row stats" style="margin:4px 0"><span>модель</span> <select id="asstmodel"></select></div>
       <div class="row stats" style="margin:4px 0"><span>озвучка</span>
         <select id="assttts"><option value="piper">Piper — на колонке</option><option value="gemini">Gemini — живее, через интернет</option></select></div>
@@ -275,6 +276,7 @@ function renderAssistant(s) {
   const st = a.status || {};
   $("asstdot").className = "dot" + (st.state && st.state !== "idle" ? " on" : "");
   $("asststate").textContent = ASST_STATES[st.state] || st.state || "";
+  $("asstnopiper").hidden = !a.piper_missing;
   $("asstspotify").textContent = a.spotify_linked == null ? "проверяю…" : a.spotify_linked ? "привязан" : "не привязан — запустите ./setup";
   const sel = $("asstmodel");
   const ids = s.judge.models.map(m => m.id);

@@ -69,6 +69,7 @@ type assistantView struct {
 	Available     bool              `json:"available"` // the session is built (a Gemini key is present)
 	Status        any               `json:"status"`
 	SpotifyLinked *bool             `json:"spotify_linked"` // null until checked
+	PiperMissing  bool              `json:"piper_missing"`  // Piper did not start: replies use Gemini's voice
 	Settings      AssistantSettings `json:"settings"`
 	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's current model
 }
@@ -137,6 +138,9 @@ func (d *Daemon) assistantViewLocked() assistantView {
 		if linked, known := f(); known {
 			v.SpotifyLinked = &linked
 		}
+	}
+	if f := d.opt.PiperMissing; f != nil {
+		v.PiperMissing = f()
 	}
 	return v
 }
