@@ -6,6 +6,7 @@ package assistant
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"voice/internal/agent"
 	"voice/internal/led/proto"
@@ -156,6 +158,11 @@ func (s *Session) Wake(ctx context.Context, onNoRequest func()) {
 	// A barge-in's seed would be the reply's echo: only a wake from idle
 	// gets one.
 	fromIdle := s.st.State == "idle"
+	src := "barge-in"
+	if fromIdle {
+		src = "idle"
+	}
+	log.Printf("assistant: wake %s", src)
 	if fromIdle {
 		hist = nil
 	}
@@ -226,12 +233,15 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed b
 			s.idle(gen)
 			return
 		}
+		speechEnd := time.Now()
+		log.Printf("assistant: heard %d ms", len(audio)*1000/16000)
 		s.set(gen, "thinking", "thinking")
 
-		sp := s.speak(ctx, gen)
+		sp := s.speak(ctx, gen, speechEnd)
 		tctx, cancel := context.WithTimeout(ctx, turnTimeout)
 		h, out, err := s.d.Agent.Turn(tctx, hist, audio, sp.say)
 		cancel()
+		turnDur := time.Since(speechEnd).Round(time.Millisecond)
 		if err != nil {
 			sp.stop()
 		} else {
@@ -248,6 +258,7 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed b
 			}
 		}
 		terr := sp.finish()
+		logTurn(out, err, terr, turnDur)
 		if ctx.Err() != nil {
 			s.idle(gen)
 			return
@@ -280,6 +291,21 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed b
 		case <-s.after(followDelay):
 		}
 	}
+}
+
+// logTurn logs how a turn came out: its duration up to the model's last
+// word, then the error, no_request or the number of characters spoken.
+func logTurn(out agent.Outcome, err, terr error, d time.Duration) {
+	res := fmt.Sprintf("spoken %d chars", utf8.RuneCountInString(out.Spoken))
+	switch {
+	case err != nil:
+		res = "error: " + err.Error()
+	case terr != nil:
+		res = fmt.Sprintf("%s, speech error: %v", res, terr)
+	case out.NoRequest:
+		res = "no_request"
+	}
+	log.Printf("assistant: turn %v: %s", d, res)
 }
 
 // listen takes audio until the endpointer has an utterance (epDone), finds
@@ -350,6 +376,7 @@ func (s *Session) fail(ctx context.Context, gen int, err error) {
 	if isNetwork(err) {
 		name = "no_internet"
 	}
+	log.Printf("assistant: fail path, saying %s", name)
 	pcm, rate, err := s.stock(ctx, name)
 	if err != nil {
 		log.Printf("assistant: %s: %v", name, err)
@@ -465,7 +492,7 @@ type speech struct {
 	err error
 }
 
-func (s *Session) speak(ctx context.Context, gen int) *speech {
+func (s *Session) speak(ctx context.Context, gen int, speechEnd time.Time) *speech {
 	ctx, cancel := context.WithCancel(ctx)
 	sp := &speech{in: make(chan string, maxQueued), cancel: cancel, done: make(chan struct{}), expired: make(chan struct{})}
 	limit := s.after(speakLimit)
@@ -520,6 +547,7 @@ func (s *Session) speak(ctx context.Context, gen int) *speech {
 			if first {
 				s.set(gen, "speaking", "speaking")
 				first = false
+				log.Printf("assistant: first play %v after end of speech", time.Since(speechEnd).Round(time.Millisecond))
 			}
 			if err := s.d.Player.Play(ctx, c.pcm, c.rate); err != nil && ctx.Err() == nil {
 				log.Printf("assistant: play: %v", err)

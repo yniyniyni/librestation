@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -159,6 +161,7 @@ func (a *Agent) Turn(ctx context.Context, hist []Content, audio []int16, say fun
 			default:
 				out.Calls = append(out.Calls, c.Name)
 				r, err := byName[c.Name].Run(ctx, c.Args)
+				logCall(c.Name, c.Args, err)
 				if err != nil {
 					r = map[string]any{"error": err.Error()}
 					toolFailed = true
@@ -175,6 +178,21 @@ func (a *Agent) Turn(ctx context.Context, hist []Content, audio []int16, say fun
 		}
 	}
 	return contents, out, errTooManyRounds
+}
+
+// logCall logs one tool call: its name, its args as at most 80 characters of
+// JSON, and ok or the error.
+func logCall(name string, args map[string]any, err error) {
+	b, _ := json.Marshal(args)
+	a := []rune(string(b))
+	if len(a) > 80 {
+		a = append(a[:80], '…')
+	}
+	res := "ok"
+	if err != nil {
+		res = err.Error()
+	}
+	log.Printf("assistant: tool %s %s: %s", name, string(a), res)
 }
 
 // speaker cuts streamed text into sentences.

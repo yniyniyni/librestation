@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -282,5 +285,17 @@ func TestEmptyAnswerFirstRoundIsError(t *testing.T) {
 	llm = &script{answers: []Content{call("like", nil)}, errs: map[int]error{1: &EmptyAnswerError{Reason: "SAFETY"}}}
 	if _, _, _, err := turn(t, newAgent(llm, &fakeTool{name: "like"}), nil); err == nil {
 		t.Fatal("no error for an empty SAFETY answer")
+	}
+}
+
+func TestLogCall(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	logCall("play", map[string]any{"q": strings.Repeat("я", 200)}, nil)
+	logCall("like", nil, errors.New("boom"))
+	out := buf.String()
+	if !strings.Contains(out, "assistant: tool play {") || !strings.Contains(out, "…: ok") || !strings.Contains(out, "assistant: tool like null: boom") {
+		t.Errorf("log = %q", out)
 	}
 }
