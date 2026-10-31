@@ -317,3 +317,33 @@ func TestKnobStepDefaultsTo2AndIsSaved(t *testing.T) {
 		t.Fatalf("reloaded knob step %d, want 3", again.KnobStep())
 	}
 }
+
+func status(st string) soloist.Event { return soloist.Event{Type: "playback_changed", Status: st} }
+
+// After a pause the HAL resets the amplifier, so resuming hands the volume to
+// Resumed again; Soloist is not touched.
+func TestResumeCallsResumed(t *testing.T) {
+	s, f, _ := newSync(t, "28")
+	var mu sync.Mutex
+	var got []int
+	s.Resumed = func(v int) { mu.Lock(); got = append(got, v); mu.Unlock() }
+	s.resumeDelays = []time.Duration{0, 5 * time.Millisecond}
+	resumed := func() []int { mu.Lock(); defer mu.Unlock(); return append([]int(nil), got...) }
+	s.OnEvent(status("playing"))
+	s.OnEvent(status("buffering"))
+	s.OnEvent(status("playing")) // track change: not a resume
+	s.OnEvent(status("paused"))
+	time.Sleep(20 * time.Millisecond)
+	if r := resumed(); len(r) != 0 {
+		t.Fatalf("resumed before resume: %v", r)
+	}
+	s.OnEvent(status("buffering"))
+	s.OnEvent(status("playing"))
+	time.Sleep(20 * time.Millisecond)
+	if r := resumed(); !equal(r, []int{28, 28}) {
+		t.Fatalf("resumed = %v, want [28 28]", r)
+	}
+	if sets := f.got(); !equal(sets, []int{28}) {
+		t.Fatalf("Soloist sets = %v, want only the start value", sets)
+	}
+}

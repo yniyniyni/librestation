@@ -50,6 +50,12 @@ const (
 	maxInflight = 16
 )
 
+// During a pause the Android output goes to standby, and when playback
+// wakes it the audio HAL sets the amplifier to a level of its own; nothing
+// reports it. So the amplifier is set again on resume (Resumed), at once and
+// after the output has surely woken up.
+var resumeDelays = []time.Duration{0, time.Second, 3 * time.Second}
+
 // Compensation is the gain that undoes Soloist's software attenuation at
 // volume v: PulseAudio's cubic scale gives (v/100)^3. Volume 0 stays silent.
 func Compensation(v int) float64 {
@@ -78,21 +84,27 @@ type Sync struct {
 	// (ours or adopted from Spotify). It is called with the lock held and must
 	// not block.
 	Out func(v int)
+	// Resumed, when set, gets the current volume shortly after playback
+	// resumes from a pause (see resumeDelays). It must not block.
+	Resumed func(v int)
 
-	now   func() time.Time
-	retry time.Duration
+	now          func() time.Time
+	retry        time.Duration
+	resumeDelays []time.Duration
 
 	mu       sync.Mutex
 	cur      int
 	knobStep int
 	applied  bool
 	inflight []sent
+	paused   bool // playback stopped since it last played
 }
 
 // New loads the saved volume from path (Default if missing or invalid).
 // Nothing is sent until Apply or Run.
 func New(set Setter, path string) *Sync {
-	s := &Sync{set: set, path: path, now: time.Now, retry: time.Second, cur: Default, knobStep: DefaultKnobStep}
+	s := &Sync{set: set, path: path, now: time.Now, retry: time.Second, resumeDelays: resumeDelays,
+		cur: Default, knobStep: DefaultKnobStep}
 	if v, ok := readInt(path); ok && v >= 0 && v <= 100 {
 		s.cur = v
 	}
@@ -182,7 +194,11 @@ func (s *Sync) Key(code uint16) {
 
 // OnEvent takes Soloist events. A reported volume that echoes what we sent is
 // ignored; any other one is a change made in Spotify and becomes current.
+// Resuming playback calls Resumed (see resumeDelays).
 func (s *Sync) OnEvent(e soloist.Event) {
+	if e.Status != "" {
+		s.onStatus(e.Status)
+	}
 	if e.Volume == nil {
 		return
 	}
@@ -212,6 +228,28 @@ func (s *Sync) OnEvent(e soloist.Event) {
 	s.cur = v
 	s.save()
 	s.outLocked()
+}
+
+// onStatus notes the playback status; buffering (track changes, seeks)
+// neither pauses nor resumes.
+func (s *Sync) onStatus(status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch status {
+	case "paused", "stopped":
+		s.paused = true
+	case "playing":
+		if s.paused && s.Resumed != nil {
+			for _, d := range s.resumeDelays {
+				time.AfterFunc(d, s.resumed)
+			}
+		}
+		s.paused = false
+	}
+}
+
+func (s *Sync) resumed() {
+	s.Resumed(s.Volume())
 }
 
 func (s *Sync) outLocked() {

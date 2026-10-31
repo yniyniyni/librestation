@@ -30,6 +30,7 @@ type output struct {
 
 	mu     sync.Mutex
 	target int
+	force  bool // set the amplifier to target even if it seems there already
 	wake   chan struct{}
 
 	led  func(proto.Event) // optional; must not block
@@ -73,10 +74,26 @@ func (o *output) set(v int) {
 	}
 }
 
-func (o *output) wanted() int {
+// refresh sets the amplifier to v again, for when something else (the audio
+// HAL waking from standby) may have changed it behind our back.
+func (o *output) refresh(v int) {
+	o.mu.Lock()
+	o.target, o.force = v, true
+	o.mu.Unlock()
+	select {
+	case o.wake <- struct{}{}:
+	default:
+	}
+}
+
+// wanted returns the target and whether it must be written even when the
+// amplifier is believed to be there.
+func (o *output) wanted() (int, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	return o.target
+	f := o.force
+	o.force = false
+	return o.target, f
 }
 
 // run keeps the helper alive and ramps the amplifier toward the target.
@@ -114,7 +131,10 @@ func (o *output) run(ctx context.Context) {
 // value the helper was given.
 func (o *output) ramp(ctx context.Context, in io.Writer, cur int) (int, error) {
 	for {
-		t := o.wanted()
+		t, force := o.wanted()
+		if force && t >= 0 {
+			cur = -1 // unknown: write t directly
+		}
 		if t < 0 || t == cur {
 			select {
 			case <-ctx.Done():

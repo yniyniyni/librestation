@@ -24,7 +24,7 @@ adb_cmd() { adb -s "$dev" "$@"; }
 root_shell() {
     # Call only with commands made from trusted local variables; no user input is
     # interpolated into the command string except validated absolute paths.
-    adb_cmd shell -tt "mysudo sh -c \"$*\""
+    adb_cmd shell -tt "mysudo -n sh -c \"$*\""
 }
 
 need_cmd() {

@@ -65,6 +65,7 @@ func cmdRun(args []string) error {
 	defer sol.Close()
 	vol = volume.New(sol, filepath.Join(opt.DataDir, "volume"))
 	vol.Out = out.set
+	vol.Resumed = out.refresh
 	close(volReady)
 	go vol.Run(ctx)
 	if knob != "" {
