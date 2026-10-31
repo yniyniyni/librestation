@@ -11,12 +11,16 @@ import (
 // script replays canned model answers and records what it was asked.
 type script struct {
 	answers []Content
+	errs    map[int]error // the error for answer i, instead of answers[i]
 	reqs    []Request
 }
 
 func (s *script) Stream(_ context.Context, r Request, onText func(string)) (Content, error) {
 	s.reqs = append(s.reqs, r)
 	i := len(s.reqs) - 1
+	if err := s.errs[i]; err != nil {
+		return Content{}, err
+	}
 	if i >= len(s.answers) {
 		return Content{}, errors.New("script exhausted")
 	}
@@ -230,5 +234,50 @@ func TestRussianDateTime(t *testing.T) {
 	d, c := RussianDateTime(time.Date(2026, 10, 31, 21, 7, 0, 0, time.UTC))
 	if d != "суббота, 31 октября 2026" || c != "21:07" {
 		t.Errorf("got %q %q", d, c)
+	}
+}
+
+func TestEmptyAnswerAfterToolSaysDone(t *testing.T) {
+	tool := &fakeTool{name: "like"}
+	llm := &script{answers: []Content{call("like", nil)}, errs: map[int]error{1: &EmptyAnswerError{Reason: "STOP"}}}
+	h, o, said, err := turn(t, newAgent(llm, tool), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(said) != 1 || said[0] != doneReply || o.Spoken != doneReply {
+		t.Errorf("said %q outcome %+v", said, o)
+	}
+	if last := h[len(h)-1]; last.Role != "model" || last.Parts[0].Text != doneReply {
+		t.Errorf("history ends with %+v", last)
+	}
+}
+
+func TestEmptyAnswerAfterSpokenToolRoundSaysNothingMore(t *testing.T) {
+	tool := &fakeTool{name: "like"}
+	first := Content{Role: "model", Parts: []Part{{Text: "Лайкаю. "}, {Call: &Call{Name: "like"}}}}
+	llm := &script{answers: []Content{first}, errs: map[int]error{1: &EmptyAnswerError{Reason: "STOP"}}}
+	_, _, said, err := turn(t, newAgent(llm, tool), nil)
+	if err != nil || len(said) != 1 || said[0] != "Лайкаю." {
+		t.Fatalf("err %v said %q", err, said)
+	}
+}
+
+func TestEmptyAnswerAfterFailedToolIsSilent(t *testing.T) {
+	tool := &fakeTool{name: "like", err: errors.New("не играет")}
+	llm := &script{answers: []Content{call("like", nil)}, errs: map[int]error{1: &EmptyAnswerError{Reason: "STOP"}}}
+	_, _, said, err := turn(t, newAgent(llm, tool), nil)
+	if err != nil || len(said) != 0 {
+		t.Fatalf("err %v said %q", err, said)
+	}
+}
+
+func TestEmptyAnswerFirstRoundIsError(t *testing.T) {
+	llm := &script{errs: map[int]error{0: &EmptyAnswerError{Reason: "STOP"}}}
+	if _, _, _, err := turn(t, newAgent(llm), nil); err == nil {
+		t.Fatal("no error for an empty first answer")
+	}
+	llm = &script{answers: []Content{call("like", nil)}, errs: map[int]error{1: &EmptyAnswerError{Reason: "SAFETY"}}}
+	if _, _, _, err := turn(t, newAgent(llm, &fakeTool{name: "like"}), nil); err == nil {
+		t.Fatal("no error for an empty SAFETY answer")
 	}
 }

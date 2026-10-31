@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,5 +137,15 @@ func TestStreamBadModel(t *testing.T) {
 	_, err := client(srv).Stream(context.Background(), Request{Model: "x y", Contents: userText("hi")}, nil)
 	if err == nil || n.Load() != 0 {
 		t.Fatalf("err=%v requests=%d", err, n.Load())
+	}
+}
+
+func TestStreamEmptyAnswerIsTyped(t *testing.T) {
+	srv := sse(t, nil, `{"candidates":[{"content":{"role":"model"},"finishReason":"STOP"}]}`)
+	defer srv.Close()
+	_, err := client(srv).Stream(context.Background(), Request{Contents: userText("hi")}, nil)
+	var ee *EmptyAnswerError
+	if !errors.As(err, &ee) || ee.Reason != "STOP" || !strings.Contains(err.Error(), "empty answer") {
+		t.Fatalf("err = %v", err)
 	}
 }

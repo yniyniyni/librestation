@@ -298,14 +298,20 @@ func (c *Client) Stream(ctx context.Context, r Request, onText func(string)) (Co
 		}
 	}
 	if len(out.Parts) == 0 {
-		if reason == "" {
-			reason = "no candidates"
-		} else {
-			reason = "finish reason " + reason
-		}
-		return Content{}, fmt.Errorf("gemini: empty answer (%s)", reason)
+		return Content{}, &EmptyAnswerError{Reason: reason}
 	}
 	return out, nil
+}
+
+// EmptyAnswerError is an answer with no parts. Reason is the finish reason,
+// "" when no candidate came.
+type EmptyAnswerError struct{ Reason string }
+
+func (e *EmptyAnswerError) Error() string {
+	if e.Reason == "" {
+		return "gemini: empty answer (no candidates)"
+	}
+	return "gemini: empty answer (finish reason " + e.Reason + ")"
 }
 
 // isText says whether p is a plain text part.

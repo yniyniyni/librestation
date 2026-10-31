@@ -16,6 +16,8 @@ const (
 	maxSpoken = 400
 	// audioRate is the rate of the captured request audio.
 	audioRate = 16000
+	// doneReply is said when the model ends a tool round with nothing to say.
+	doneReply = "Готово."
 )
 
 var errTooManyRounds = errors.New("agent: too many tool rounds")
@@ -90,6 +92,7 @@ func (a *Agent) Turn(ctx context.Context, hist []Content, audio []int16, say fun
 		Content{Role: "user", Parts: []Part{{Audio: audio, AudioRate: audioRate}}})
 	var spoken []string
 	total, capped := 0, false
+	toolOK := false // a real tool ran without error
 	for round := 0; round < maxRounds; round++ {
 		// Sentences are spoken as they complete; a round that turns out to
 		// call tools drops its unfinished tail.
@@ -104,6 +107,17 @@ func (a *Agent) Turn(ctx context.Context, hist []Content, audio []int16, say fun
 			say(s)
 		}}
 		reply, err := a.LLM.Stream(ctx, Request{System: system, Contents: contents, Funcs: funcs, Model: model}, sp.write)
+		var empty *EmptyAnswerError
+		if round > 0 && errors.As(err, &empty) && empty.Reason == "STOP" {
+			// Gemini sometimes answers a tool result with nothing: the
+			// tools have done the job.
+			if toolOK && len(spoken) == 0 {
+				sp.say(doneReply)
+				contents = append(contents, Content{Role: "model", Parts: []Part{{Text: doneReply}}})
+			}
+			out.Spoken = strings.Join(spoken, " ")
+			return contents, out, nil
+		}
 		if err != nil {
 			return contents, out, err
 		}
@@ -141,6 +155,8 @@ func (a *Agent) Turn(ctx context.Context, hist []Content, audio []int16, say fun
 				r, err := byName[c.Name].Run(ctx, c.Args)
 				if err != nil {
 					r = map[string]any{"error": err.Error()}
+				} else {
+					toolOK = true
 				}
 				resp = r
 			}
