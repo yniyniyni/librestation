@@ -459,10 +459,13 @@ func fixServices(e *env) error {
 	return nil // checked again by the caller
 }
 
+// panelPort is the web panel's port; tests point it at a fake.
+var panelPort = "8780"
+
 // panelState reads the web panel's state into v.
 func panelState(e *env, v any) error {
 	c := http.Client{Timeout: 5 * time.Second}
-	r, err := c.Get("http://" + e.host + ":8780/api/state")
+	r, err := c.Get("http://" + e.host + ":" + panelPort + "/api/state")
 	if err != nil {
 		return err
 	}

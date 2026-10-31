@@ -280,3 +280,52 @@ func TestExchangeCode(t *testing.T) {
 		t.Fatalf("error %v", err)
 	}
 }
+
+func TestCheckSpotify(t *testing.T) {
+	linked := "null"
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		io.WriteString(w, `{"assistant":{"spotify_linked":`+linked+`}}`)
+	}))
+	defer srv.Close()
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	oldPort, oldPoll := panelPort, spotifyPoll
+	panelPort, spotifyPoll = port, time.Millisecond
+	defer func() { panelPort, spotifyPoll = oldPort, oldPoll }()
+	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=0\n"), host: host}
+
+	if ok, detail, err := checkSpotify(e); err != nil || ok || !strings.Contains(detail, "проверяет") || calls != 15 {
+		t.Fatalf("null: ok=%v %q %v after %d polls", ok, detail, err, calls)
+	}
+	linked = "false"
+	if ok, detail, err := checkSpotify(e); err != nil || ok || !strings.Contains(detail, "не принял") {
+		t.Fatalf("false: ok=%v %q %v", ok, detail, err)
+	}
+	linked = "true"
+	if ok, _, err := checkSpotify(e); err != nil || !ok {
+		t.Fatalf("true: ok=%v %v", ok, err)
+	}
+	e.d = fakeDevice("__librestation_rc=1\n") // no token file
+	if ok, _, err := checkSpotify(e); err != nil || ok {
+		t.Fatalf("no file: ok=%v %v", ok, err)
+	}
+}
+
+func TestExchangeCodeErrorBodies(t *testing.T) {
+	status, body := 502, strings.Repeat("x", 500)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(status)
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	_, err := exchangeCode(srv.URL, "c", "c", "v")
+	if err == nil || len(err.Error()) > 300 {
+		t.Fatalf("long body: %v", err)
+	}
+	status, body = 200, `{"access_token":"SECRET"}`
+	_, err = exchangeCode(srv.URL, "c", "c", "v")
+	if err == nil || strings.Contains(err.Error(), "SECRET") {
+		t.Fatalf("200 body: %v", err)
+	}
+}

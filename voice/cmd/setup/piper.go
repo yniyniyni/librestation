@@ -58,16 +58,17 @@ func fixPiper(e *env) error {
 	if _, err := e.d.Shell("rm -rf " + piperUpload + " && mkdir -p " + piperUpload); err != nil {
 		return err
 	}
+	defer e.d.Shell("rm -rf " + piperUpload)
 	for i, f := range piperFiles {
 		if err := e.d.Push(paths[i], piperUpload+"/"+f.name); err != nil {
 			return err
 		}
 	}
 	out, err := e.d.Root(piperInstallScript())
+	// The smoke test's stderr is in out, so a failure shows why.
 	if s := strings.TrimSpace(out); s != "" && err != nil {
 		e.u.say("%s", s)
 	}
-	e.d.Shell("rm -rf " + piperUpload)
 	return err
 }
 
@@ -83,7 +84,7 @@ func piperInstallScript() string {
 		"mv -f " + piperUpload + "/" + piperFiles[1].name + " " + r + "/voice.onnx",
 		"mv -f " + piperUpload + "/" + piperFiles[2].name + " " + r + "/voice.onnx.json",
 		"chmod 755 " + r + "/piper",
-		"sh " + soloistDir + "/chroot.sh " + piperDir + "/piper --help >/dev/null 2>&1",
+		"sh " + soloistDir + "/chroot.sh " + piperDir + "/piper --help >/dev/null",
 	}, "\n")
 }
 

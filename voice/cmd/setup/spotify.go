@@ -177,6 +177,11 @@ func awaitCallback(ctx context.Context, ln net.Listener, state string) (string, 
 		} else {
 			fmt.Fprint(w, "<p>Готово, можно закрыть вкладку и вернуться в терминал.</p>")
 		}
+		// Flush before reporting: awaitCallback closes the server as soon as it
+		// hears from res, which would drop a reply still in the buffer.
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		select {
 		case res <- out:
 		default:
@@ -184,7 +189,13 @@ func awaitCallback(ctx context.Context, ln net.Listener, state string) (string, 
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go srv.Serve(ln)
-	defer srv.Close()
+	defer func() {
+		sd, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if srv.Shutdown(sd) != nil {
+			srv.Close()
+		}
+	}()
 	select {
 	case r := <-res:
 		return r.code, r.err
@@ -215,9 +226,19 @@ func exchangeCode(tokenURL, clientID, code, verifier string) (string, error) {
 		Description  string `json:"error_description"`
 	}
 	json.Unmarshal(body, &tok)
-	if r.StatusCode != http.StatusOK || tok.RefreshToken == "" {
-		msg := strings.TrimSpace(firstOf(tok.Error+" "+tok.Description, string(body)))
-		return "", fmt.Errorf("обмен кода на токен: %s: %s", r.Status, msg)
+	if tok.Error != "" {
+		return "", fmt.Errorf("обмен кода на токен: %s: %s %s", r.Status, tok.Error, tok.Description)
+	}
+	if r.StatusCode != http.StatusOK {
+		b := strings.TrimSpace(string(body))
+		if len(b) > 200 {
+			b = b[:200] + "…"
+		}
+		return "", fmt.Errorf("обмен кода на токен: %s: %s", r.Status, b)
+	}
+	if tok.RefreshToken == "" {
+		// A 200 body may hold tokens, so it is never printed.
+		return "", fmt.Errorf("обмен кода на токен: в ответе нет refresh_token")
 	}
 	return tok.RefreshToken, nil
 }
