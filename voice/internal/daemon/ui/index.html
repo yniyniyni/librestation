@@ -232,7 +232,7 @@ function renderWords(s) {
 }
 
 function hitStatus(h) {
-  if (h.action === "hush") return "ассистент замолчал";
+  if (h.action === "hush" && h.fired && !h.error) return "ассистент замолчал";
   if (h.error) return `<span class="msg bad">${esc(h.error)}</span>`;
   if (h.undone) return `отменено через ${h.undone.toFixed(1)} с`;
   if (h.fired) return "действие выполнено";
