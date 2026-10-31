@@ -18,7 +18,7 @@ const aiDemoTimeout = 30 * time.Second
 // sceneSink is the part of *scene.Scene the HTTP API drives.
 type sceneSink interface {
 	SetSettings(scene.Settings)
-	AI(bool)
+	AI(bool, string)
 }
 
 type stopper interface{ Stop() bool }
@@ -99,8 +99,9 @@ func newAPI(dir string, sc sceneSink, after afterFunc) *api {
 	return a
 }
 
-// setAI switches AI mode; timeout > 0 turns it off again after that long.
-func (a *api) setAI(on bool, timeout time.Duration) {
+// setAI switches AI mode into state ("" = listening); timeout > 0 turns it
+// off again after that long.
+func (a *api) setAI(on bool, state string, timeout time.Duration) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.timer != nil {
@@ -109,7 +110,7 @@ func (a *api) setAI(on bool, timeout time.Duration) {
 	}
 	a.gen++
 	a.ai = on
-	a.scene.AI(on)
+	a.scene.AI(on, state)
 	if on && timeout > 0 {
 		gen := a.gen
 		a.timer = a.after(timeout, func() {
@@ -120,7 +121,7 @@ func (a *api) setAI(on bool, timeout time.Duration) {
 			}
 			a.timer = nil
 			a.ai = false
-			a.scene.AI(false)
+			a.scene.AI(false, "")
 		})
 	}
 }
@@ -180,7 +181,7 @@ func (a *api) Handler() http.Handler {
 			httpError(w, http.StatusBadRequest, err)
 			return
 		}
-		a.setAI(req.On, aiDemoTimeout)
+		a.setAI(req.On, "", aiDemoTimeout)
 		a.writeState(w)
 	})
 	return mux

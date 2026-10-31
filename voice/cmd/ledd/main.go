@@ -100,7 +100,7 @@ func handleEvent(sc *scene.Scene, a *api, e proto.Event) {
 	case "audio":
 		sc.Audio(e.Level, bands12(e.Bands))
 	case "ai":
-		a.setAI(e.On, 0)
+		a.setAI(e.On, e.A, 0)
 	}
 }
 

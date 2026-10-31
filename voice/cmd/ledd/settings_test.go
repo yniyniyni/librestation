@@ -15,10 +15,14 @@ import (
 type fakeScene struct {
 	settings scene.Settings
 	ai       []bool
+	aiState  []string
 }
 
 func (f *fakeScene) SetSettings(s scene.Settings) { f.settings = s }
-func (f *fakeScene) AI(on bool)                   { f.ai = append(f.ai, on) }
+func (f *fakeScene) AI(on bool, state string) {
+	f.ai = append(f.ai, on)
+	f.aiState = append(f.aiState, state)
+}
 
 type fakeTimer struct {
 	d       time.Duration
@@ -142,8 +146,8 @@ func TestAIDemoTurnsOffAfter30s(t *testing.T) {
 
 func TestSocketAIHasNoTimeout(t *testing.T) {
 	a, fs, timers := newTestAPI(t)
-	a.setAI(true, 0)
-	if len(*timers) != 0 || !fs.ai[0] {
+	a.setAI(true, "thinking", 0)
+	if len(*timers) != 0 || !fs.ai[0] || fs.aiState[0] != "thinking" {
 		t.Fatalf("timers %d ai %v", len(*timers), fs.ai)
 	}
 }

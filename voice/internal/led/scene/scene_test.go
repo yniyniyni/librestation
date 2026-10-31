@@ -164,7 +164,7 @@ func TestVolumePulseAssetByDirection(t *testing.T) {
 func TestCommandOverAIThenBack(t *testing.T) {
 	icon := flat(77)
 	s, c := newScene(Assets{Icons: map[string]*asset.Anim{"next": icon}})
-	s.AI(true)
+	s.AI(true, "")
 	s.Command("next")
 	scr, ring := s.Frame()
 	want, _ := anim.FlashRing("sweep", "next", 0)
@@ -185,7 +185,7 @@ func TestCommandOverAIThenBack(t *testing.T) {
 
 func TestVolumeOverAI(t *testing.T) {
 	s, c := newScene(Assets{})
-	s.AI(true)
+	s.AI(true, "")
 	c.add(time.Second)
 	s.Volume(40, 1)
 	if _, ring := s.Frame(); ring != anim.VolumeRing(40) {
@@ -213,7 +213,7 @@ func TestNewerOverlayReplacesOlder(t *testing.T) {
 
 func TestAIScreenAndLevel(t *testing.T) {
 	s, c := newScene(Assets{})
-	s.AI(true)
+	s.AI(true, "")
 	s.Audio(0.7, [12]float64{})
 	c.add(500 * time.Millisecond)
 	scr, _ := s.Frame()
@@ -231,12 +231,12 @@ func TestAIScreenAndLevel(t *testing.T) {
 
 func TestAITimeoutIsCallers(t *testing.T) {
 	s, c := newScene(Assets{})
-	s.AI(true)
+	s.AI(true, "")
 	c.add(10 * time.Minute)
 	if _, ring := s.Frame(); !lit(ring) {
 		t.Fatal("scene must not time out AI")
 	}
-	s.AI(false)
+	s.AI(false, "")
 	if _, ring := s.Frame(); lit(ring) {
 		t.Fatal("AI off must show clock")
 	}
@@ -295,5 +295,63 @@ func TestBrightnessSetting(t *testing.T) {
 	sc.SetSettings(st)
 	if sc.Brightness() != 40 {
 		t.Fatalf("Brightness() = %d, want 40", sc.Brightness())
+	}
+}
+
+func TestAIStateChangesFrame(t *testing.T) {
+	var rings []anim.Ring
+	for _, st := range []string{"listening", "thinking", "speaking", "error"} {
+		s, c := newScene(Assets{})
+		s.Audio(0.3, [12]float64{})
+		s.AI(true, st)
+		c.add(100 * time.Millisecond)
+		_, ring := s.Frame()
+		for i, r := range rings {
+			if r == ring {
+				t.Fatalf("state %s ring equals state #%d", st, i)
+			}
+		}
+		rings = append(rings, ring)
+	}
+}
+
+func TestAISpeakingFollowsLevel(t *testing.T) {
+	s, c := newScene(Assets{})
+	s.AI(true, "speaking")
+	c.add(100 * time.Millisecond)
+	s.Audio(0.1, [12]float64{})
+	_, quiet := s.Frame()
+	s.Audio(0.9, [12]float64{})
+	_, loud := s.Frame()
+	if quiet == loud {
+		t.Fatal("speaking ring must follow the level")
+	}
+}
+
+func TestAIErrorTimesOut(t *testing.T) {
+	s, c := newScene(Assets{})
+	s.AI(true, "error")
+	if _, ring := s.Frame(); !lit(ring) {
+		t.Fatal("error flash expected")
+	}
+	c.add(1400 * time.Millisecond)
+	s.Frame()
+	c.add(200 * time.Millisecond)
+	if _, ring := s.Frame(); lit(ring) {
+		t.Fatal("error must turn itself off after 1.5s")
+	}
+}
+
+func TestAIEmptyStateIsListening(t *testing.T) {
+	a, ca := newScene(Assets{})
+	b, cb := newScene(Assets{})
+	a.AI(true, "")
+	b.AI(true, "listening")
+	ca.add(300 * time.Millisecond)
+	cb.add(300 * time.Millisecond)
+	ra, sa := a.Frame()
+	rb, sb := b.Frame()
+	if ra != rb || sa != sb {
+		t.Fatal("empty state must equal listening")
 	}
 }
