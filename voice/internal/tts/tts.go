@@ -20,6 +20,9 @@ func (f Fallback) Synth(ctx context.Context, text string) ([]int16, int, error) 
 	if err == nil {
 		return pcm, rate, nil
 	}
+	if ctx.Err() != nil || f.Backup == nil {
+		return nil, 0, err
+	}
 	log.Printf("tts: primary failed, using backup: %v", err)
 	return f.Backup.Synth(ctx, text)
 }

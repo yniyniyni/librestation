@@ -16,7 +16,7 @@ import (
 	"voice/internal/wav"
 )
 
-func piperFixture(t *testing.T, exitAfter string) (*Piper, string) {
+func piperFixture(t *testing.T, exitAfter string, delay ...string) (*Piper, string) {
 	t.Helper()
 	dir := t.TempDir()
 	one := filepath.Join(dir, "one.wav")
@@ -33,9 +33,13 @@ func piperFixture(t *testing.T, exitAfter string) (*Piper, string) {
 		t.Fatal(err)
 	}
 	cmd := []string{"sh", "testdata/fakepiper.sh", one, startLog}
-	if exitAfter != "" {
+	if exitAfter != "" || len(delay) > 0 {
+		if exitAfter == "" {
+			exitAfter = "0"
+		}
 		cmd = append(cmd, exitAfter)
 	}
+	cmd = append(cmd, delay...)
 	return &Piper{Cmd: cmd, OutDir: out, HostOutDir: out}, startLog
 }
 
@@ -76,7 +80,7 @@ func TestPiperLazyStart(t *testing.T) {
 	if n := starts(t, startLog); n != 1 {
 		t.Errorf("started %d times", n)
 	}
-	p.proc.kill()
+	p.proc.drop()
 }
 
 func TestPiperRestartsAfterCrash(t *testing.T) {
@@ -87,25 +91,90 @@ func TestPiperRestartsAfterCrash(t *testing.T) {
 			t.Fatalf("call %d: %v", i, err)
 		}
 	}
-	if n := starts(t, startLog); n < 2 {
-		t.Errorf("started %d times, want a restart", n)
+	if n := starts(t, startLog); n != 3 {
+		t.Errorf("started %d times, want 3", n)
 	}
 }
 
-func TestPiperCtxKillsStuckProcess(t *testing.T) {
-	p, _ := piperFixture(t, "")
-	p.Cmd = []string{"sh", "-c", "while read l; do :; done"} // never answers
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+func TestPiperCancelKeepsProcess(t *testing.T) {
+	p, startLog := piperFixture(t, "", "0.3")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	start := time.Now()
-	if _, _, err := p.Synth(ctx, "x"); err == nil {
-		t.Fatal("want error")
+	if _, _, err := p.Synth(ctx, "x"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v", err)
 	}
-	if time.Since(start) > 2*time.Second {
-		t.Error("Synth did not honour ctx")
+	if _, _, err := p.Synth(context.Background(), "y"); err != nil {
+		t.Fatal(err)
+	}
+	if n := starts(t, startLog); n != 1 {
+		t.Errorf("started %d times, want 1", n)
+	}
+	p.proc.drop()
+}
+
+func TestPiperStaleAnswerIgnored(t *testing.T) {
+	p, _ := piperFixture(t, "", "0.2")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	p.Synth(ctx, "old") // abandoned; its answer lands during the next call
+	pcm, rate, err := p.Synth(context.Background(), "new")
+	if err != nil || rate != 22050 || len(pcm) != 4410 {
+		t.Fatalf("got %d samples, %d Hz, %v", len(pcm), rate, err)
+	}
+	if left, _ := os.ReadDir(p.HostOutDir); len(left) != 0 {
+		t.Errorf("stale file left: %v", left)
+	}
+	p.proc.drop()
+}
+
+func TestPiperStuckIsKilled(t *testing.T) {
+	p, startLog := piperFixture(t, "")
+	good := p.Cmd
+	p.Cmd = []string{"sh", "-c", "while read l; do :; done"} // never answers
+	p.stuck = 100 * time.Millisecond
+	if _, _, err := p.Synth(context.Background(), "x"); !errors.Is(err, errStuck) {
+		t.Fatalf("err = %v", err)
 	}
 	if p.proc != nil {
 		t.Error("stuck process not dropped")
+	}
+	p.Cmd = good
+	if _, _, err := p.Synth(context.Background(), "y"); err != nil {
+		t.Fatal(err)
+	}
+	if n := starts(t, startLog); n != 1 {
+		t.Errorf("good fake started %d times", n)
+	}
+	p.proc.drop()
+}
+
+func TestPiperStartTwiceKeepsProcess(t *testing.T) {
+	p, startLog := piperFixture(t, "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p.Start(ctx)
+	first := p.proc
+	p.Start(ctx)
+	if p.proc != first {
+		t.Error("second Start replaced the process")
+	}
+	if _, _, err := p.Synth(ctx, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if n := starts(t, startLog); n != 1 {
+		t.Errorf("started %d times", n)
+	}
+}
+
+func TestPiperQueuedCallerHonoursCtx(t *testing.T) {
+	p, _ := piperFixture(t, "", "0.5")
+	go p.Synth(context.Background(), "slow")
+	time.Sleep(50 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, _, err := p.Synth(ctx, "queued"); !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 400*time.Millisecond {
+		t.Errorf("err = %v after %v", err, time.Since(start))
 	}
 }
 
@@ -176,6 +245,19 @@ type stub struct {
 }
 
 func (s stub) Synth(context.Context, string) ([]int16, int, error) { return s.pcm, 22050, s.err }
+
+func TestFallbackCtxAndNilBackup(t *testing.T) {
+	boom := errors.New("boom")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	f := Fallback{Primary: stub{err: boom}, Backup: stub{pcm: []int16{1}}}
+	if _, _, err := f.Synth(ctx, "x"); err != boom {
+		t.Errorf("cancelled ctx used backup: %v", err)
+	}
+	if _, _, err := (Fallback{Primary: stub{err: boom}}).Synth(context.Background(), "x"); err != boom {
+		t.Errorf("nil backup: %v", err)
+	}
+}
 
 func TestFallbackUsesBackup(t *testing.T) {
 	f := Fallback{Primary: stub{err: errors.New("boom")}, Backup: stub{pcm: []int16{7, 8}}}

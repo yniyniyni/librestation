@@ -12,11 +12,20 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"voice/internal/wav"
 )
+
+// stuckAfter is how long a request may go unanswered before piper is
+// considered wedged and killed. A cancelled request does not kill piper:
+// barge-in cancels often, and a restart costs a 1-3 s model load.
+const stuckAfter = 15 * time.Second
+
+var errStuck = errors.New("piper: no answer, killed")
 
 // Piper drives one resident piper process in --json-input mode: a JSON line
 // in per text, the written file's path out. Loading the voice model takes
@@ -29,29 +38,64 @@ type Piper struct {
 	// chroot); HostOutDir is the same directory as voiced sees it.
 	OutDir, HostOutDir string
 
-	mu   sync.Mutex // serialises Synth and guards proc
-	base context.Context
-	proc *piperProc
-	n    atomic.Uint64
+	stuck time.Duration // 0 = stuckAfter; tests shorten it
+
+	semOnce sync.Once
+	sem     chan struct{} // 1 slot: serialises Synth/Start, guards base and proc
+	base    context.Context
+	proc    *piperProc
+	n       atomic.Uint64
 }
 
 type piperProc struct {
 	stdin  io.WriteCloser
-	lines  chan string // stdout lines; closed when the process ends
+	lines  chan string   // stdout lines; closed when stdout ends
+	done   chan struct{} // closed when the process is dropped
+	exited chan struct{} // closed once the process has been reaped
 	cancel context.CancelFunc
-	cmd    *exec.Cmd
+	once   sync.Once
 }
 
-func (pp *piperProc) kill() {
-	pp.cancel()
-	pp.cmd.Wait() // reaps; the reader goroutine ends with the pipe
+// drop stops the process and releases its reader goroutines.
+func (pp *piperProc) drop() {
+	pp.once.Do(func() {
+		close(pp.done)
+		pp.cancel()
+	})
 }
+
+func (pp *piperProc) alive() bool {
+	select {
+	case <-pp.exited:
+		return false
+	default:
+		return true
+	}
+}
+
+func (p *Piper) lock(ctx context.Context) error {
+	p.semOnce.Do(func() { p.sem = make(chan struct{}, 1) })
+	select {
+	case p.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *Piper) unlock() { <-p.sem }
 
 // Start launches the process so the first reply does not wait for the model
-// load. The process lives until ctx ends.
+// load. The process lives until ctx ends. It is a no-op while a process is
+// already running.
 func (p *Piper) Start(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	if err := p.lock(ctx); err != nil {
+		return err
+	}
+	defer p.unlock()
+	if p.proc != nil && p.proc.alive() {
+		return nil
+	}
 	p.base = ctx
 	return p.startLocked()
 }
@@ -60,8 +104,18 @@ func (p *Piper) startLocked() error {
 	if len(p.Cmd) == 0 {
 		return errors.New("piper: no command")
 	}
+	if p.proc != nil {
+		p.proc.drop()
+		p.proc = nil
+	}
 	if p.base == nil {
 		p.base = context.Background()
+	}
+	if p.HostOutDir != "" { // leftovers from a previous run
+		old, _ := filepath.Glob(filepath.Join(p.HostOutDir, "*.wav"))
+		for _, f := range old {
+			os.Remove(f)
+		}
 	}
 	ctx, cancel := context.WithCancel(p.base)
 	cmd := exec.CommandContext(ctx, p.Cmd[0], p.Cmd[1:]...)
@@ -84,33 +138,54 @@ func (p *Piper) startLocked() error {
 		cancel()
 		return fmt.Errorf("piper: %w", err)
 	}
-	lines := make(chan string, 16)
+	pp := &piperProc{stdin: stdin, lines: make(chan string, 16), done: make(chan struct{}),
+		exited: make(chan struct{}), cancel: cancel}
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
-		defer close(lines)
+		defer readers.Done()
+		defer close(pp.lines)
 		sc := bufio.NewScanner(stdout)
+	scan:
 		for sc.Scan() {
-			lines <- sc.Text()
+			select {
+			case pp.lines <- sc.Text():
+			case <-pp.done:
+				break scan
+			}
 		}
+		io.Copy(io.Discard, stdout) // never leave piper blocked on a full pipe
 	}()
 	go func() {
+		defer readers.Done()
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			log.Printf("piper: %s", sc.Text())
 		}
+		io.Copy(io.Discard, stderr)
 	}()
-	p.proc = &piperProc{stdin: stdin, lines: lines, cancel: cancel, cmd: cmd}
+	go func() {
+		readers.Wait() // Wait must follow the pipe reads
+		cmd.Wait()
+		cancel()
+		close(pp.exited)
+	}()
+	p.proc = pp
 	return nil
 }
 
 // Synth speaks text and returns the file's own rate (22050 for most voices).
 // A process that died is restarted, once per call. If ctx ends first, the
-// process is killed so a stuck piper cannot hold up the next reply.
+// request is abandoned and piper keeps running; a process that does not
+// answer within stuckAfter is killed and restarts on the next call.
 func (p *Piper) Synth(ctx context.Context, text string) ([]int16, int, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	if err := p.lock(ctx); err != nil {
+		return nil, 0, err
+	}
+	defer p.unlock()
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
-		if p.proc == nil {
+		if p.proc == nil || !p.proc.alive() {
 			if err = p.startLocked(); err != nil {
 				return nil, 0, err
 			}
@@ -125,13 +200,27 @@ func (p *Piper) Synth(ctx context.Context, text string) ([]int16, int, error) {
 		if !dead {
 			return nil, 0, err
 		}
-		p.proc.kill()
+		p.proc.drop()
 		p.proc = nil
 		if ctx.Err() != nil {
 			return nil, 0, ctx.Err()
 		}
+		if errors.Is(err, errStuck) {
+			return nil, 0, err
+		}
 	}
 	return nil, 0, err
+}
+
+// dropStale deletes the file of an answer that arrived after its request
+// was abandoned, if it lies in OutDir.
+func (p *Piper) dropStale(line string) {
+	if p.HostOutDir == "" || path.Dir(line) != path.Clean(p.OutDir) {
+		return
+	}
+	if base := path.Base(line); strings.HasSuffix(base, ".wav") {
+		os.Remove(filepath.Join(p.HostOutDir, base))
+	}
 }
 
 // once runs one request; dead reports that the process must be replaced.
@@ -148,6 +237,12 @@ func (p *Piper) once(ctx context.Context, text string) (pcm []int16, rate int, d
 	if _, err := p.proc.stdin.Write(append(req, '\n')); err != nil {
 		return nil, 0, true, fmt.Errorf("piper: %w", err)
 	}
+	limit := p.stuck
+	if limit == 0 {
+		limit = stuckAfter
+	}
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
 	for {
 		select {
 		case line, ok := <-p.proc.lines:
@@ -155,7 +250,8 @@ func (p *Piper) once(ctx context.Context, text string) (pcm []int16, rate int, d
 				return nil, 0, true, errors.New("piper: process exited")
 			}
 			if line != want {
-				continue // log output, not our answer
+				p.dropStale(line) // an abandoned request's answer, or log output
+				continue
 			}
 			b, err := os.ReadFile(host)
 			if err != nil {
@@ -170,7 +266,9 @@ func (p *Piper) once(ctx context.Context, text string) (pcm []int16, rate int, d
 			}
 			return pcm, rate, false, nil
 		case <-ctx.Done():
-			return nil, 0, true, ctx.Err()
+			return nil, 0, false, ctx.Err()
+		case <-timer.C:
+			return nil, 0, true, errStuck
 		}
 	}
 }
