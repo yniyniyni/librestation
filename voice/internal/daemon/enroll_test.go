@@ -115,3 +115,68 @@ func TestNoMigrationWithoutModel(t *testing.T) {
 		t.Fatalf("words %v, settings %v", ents, d.settings.Words)
 	}
 }
+
+func TestEnrollStockNamePunctuation(t *testing.T) {
+	d := stockDaemon(t, t.TempDir(), true)
+	for _, n := range []string{"Стоп!", "стоп.", " Дальше? "} {
+		if _, err := d.startEnroll(n); err == nil {
+			t.Fatalf("%q enrolled", n)
+		}
+	}
+	if _, err := d.startEnroll("стопка"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMigrateStockWordsByID: a stock word is found by its name with
+// punctuation, or by the dir name when name.txt is missing; other words,
+// their settings and files survive.
+func TestMigrateStockWordsByID(t *testing.T) {
+	dir := t.TempDir()
+	seedWords(t, dir, "Стоп!", "назад", "стопка", "alexa")
+	os.Remove(filepath.Join(dir, "words", "назад", "name.txt"))
+	d := stockDaemon(t, dir, true)
+	ents, _ := os.ReadDir(filepath.Join(dir, "words"))
+	var left []string
+	for _, e := range ents {
+		left = append(left, e.Name())
+	}
+	if strings.Join(left, ",") != "alexa,стопка" {
+		t.Fatalf("words left: %v", left)
+	}
+	for _, id := range []string{"alexa", "стопка"} {
+		if d.settings.Words[id] == nil {
+			t.Fatalf("settings of %s lost: %v", id, d.settings.Words)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "words", id, "false-1.wav")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(d.settings.Words) != 2 {
+		t.Fatalf("settings: %v", d.settings.Words)
+	}
+}
+
+// TestMigrateRemoveFailureNotFatal: a word that cannot be removed is logged
+// and voiced still starts.
+func TestMigrateRemoveFailureNotFatal(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores permissions")
+	}
+	dir := t.TempDir()
+	seedWords(t, dir, "стоп", "alexa")
+	wd := filepath.Join(dir, "words", "стоп")
+	sub := filepath.Join(wd, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(sub, "f"), []byte("x"), 0o644)
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(sub, 0o755) })
+	d := stockDaemon(t, dir, true)
+	if d.settings.Words["alexa"] == nil {
+		t.Fatalf("settings: %v", d.settings.Words)
+	}
+}

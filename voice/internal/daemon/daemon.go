@@ -303,9 +303,7 @@ func New(opt Options) (*Daemon, error) {
 		return nil, err
 	}
 	if opt.Commands != nil {
-		if err := d.migrateStockWords(); err != nil {
-			return nil, err
-		}
+		d.migrateStockWords()
 	}
 	if err := d.loadWords(); err != nil {
 		return nil, err
@@ -326,29 +324,30 @@ func (d *Daemon) removeWord(id string) error {
 }
 
 // migrateStockWords removes enrolled words that duplicate a stock command
-// of the loaded Yandex model.
-func (d *Daemon) migrateStockWords() error {
+// of the loaded Yandex model, by name or by dir. A failure is only logged:
+// it must not keep voiced from starting.
+func (d *Daemon) migrateStockWords() {
 	dirs, err := os.ReadDir(filepath.Join(d.opt.DataDir, "words"))
 	if err != nil {
-		return err
+		return // loadWords reports it
 	}
 	for _, e := range dirs {
 		if !e.IsDir() {
 			continue
 		}
 		name := e.Name()
-		if b, err := os.ReadFile(filepath.Join(d.wordDir(name), "name.txt")); err == nil {
-			name = string(b)
+		if b, err := os.ReadFile(filepath.Join(d.wordDir(name), "name.txt")); err == nil && strings.TrimSpace(string(b)) != "" {
+			name = strings.TrimSpace(string(b))
 		}
-		if !stockCommandName(name) {
+		if !stockCommandName(name) && !stockCommandName(e.Name()) {
 			continue
 		}
-		log.Printf("слово «%s» совпадает со штатной командой колонки — удалено", strings.TrimSpace(name))
 		if err := d.removeWord(e.Name()); err != nil {
-			return err
+			log.Printf("слово «%s» совпадает со штатной командой колонки, но удалить его не вышло: %v", name, err)
+			continue
 		}
+		log.Printf("слово «%s» совпадает со штатной командой колонки — удалено", name)
 	}
-	return nil
 }
 
 func (d *Daemon) settingsPath() string { return filepath.Join(d.opt.DataDir, "settings.json") }

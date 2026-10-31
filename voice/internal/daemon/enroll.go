@@ -48,9 +48,10 @@ type TakeResult struct {
 var stockCommandNames = []string{"стоп", "хватит", "пауза", "продолжи", "дальше", "следующий", "назад", "громче", "тише"}
 
 // stockCommandName reports whether name is one of the stock command names,
-// ignoring case and surrounding spaces.
+// ignoring case and surrounding spaces, or would be stored as one (wordID).
 func stockCommandName(name string) bool {
-	return slices.Contains(stockCommandNames, strings.ToLower(strings.TrimSpace(name)))
+	return slices.Contains(stockCommandNames, strings.ToLower(strings.TrimSpace(name))) ||
+		slices.Contains(stockCommandNames, wordID(name))
 }
 
 func (d *Daemon) startEnroll(name string) (*enrollment, error) {
