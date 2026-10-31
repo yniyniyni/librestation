@@ -34,6 +34,9 @@ type Options struct {
 	MicCmd    []string // capture helper command
 	Soloist   string   // Soloist WebSocket URL (used by the real Actuator)
 	Actuator  Actuator // runs word actions; nil = actions are only logged
+	// Assistant runs the "assistant" word action and gets every audio block;
+	// nil = that action is only logged.
+	Assistant Assistant
 	// OnLED receives events for the LED daemon (nil = off). It must not block.
 	OnLED func(proto.Event)
 	// Judge labels hits with an audio model (nil = off); JudgeModel names it
@@ -45,6 +48,18 @@ type Options struct {
 // Judge is the audio model that labels hits (judge.Client).
 type Judge interface {
 	Judge(ctx context.Context, h judge.Hit) (judge.Verdict, error)
+}
+
+// Assistant is the voice assistant session (assistant.Session). Its methods
+// never block and never call back into the daemon under its own locks.
+type Assistant interface {
+	// Audio takes every block of frontend output.
+	Audio([]int16)
+	// Wake starts or interrupts a request; onNoRequest is called from the
+	// session's goroutine when the request held nothing for the speaker.
+	Wake(ctx context.Context, onNoRequest func())
+	// Busy is true while a request is running.
+	Busy() bool
 }
 
 // Settings is persisted in <data>/settings.json.
@@ -103,6 +118,7 @@ type Hit struct {
 
 type Daemon struct {
 	opt Options
+	ctx context.Context // Run's context; nil before Run
 
 	onActionDone func()             // test hook
 	retrain      func(string) error // test hook for autoRetrain; nil = startTraining
@@ -282,6 +298,9 @@ func (d *Daemon) rebuildDetector() error {
 // Run captures and processes audio until ctx ends. Yandex's voice stack is
 // killed first (and again whenever the mic reads silence) so we get the mic.
 func (d *Daemon) Run(ctx context.Context) {
+	d.mu.Lock()
+	d.ctx = ctx
+	d.mu.Unlock()
 	go d.runJudge(ctx)
 	if len(d.opt.MicCmd) == 0 {
 		d.mu.Lock()
@@ -346,6 +365,9 @@ func (d *Daemon) process(pcm []int16) float64 {
 	d.level = 10*math.Log10(e/float64(max(len(pcm), 1))+1e-9) - 90.3 // dBFS
 	d.audioOK, d.audioErr = true, ""
 	d.ring.write(pcm)
+	if a := d.opt.Assistant; a != nil {
+		a.Audio(pcm)
+	}
 	if c := d.capture; c != nil {
 		c.buf = append(c.buf, pcm...)
 		if len(c.buf) >= c.want {
@@ -371,6 +393,25 @@ func (d *Daemon) onHit(id string, score float32) {
 		action = s.Action
 	}
 	h.Action = action
+	asst := d.opt.Assistant
+	if action == "assistant" {
+		// The session drives the LEDs; the hit is neither judged nor debounced.
+		if asst != nil && !d.settings.DryRun {
+			h.Fired = true
+			ctx := d.ctx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			asst.Wake(ctx, func() { d.assistantNoRequest(h) })
+		}
+		d.addHitLocked(h)
+		log.Printf("hit %s score %.3f action %q", id, score, action)
+		return
+	}
+	if asst != nil && action != "" && asst.Busy() {
+		h.Debounced = true // quick commands wait while the assistant talks
+		action = ""
+	}
 	if t, ok := d.lastAction[action]; ok && action != "" && !d.settings.DryRun && d.now().Sub(t) < actionDebounce {
 		h.Debounced = true
 		action = ""
@@ -400,6 +441,15 @@ func (d *Daemon) onHit(id string, score float32) {
 	d.addHitLocked(h)
 	d.judgeLaterLocked(h)
 	log.Printf("hit %s score %.3f action %q debounced %v", id, score, action, h.Debounced)
+}
+
+// assistantNoRequest marks the hit that woke the assistant as a false alarm:
+// no request followed. Runs on the session's goroutine, without its locks.
+func (d *Daemon) assistantNoRequest(h *Hit) {
+	d.mu.Lock()
+	d.markFalseLocked(h, true)
+	d.mu.Unlock()
+	d.persist(h)
 }
 
 // actionDone is a test hook called after each action finished.

@@ -163,7 +163,7 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 function pct(x) { return Math.round(x * 100) + "%"; }
 function msg(el, text, kind) { el.textContent = text || ""; el.className = "msg " + (kind || ""); }
 
-const ACTIONS = [["", "нет"], ["pause", "пауза"], ["play", "продолжить"], ["next", "следующий"], ["prev", "предыдущий"], ["louder", "громче"], ["quieter", "тише"]];
+const ACTIONS = [["", "нет"], ["pause", "пауза"], ["play", "продолжить"], ["next", "следующий"], ["prev", "предыдущий"], ["louder", "громче"], ["quieter", "тише"], ["assistant", "ассистент"]];
 function actionOptions(sel) {
   return ACTIONS.map(([v, l]) => `<option value="${v}"${v === sel ? " selected" : ""}>${l}</option>`).join("");
 }
