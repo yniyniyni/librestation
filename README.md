@@ -220,6 +220,7 @@ adb -s "$ADB_DEVICE" shell -tt 'mysudo -n cmd package install-existing <паке
 | `ANDROID_PLATFORM` | Android SDK platform | `android-28` |
 | `ANDROID_BUILD_TOOLS_VERSION` | Версия build-tools/d8 | `34.0.0` |
 | `NEG_PYTHON` | Python для negatives dataset | `python3` |
+| `HF_ENDPOINT` | Зеркало Hugging Face для negatives (если huggingface.co недоступен), напр. `https://hf-mirror.com` | `https://huggingface.co` |
 | `REMOTE_BASE` | Базовый каталог на колонке | `/data/local/tmp` |
 | `REMOTE_VOICE_DIR` | Бинарники/данные voice | `$REMOTE_BASE/voice` |
 | `REMOTE_SOLOIST_DIR` | Сервис/ключ/rootfs | `$REMOTE_BASE/soloist` |
