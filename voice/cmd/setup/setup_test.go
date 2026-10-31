@@ -351,24 +351,84 @@ func TestCheckAssistantStockSounds(t *testing.T) {
 	}
 }
 
-func TestCheckYcmd(t *testing.T) {
-	log := filepath.Join(t.TempDir(), "scripts")
-	d := &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+// modelDevice is a fake speaker: root scripts land in log and succeed, and
+// `adb pull` of a model file copies it from src (a missing one fails).
+func modelDevice(log, src string) *adb.Device {
+	return &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+		if len(args) == 5 && args[2] == "pull" {
+			return exec.Command("cp", filepath.Join(src, filepath.Base(args[3])), args[4])
+		}
 		return exec.Command("sh", "-c", "cat >>\"$1\"; printf '__librestation_rc=0\\n'", "sh", log)
 	}}
-	e := &env{u: newUI(false), d: d}
+}
+
+// stubLoad replaces the host-side model check for one test.
+func stubLoad(t *testing.T, f func(dir string) error) {
+	old := loadYcmd
+	loadYcmd = f
+	t.Cleanup(func() { loadYcmd = old })
+}
+
+func TestCheckYcmd(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "scripts")
+	src := t.TempDir()
+	for _, f := range ycmdFiles {
+		os.WriteFile(filepath.Join(src, f), []byte("data of "+f), 0o644)
+	}
+	var loaded []string
+	stubLoad(t, func(dir string) error {
+		for _, f := range ycmdFiles {
+			b, _ := os.ReadFile(filepath.Join(dir, f))
+			loaded = append(loaded, string(b))
+		}
+		return nil
+	})
+	e := &env{u: newUI(false), d: modelDevice(log, src)}
 	if ok, _, err := checkYcmd(e); err != nil || !ok {
 		t.Fatalf("in place: ok=%v err=%v", ok, err)
 	}
 	b, _ := os.ReadFile(log)
-	for _, f := range ycmdFiles {
+	for i, f := range ycmdFiles {
 		if !strings.Contains(string(b), "test -s "+ycmdDir+"/"+f) {
 			t.Errorf("%s is not checked:\n%s", f, b)
+		}
+		if loaded[i] != "data of "+f {
+			t.Errorf("%s pulled as %q", f, loaded[i])
 		}
 	}
 	e.d = fakeDevice("__librestation_rc=1\n")
 	if ok, _, err := checkYcmd(e); err != nil || ok {
 		t.Fatalf("missing: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestCheckYcmdUnreadable: files in place that the model loader rejects.
+func TestCheckYcmdUnreadable(t *testing.T) {
+	src := t.TempDir()
+	for _, f := range ycmdFiles {
+		os.WriteFile(filepath.Join(src, f), []byte("not a model"), 0o644)
+	}
+	e := &env{u: newUI(false), d: modelDevice(filepath.Join(t.TempDir(), "scripts"), src)}
+	ok, detail, err := checkYcmd(e)
+	if err != nil || ok || !strings.HasPrefix(detail, "модель не читается: ") {
+		t.Fatalf("ok=%v %q err=%v", ok, detail, err)
+	}
+	os.Remove(filepath.Join(src, "words.txt"))
+	ok, detail, err = checkYcmd(e)
+	if err != nil || ok || !strings.HasPrefix(detail, "не удалось скачать модель с колонки: ") {
+		t.Fatalf("pull fails: ok=%v %q err=%v", ok, detail, err)
+	}
+}
+
+// TestCheckYcmdReal loads the real model through the fake speaker.
+func TestCheckYcmdReal(t *testing.T) {
+	src := os.Getenv("YCMD_DIR")
+	if src == "" {
+		t.Skip("YCMD_DIR not set")
+	}
+	e := &env{u: newUI(false), d: modelDevice(filepath.Join(t.TempDir(), "scripts"), src)}
+	if ok, detail, err := checkYcmd(e); err != nil || !ok {
+		t.Fatalf("ok=%v %q err=%v", ok, detail, err)
 	}
 }
 
@@ -388,6 +448,7 @@ func TestFixYcmdExtractsFromAPK(t *testing.T) {
 		return exec.Command("sh", "-c", "cat >>\"$1\"; printf '__librestation_rc=0\\n'", "sh", log)
 	}}
 	e := &env{u: newUI(false), d: d}
+	stubLoad(t, func(string) error { return nil })
 	if err := fixYcmd(e); err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"voice/internal/adb"
+	"voice/internal/ycmd"
 )
 
 // Paths on the speaker; the device-side scripts use the same defaults.
@@ -316,13 +317,36 @@ const (
 
 var ycmdFiles = []string{"acoustic_model.nnet", "flags.txt", "words.txt"}
 
+// loadYcmd checks on the host that the model in dir reads; tests replace it.
+var loadYcmd = func(dir string) error {
+	_, err := ycmd.Load(dir)
+	return err
+}
+
+// checkYcmd: the three files are on the speaker and the model reads (they
+// are pulled, about 700 KB, and loaded here as voiced would).
 func checkYcmd(e *env) (bool, string, error) {
 	var tests []string
 	for _, f := range ycmdFiles {
 		tests = append(tests, "test -s "+ycmdDir+"/"+f)
 	}
-	ok, err := e.d.RootOK(strings.Join(tests, "\n"))
-	return ok, "", err
+	if ok, err := e.d.RootOK(strings.Join(tests, "\n")); !ok || err != nil {
+		return ok, "", err
+	}
+	tmp, err := os.MkdirTemp("", "ycmd")
+	if err != nil {
+		return false, "", err
+	}
+	defer os.RemoveAll(tmp)
+	for _, f := range ycmdFiles {
+		if err := e.d.Pull(ycmdDir+"/"+f, filepath.Join(tmp, f)); err != nil {
+			return false, "не удалось скачать модель с колонки: " + err.Error(), nil
+		}
+	}
+	if err := loadYcmd(tmp); err != nil {
+		return false, "модель не читается: " + err.Error(), nil
+	}
+	return true, "", nil
 }
 
 func fixYcmd(e *env) error {
@@ -338,8 +362,10 @@ func fixYcmd(e *env) error {
 		return err
 	}
 	// An APK of another layout matches nothing and unzip still succeeds.
-	if ok, _, err := checkYcmd(e); err != nil {
+	if ok, detail, err := checkYcmd(e); err != nil {
 		return err
+	} else if !ok && detail != "" {
+		return fmt.Errorf("%s — другая версия прошивки?", detail)
 	} else if !ok {
 		return fmt.Errorf("в APK нет модели быстрых команд (%s) — другая версия прошивки?", strings.Join(ycmdFiles, ", "))
 	}
