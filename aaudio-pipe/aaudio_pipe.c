@@ -1,5 +1,6 @@
 // aaudio_pipe: reads raw FLOAT32LE stereo PCM from stdin and plays it via AAudio.
 // Usage: aaudio_pipe [sample_rate [gain_file]]   (default 44100)
+//        aaudio_pipe --speech  (PCM16LE mono 24 kHz; cancellable short stream)
 // gain_file holds one number the samples are multiplied by; it is re-read when
 // it changes. voiced writes there the inverse of Soloist's software volume, so
 // the music leaves here at full level and the amplifier sets the loudness.
@@ -36,6 +37,7 @@ static const char *gain_file;
 static float gain = 1.0f;
 static AAudioStream *stream;
 static int playing;
+static int speech_mode;
 
 static void close_stream(void) {
     if (stream) {
@@ -54,13 +56,13 @@ static int open_stream(void) {
     }
     AAudioStreamBuilder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
     AAudioStreamBuilder_setSharingMode(b, AAUDIO_SHARING_MODE_SHARED);
-    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_NONE);
+    AAudioStreamBuilder_setPerformanceMode(b, speech_mode ? AAUDIO_PERFORMANCE_MODE_LOW_LATENCY : AAUDIO_PERFORMANCE_MODE_NONE);
     AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_FLOAT);
     AAudioStreamBuilder_setChannelCount(b, CHANNELS);
     AAudioStreamBuilder_setSampleRate(b, sample_rate);
     AAudioStreamBuilder_setUsage(b, AAUDIO_USAGE_MEDIA);
-    AAudioStreamBuilder_setContentType(b, AAUDIO_CONTENT_TYPE_MUSIC);
-    AAudioStreamBuilder_setBufferCapacityInFrames(b, BUFFER_FRAMES);
+    AAudioStreamBuilder_setContentType(b, speech_mode ? AAUDIO_CONTENT_TYPE_SPEECH : AAUDIO_CONTENT_TYPE_MUSIC);
+    AAudioStreamBuilder_setBufferCapacityInFrames(b, speech_mode ? 960 : BUFFER_FRAMES);
     r = AAudioStreamBuilder_openStream(b, &stream);
     AAudioStreamBuilder_delete(b);
     if (r != AAUDIO_OK) {
@@ -148,7 +150,7 @@ static void log_xruns(void) {
     last = x;
 }
 
-static void play(unsigned char *buf, int frames) {
+static int play(unsigned char *buf, int frames) {
     update_gain();
     log_xruns();
     apply_gain((float *)buf, frames * CHANNELS);
@@ -156,20 +158,64 @@ static void play(unsigned char *buf, int frames) {
         if (ensure_playing() != 0) {
             // audioserver not ready; drop this chunk rather than block librespot forever
             usleep(200 * 1000);
-            return;
+            return -1;
         }
         aaudio_result_t n = AAudioStream_write(stream, buf, frames, WRITE_TIMEOUT_NS);
         if (n < 0) {
             fprintf(stderr, "aaudio_pipe: write: %s, reopening\n", AAudio_convertResultToText(n));
             close_stream();
+            if (speech_mode) return -1;
             continue;
         }
+        if (n == 0 && speech_mode) return -1;
         buf += n * FRAME_BYTES;
         frames -= n;
     }
+    return 0;
+}
+
+// No Soloist inverse gain here: speech already follows the hardware master.
+// A separate process/AAudio stream lets voiced discard all buffered speech by
+// killing the process without disturbing the long-lived music stream.
+static int speech_main(void) {
+    unsigned char raw[480 * 2];
+    float out[480 * CHANNELS];
+    size_t have = 0;
+    int rc = 0;
+    speech_mode = 1;
+    sample_rate = 24000;
+    for (;;) {
+        ssize_t n = read(STDIN_FILENO, raw + have, sizeof(raw) - have);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            perror("aaudio_pipe: speech read"); rc = 1; break;
+        }
+        if (n == 0) {
+            if (have) { fprintf(stderr, "aaudio_pipe: truncated PCM16 sample\n"); rc = 1; }
+            break;
+        }
+        have += n;
+        size_t frames = have / 2;
+        for (size_t i = 0; i < frames; i++) {
+            int16_t sample = (int16_t)((uint16_t)raw[2*i] | ((uint16_t)raw[2*i+1] << 8));
+            out[2*i] = out[2*i+1] = sample / 32768.0f;
+        }
+        if (frames && play((unsigned char *)out, frames) != 0) { rc = 1; break; }
+        have -= frames * 2;
+        if (have) raw[0] = raw[frames * 2];
+    }
+    // EOF is normal turn completion, not interruption. Allow the small device
+    // buffer to drain before close; interruption kills this process immediately.
+    if (!rc && stream) {
+        int frames = AAudioStream_getBufferSizeInFrames(stream);
+        usleep((useconds_t)((long long)frames * 1000000 / sample_rate + 20000));
+    }
+    close_stream();
+    return rc;
 }
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--speech") == 0) return speech_main();
     if (argc > 1)
         sample_rate = atoi(argv[1]);
     if (argc > 2)

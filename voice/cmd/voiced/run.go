@@ -48,6 +48,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&ac.spotifyToken, "spotify-token", "/data/local/tmp/voice/spotify.json", "Spotify refresh token file written by setup")
 	fs.StringVar(&ac.spotifyDevice, "spotify-device", "", "this speaker's Spotify Connect name; empty = the active device")
 	fs.StringVar(&ac.speakerCmd, "speaker-cmd", "/data/local/tmp/soloist/aaudio_pipe 24000", "helper that plays replies (float32 stereo on stdin)")
+	fs.StringVar(&ac.liveModel, "live-model", "gemini-3.8-live", "Gemini Live audio model")
 	fs.StringVar(&ac.piperCmd, "piper-cmd", "sh /data/local/tmp/soloist/chroot.sh /opt/piper/piper --model /opt/piper/voice.onnx --json-input", "resident Piper command")
 	fs.StringVar(&ac.piperOut, "piper-out", "/data/local/tmp/soloist/rootfs/tmp/tts", "where Piper writes, as voiced sees it (inside the chroot's rootfs)")
 	fs.StringVar(&ac.sounds, "sounds", "/data/local/tmp/voice/sounds", "stock phrases <name>.wav")

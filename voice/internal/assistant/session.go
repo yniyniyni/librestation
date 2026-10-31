@@ -70,6 +70,7 @@ type Deps struct {
 	Duck   func(float64)     // music gain factor; 1 = not ducked
 	LED    func(proto.Event) // ring state
 	Stock  func(name string) ([]int16, int, error)
+	Live   func(context.Context) (LiveSession, error)
 	Now    func() time.Time // nil = time.Now
 }
 
@@ -245,6 +246,10 @@ func (s *Session) listening() bool {
 
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
+	if s.d.Live != nil {
+		s.runLive(ctx, gen, onNoRequest)
+		return
+	}
 	noRequest := func(first bool) {
 		if first && onNoRequest != nil && s.current(gen) {
 			onNoRequest()

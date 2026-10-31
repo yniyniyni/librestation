@@ -14,6 +14,7 @@ import (
 	"voice/internal/agent"
 	"voice/internal/assistant"
 	"voice/internal/daemon"
+	"voice/internal/geminilive"
 	"voice/internal/led/proto"
 	"voice/internal/spotifyapi"
 	"voice/internal/tools"
@@ -28,6 +29,7 @@ type assistantConfig struct {
 	speakerCmd                  string
 	piperCmd, piperOut          string
 	sounds                      string
+	liveModel                   string
 }
 
 // spotifyLinkEvery is how often the panel's Spotify status is re-read.
@@ -92,8 +94,14 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Duck:   out.duck,
 		LED:    led,
 		Stock:  newStockSounds(c.sounds).Load,
+		Live: func(lctx context.Context) (assistant.LiveSession, error) {
+			return geminilive.Dial(lctx, geminilive.Config{
+				Key: key, Model: c.liveModel, Voice: settings().Voice,
+				Prompt: assistant.LivePrompt, Tools: assistant.LiveDeclarations(ag.Tools),
+			})
+		},
 	})
-	log.Printf("assistant: on, model %s", model())
+	log.Printf("assistant: on, Live model %s; text fallback model %s", c.liveModel, model())
 	return builtAssistant{sess, spk, link, piperDown}
 }
 
