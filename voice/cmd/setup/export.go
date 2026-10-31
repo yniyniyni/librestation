@@ -110,7 +110,8 @@ func exportRootfs(e *env, out string, confirm bool) error {
 	if err != nil {
 		return err
 	}
-	sizeOut, err := e.d.Root("du -skx " + rootfs + " | cut -f1")
+	// -x keeps du out of the chroot's /proc, /sys and /dev mounts
+	sizeOut, err := e.d.Root("(du -skx " + rootfs + " 2>/dev/null || du -sk " + rootfs + " 2>/dev/null) | cut -f1")
 	if err != nil {
 		return err
 	}
@@ -188,17 +189,19 @@ func exportRootfs(e *env, out string, confirm bool) error {
 // Soloist and Gemini keys and the proxy credentials. They are only compared,
 // never printed.
 func speakerSecrets(e *env) ([][]byte, error) {
-	out, err := e.d.Root(fmt.Sprintf("for f in %s/api-key %s/gemini.key; do [ -s $f ] && cat $f && echo; done; true", soloistDir, voiceDir))
+	// Root runs under set -e, so every test is an if; errors never carry the
+	// output, which would hold the keys.
+	out, err := e.d.Root(fmt.Sprintf("for f in %s/api-key %s/gemini.key; do if [ -s $f ]; then cat $f; echo; fi; done", soloistDir, voiceDir))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("не удалось прочитать ключи на колонке")
 	}
 	var s [][]byte
 	for _, l := range strings.Split(out, "\n") {
 		s = appendSecret(s, l)
 	}
-	cfg, err := e.d.Root(fmt.Sprintf("cat %s/xray.json 2>/dev/null; true", soloistDir))
+	cfg, err := e.d.Root(fmt.Sprintf("if [ -s %[1]s/xray.json ]; then cat %[1]s/xray.json; fi", soloistDir))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("не удалось прочитать xray.json на колонке")
 	}
 	var v any
 	if json.Unmarshal([]byte(cfg), &v) == nil {
