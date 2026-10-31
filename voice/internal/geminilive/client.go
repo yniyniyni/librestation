@@ -162,7 +162,12 @@ func (c *Client) SendAudio(ctx context.Context, pcm []int16) error {
 	for i, s := range pcm {
 		binary.LittleEndian.PutUint16(b[2*i:], uint16(s))
 	}
-	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audio": Blob{MimeType: "audio/pcm;rate=16000", Data: b}}})
+	if err := c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audio": Blob{MimeType: "audio/pcm;rate=16000", Data: b}}}); err != nil {
+		return err
+	}
+	// The local VAD already found the end of this utterance. Tell Live
+	// immediately instead of waiting for server-side silence detection.
+	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audioStreamEnd": true}})
 }
 func (c *Client) Respond(ctx context.Context, r []FunctionResponse) error {
 	return c.write(ctx, map[string]any{"toolResponse": map[string]any{"functionResponses": r}})

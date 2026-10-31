@@ -22,6 +22,13 @@ type LiveSession interface {
 	Close()
 }
 
+// livePlayer streams Live PCM without waiting after every small audio chunk.
+// The existing Player interface remains blocking for regular TTS replies.
+type livePlayer interface {
+	PlayLive(context.Context, []int16, int) error
+	FinishLive(context.Context) error
+}
+
 var errLiveDone = errors.New("assistant: Live conversation ended")
 
 const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation.`
@@ -142,13 +149,24 @@ func (s *Session) liveTurn(ctx context.Context, gen int, audio []int16) error {
 						if e != nil {
 							return e
 						}
-						if e = s.d.Player.Play(ctx, pcm, 24000); e != nil && ctx.Err() == nil {
-							return e
+						var playErr error
+						if lp, ok := s.d.Player.(livePlayer); ok {
+							playErr = lp.PlayLive(ctx, pcm, 24000)
+						} else {
+							playErr = s.d.Player.Play(ctx, pcm, 24000)
+						}
+						if playErr != nil && ctx.Err() == nil {
+							return playErr
 						}
 					}
 				}
 			}
 			if c.TurnComplete {
+				if lp, ok := s.d.Player.(livePlayer); ok {
+					if err := lp.FinishLive(ctx); err != nil && ctx.Err() == nil {
+						return err
+					}
+				}
 				s.set(gen, "followup", "followup")
 				return nil
 			}

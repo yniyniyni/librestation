@@ -67,6 +67,17 @@ func TestLiveWire(t *testing.T) {
 		if audio.Audio.MimeType != "audio/pcm;rate=16000" || audio.Audio.Data != "AQD//w==" {
 			t.Errorf("audio %s", msg["realtimeInput"])
 		}
+		if err = wsjson.Read(ctx, c, &msg); err != nil {
+			done <- err
+			return
+		}
+		var end struct {
+			AudioStreamEnd bool
+		}
+		json.Unmarshal(msg["realtimeInput"], &end)
+		if !end.AudioStreamEnd {
+			t.Errorf("missing audioStreamEnd: %s", msg["realtimeInput"])
+		}
 		wsjson.Write(ctx, c, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": base64.StdEncoding.EncodeToString([]byte{1, 0})}}}}, "interrupted": true, "turnComplete": true}})
 		wsjson.Write(ctx, c, map[string]any{"toolCall": map[string]any{"functionCalls": []any{map[string]any{"id": "c1", "name": "pause", "args": map[string]any{}}}}})
 		if err = wsjson.Read(ctx, c, &msg); err != nil {

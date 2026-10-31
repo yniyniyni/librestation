@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
@@ -147,11 +148,64 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 			s.onWake()
 		}
 	}
+	frames := resample24k(pcm, rate)
+	if err := s.writeLocked(ctx, p, frames); err != nil {
+		return err
+	}
+	if len(frames) == 0 {
+		return nil
+	}
+	played := time.Duration(len(frames)) * time.Second / speakerRate
+	wait := s.last.Add(played + speakerBuffer).Sub(s.now())
+	if wait <= 0 {
+		return nil
+	}
+	return s.sleep(ctx, wait)
+}
 
-	// A blocked write (aaudio_pipe backed up) is released by the deadline:
-	// each chunk gets writeTimeout, and a cancel moves it to now.
-	// The callback may only touch the deadline while this Play is still
-	// writing; once guard.done is set a late callback does nothing.
+// PlayLive appends one Live audio chunk without waiting for the device buffer
+// to drain. Live sends many small chunks; waiting after each one starves the
+// stream and causes audible gaps.
+func (s *speaker) PlayLive(ctx context.Context, pcm []int16, rate int) error {
+	s.play.Lock()
+	defer s.play.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if rate <= 0 {
+		return fmt.Errorf("speaker: bad rate %d", rate)
+	}
+	p, err := s.start()
+	if err != nil {
+		return err
+	}
+	if s.last.IsZero() || s.now().Sub(s.last) > speakerIdle {
+		if s.onWake != nil {
+			s.onWake()
+		}
+	}
+	return s.writeLocked(ctx, p, resample24k(pcm, rate))
+}
+
+// FinishLive lets the last Live chunk reach the device before the assistant
+// opens the follow-up listener.
+func (s *speaker) FinishLive(ctx context.Context) error {
+	s.play.Lock()
+	defer s.play.Unlock()
+	if s.last.IsZero() {
+		return nil
+	}
+	wait := s.last.Add(speakerBuffer).Sub(s.now())
+	if wait <= 0 {
+		return nil
+	}
+	return s.sleep(ctx, wait)
+}
+
+func (s *speaker) writeLocked(ctx context.Context, p *speakerProc, frames []float32) error {
+	if len(frames) == 0 {
+		return nil
+	}
 	var guard struct {
 		sync.Mutex
 		done bool
@@ -159,7 +213,7 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 	arm := func() {
 		guard.Lock()
 		defer guard.Unlock()
-		if ctx.Err() == nil { // else the callback has set it, or will
+		if ctx.Err() == nil {
 			p.in.SetWriteDeadline(time.Now().Add(s.writeTimeout))
 		}
 	}
@@ -177,10 +231,8 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 	})
 	defer func() { finish(); stop() }()
 
-	frames := resample24k(pcm, rate)
 	per := int(int64(speakerRate) * int64(speakerChunk) / int64(time.Second))
 	buf := make([]byte, 0, per*8)
-	var start time.Time
 	for off := 0; off < len(frames); off += per {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -191,20 +243,15 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 			buf = binary.LittleEndian.AppendUint32(buf, math.Float32bits(v))
 			buf = binary.LittleEndian.AppendUint32(buf, math.Float32bits(v))
 		}
-		if start.IsZero() {
-			start = s.now()
-		}
 		arm()
 		n, err := p.in.Write(buf)
 		s.last = s.now()
 		if err != nil {
 			if ctx.Err() != nil {
-				// Finish the frame cut by the deadline so the stream stays
-				// aligned; if that fails, restart the helper on a clean stream.
 				finish()
-				if rest := (8 - n%8) % 8; rest > 0 {
+				if rest := (8 - n%8) % 8; rest > 0 && n+rest <= len(buf) {
 					p.in.SetWriteDeadline(time.Now().Add(time.Second))
-					if _, err := p.in.Write(buf[n : n+rest]); err != nil {
+					if _, writeErr := p.in.Write(buf[n : n+rest]); writeErr != nil {
 						s.kill()
 					}
 				}
@@ -213,16 +260,12 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 			s.kill()
 			return fmt.Errorf("speaker: %w", err)
 		}
+		if n != len(buf) {
+			s.kill()
+			return io.ErrShortWrite
+		}
 	}
-	if start.IsZero() {
-		return nil
-	}
-	played := time.Duration(len(frames)) * time.Second / speakerRate
-	wait := start.Add(played + speakerBuffer).Sub(s.now())
-	if wait <= 0 {
-		return nil
-	}
-	return s.sleep(ctx, wait)
+	return nil
 }
 
 // resample24k converts mono int16 at rate Hz to float32 at speakerRate by
