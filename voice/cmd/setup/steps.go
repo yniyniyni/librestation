@@ -44,6 +44,8 @@ type step struct {
 	hint     string // what to do by hand when there is no fix or it failed
 	// update, when set, is offered even when the step is in place.
 	update string
+	// canUpdate, when set, limits the update offer to speakers where it applies.
+	canUpdate func(*env) bool
 }
 
 func steps() []step {
@@ -86,6 +88,9 @@ func steps() []step {
 			hint: "смотрите лог: adb shell -tt 'mysudo -n tail -50 " + soloistDir + "/soloist.log'"},
 		{name: "Модель Gemini", optional: true, check: checkModel, fix: fixModel,
 			ask: "Выбрать модель?", update: "Выбрать другую модель Gemini?"},
+		{name: "Архив rootfs для другой колонки", optional: true, check: checkRootfsArchive, fix: fixRootfsArchive,
+			canUpdate: canExportRootfs,
+			update:    "Снять rootfs.tar.xz (без ключей и входа Soloist) для другой колонки? Музыка остановится на пару минут"},
 	}
 }
 

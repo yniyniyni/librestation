@@ -95,6 +95,8 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 9. отвязка от Яндекса (см. ниже) и уборка файлов старых версий;
 10. кэш Soloist, запуск сервисов, веб-панель и микрофон;
 11. модель Gemini, если есть ключ.
+12. архив rootfs для другой колонки — на работающей колонке предложит снять
+    `rootfs.tar.xz` в корень репозитория (то же, что `./setup export-rootfs`, см. ниже).
 
 Проверить работающую колонку, ничего не меняя:
 
@@ -105,7 +107,8 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 Без терминала (`./setup < /dev/null`, CI) установщик тоже только проверяет.
 Rootfs, Soloist и ключи в репозиторий не входят, их нужно получить отдельно.
 
-**Rootfs для другой колонки.** На колонке, где всё уже работает:
+**Rootfs для другой колонки.** Последний шаг `./setup` предлагает это сам; отдельно,
+на колонке, где всё уже работает:
 
 ```sh
 ./setup export-rootfs            # или -o путь/к/rootfs.tar.xz

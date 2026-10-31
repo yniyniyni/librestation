@@ -91,7 +91,16 @@ func runExport(u *ui, device, out string) error {
 	}
 	e := &env{u: u, d: adb.New(serial), host: strings.Split(serial, ":")[0]}
 	u.say("Колонка %s\n", serial)
+	return exportRootfs(e, out, true)
+}
 
+// exportRootfs writes the speaker's rootfs, minus everything personal, to
+// out on this computer. confirm asks before services stop.
+func exportRootfs(e *env, out string, confirm bool) error {
+	u := e.u
+	if _, err := exec.LookPath("xz"); err != nil {
+		return fmt.Errorf("нет xz на компьютере")
+	}
 	if ok, err := e.d.RootOK("test -x " + rootfs + "/usr/bin/pulseaudio"); err != nil {
 		return fmt.Errorf("нет связи с колонкой: %w", err)
 	} else if !ok {
@@ -122,7 +131,7 @@ func runExport(u *ui, device, out string) error {
 	wasUp, _, _ := checkServices(e)
 	u.say("Rootfs %d МБ. Музыка и голосовые команды остановятся на время упаковки;", needKB/1024)
 	u.say("ключи, прокси, вход и кэш Soloist, бинарники Soloist и Xray в архив не попадут.")
-	if u.interactive && !u.yes("  Упаковать?", true) {
+	if confirm && u.interactive && !u.yes("  Упаковать?", true) {
 		return errors.New("отменено")
 	}
 	defer func() {
@@ -171,7 +180,7 @@ func runExport(u *ui, device, out string) error {
 	}
 	st, _ := os.Stat(out)
 	u.say("\nГотово: %s (%d МБ).", out, st.Size()>>20)
-	u.say("На другом компьютере положите его в корень репозитория и запустите ./setup — шаг rootfs возьмёт его сам.")
+	u.say("Отдайте его владельцу другой колонки: пусть положит в корень репозитория и запустит ./setup — шаг rootfs возьмёт его сам.")
 	return nil
 }
 
@@ -295,4 +304,23 @@ func hostPath(p string) string {
 		base, _ = os.Getwd()
 	}
 	return filepath.Join(base, p)
+}
+
+// The setup step: on a speaker with a rootfs, offer to pack it into
+// <repo>/rootfs.tar.xz for someone else's speaker. Never a failure.
+func checkRootfsArchive(e *env) (bool, string, error) {
+	p := filepath.Join(e.repo, "rootfs.tar.xz")
+	if st, err := os.Stat(p); err == nil {
+		return true, fmt.Sprintf("%s, %d МБ", p, st.Size()>>20), nil
+	}
+	return true, "не снят; нужен, чтобы поставить проект на другую колонку", nil
+}
+
+func canExportRootfs(e *env) bool {
+	ok, _ := e.d.RootOK("test -x " + rootfs + "/usr/bin/pulseaudio")
+	return ok
+}
+
+func fixRootfsArchive(e *env) error {
+	return exportRootfs(e, filepath.Join(e.repo, "rootfs.tar.xz"), false)
 }
