@@ -71,17 +71,25 @@ if [ ! -s "$here/dist/negatives.bin" ]; then
 fi
 
 echo "pushing to $dev"
-root_shell "mkdir -p $voice_dir/data $soloist_dir"
-for f in dist/voiced dist/ledd dist/mic.dex dist/negatives.bin mic/mic.sh mic/hwvol.sh; do
-    adb_cmd push "$here/$f" "$voice_dir/$(basename "$f")"
+# adb push runs as the shell user, but the target dirs are created (and may
+# already hold files) as root, so push into a shell-owned staging dir and let
+# root move everything into place. mv swaps the inode, so a running voiced
+# does not block the update.
+stage=$base/.librestation-stage
+root_shell "rm -rf $stage"
+adb_cmd shell "mkdir -p $stage/voice $stage/soloist"
+for f in voice/dist/voiced voice/dist/ledd voice/dist/mic.dex voice/dist/negatives.bin \
+    voice/mic/mic.sh voice/mic/hwvol.sh; do
+    adb_cmd push "$here/../$f" "$stage/voice/"
 done
-adb_cmd push "$here/../soloist/soloist-service.sh" "$soloist_dir/soloist-service.sh"
-adb_cmd push "$here/../soloist/setup-rootfs.sh" "$soloist_dir/setup-rootfs.sh"
-adb_cmd push "$here/../soloist/chroot.sh" "$soloist_dir/chroot.sh"
-adb_cmd push "$here/../soloist/start.sh" "$soloist_dir/start.sh"
-adb_cmd push "$here/../soloist/stop.sh" "$soloist_dir/stop.sh"
-adb_cmd push "$here/../soloist/soloist.pa" "$soloist_dir/soloist.pa"
-adb_cmd push "$here/../aaudio-pipe/aaudio_pipe" "$soloist_dir/aaudio_pipe"
+for f in soloist/soloist-service.sh soloist/setup-rootfs.sh soloist/chroot.sh soloist/start.sh \
+    soloist/stop.sh soloist/soloist.pa aaudio-pipe/aaudio_pipe; do
+    adb_cmd push "$here/../$f" "$stage/soloist/"
+done
+root_shell "mkdir -p $voice_dir/data $soloist_dir
+for f in $stage/voice/*; do mv -f \"\$f\" $voice_dir/; done
+for f in $stage/soloist/*; do mv -f \"\$f\" $soloist_dir/; done
+rm -rf $stage"
 root_shell "chmod 755 $voice_dir/voiced $voice_dir/ledd $voice_dir/mic.sh $voice_dir/hwvol.sh $soloist_dir/soloist-service.sh $soloist_dir/setup-rootfs.sh $soloist_dir/chroot.sh $soloist_dir/start.sh $soloist_dir/stop.sh $soloist_dir/aaudio_pipe"
 
 # Stock LED assets (25x16 frames, fonts) are readable only as root.

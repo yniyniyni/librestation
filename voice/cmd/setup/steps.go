@@ -195,10 +195,12 @@ func fixRootfs(e *env) error {
 		return err
 	}
 	e.u.say("Заливаю архив, это может занять несколько минут…")
-	if err := e.d.Push(p, soloistDir+"/rootfs.tar.xz"); err != nil {
+	// adb push runs as the shell user and soloistDir is root's, so stage it.
+	tmp := adb.Tmp + "/.librestation-rootfs.tar.xz"
+	if err := e.d.Push(p, tmp); err != nil {
 		return err
 	}
-	out, err := e.d.Root("sh " + soloistDir + "/setup-rootfs.sh")
+	out, err := e.d.Root(fmt.Sprintf("mkdir -p %s\nmv -f %s %s/rootfs.tar.xz\nsh %s/setup-rootfs.sh", soloistDir, tmp, soloistDir, soloistDir))
 	e.u.say("%s", strings.TrimSpace(out))
 	return err
 }
