@@ -9,7 +9,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"voice/internal/kws"
@@ -41,9 +43,22 @@ type TakeResult struct {
 	Takes    int     `json:"takes"`
 }
 
+// stockCommandNames are the command names of the Yandex model; with the
+// model loaded they belong to it, not to user-enrolled words.
+var stockCommandNames = []string{"стоп", "хватит", "пауза", "продолжи", "дальше", "следующий", "назад", "громче", "тише"}
+
+// stockCommandName reports whether name is one of the stock command names,
+// ignoring case and surrounding spaces.
+func stockCommandName(name string) bool {
+	return slices.Contains(stockCommandNames, strings.ToLower(strings.TrimSpace(name)))
+}
+
 func (d *Daemon) startEnroll(name string) (*enrollment, error) {
 	if len([]rune(name)) < 2 || len([]rune(name)) > 40 {
 		return nil, errors.New("введите слово (2–40 символов)")
+	}
+	if d.opt.Commands != nil && stockCommandName(name) {
+		return nil, errors.New("Это слово колонка уже знает сама — включи его в быстрых командах")
 	}
 	e := &enrollment{ID: wordID(name), Name: name}
 	// Re-enrolling an existing word continues from its recordings.

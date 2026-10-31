@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -251,15 +250,7 @@ func (d *Daemon) Handler() http.Handler {
 			httpErr(w, errors.New("bad id"))
 			return
 		}
-		d.mu.Lock()
-		delete(d.settings.Words, id)
-		d.saveSettings()
-		d.mu.Unlock()
-		if err := os.RemoveAll(d.wordDir(id)); err != nil {
-			httpErr(w, err)
-			return
-		}
-		if err := d.loadWords(); err != nil {
+		if err := d.removeWord(id); err != nil {
 			httpErr(w, err)
 			return
 		}

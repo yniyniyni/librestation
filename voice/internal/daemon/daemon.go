@@ -302,10 +302,53 @@ func New(opt Options) (*Daemon, error) {
 	if err := d.loadHits(); err != nil {
 		return nil, err
 	}
+	if opt.Commands != nil {
+		if err := d.migrateStockWords(); err != nil {
+			return nil, err
+		}
+	}
 	if err := d.loadWords(); err != nil {
 		return nil, err
 	}
 	return d, nil
+}
+
+// removeWord deletes a word's settings and recordings and reloads the words.
+func (d *Daemon) removeWord(id string) error {
+	d.mu.Lock()
+	delete(d.settings.Words, id)
+	d.saveSettings()
+	d.mu.Unlock()
+	if err := os.RemoveAll(d.wordDir(id)); err != nil {
+		return err
+	}
+	return d.loadWords()
+}
+
+// migrateStockWords removes enrolled words that duplicate a stock command
+// of the loaded Yandex model.
+func (d *Daemon) migrateStockWords() error {
+	dirs, err := os.ReadDir(filepath.Join(d.opt.DataDir, "words"))
+	if err != nil {
+		return err
+	}
+	for _, e := range dirs {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if b, err := os.ReadFile(filepath.Join(d.wordDir(name), "name.txt")); err == nil {
+			name = string(b)
+		}
+		if !stockCommandName(name) {
+			continue
+		}
+		log.Printf("слово «%s» совпадает со штатной командой колонки — удалено", strings.TrimSpace(name))
+		if err := d.removeWord(e.Name()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *Daemon) settingsPath() string { return filepath.Join(d.opt.DataDir, "settings.json") }
