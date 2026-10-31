@@ -165,3 +165,34 @@ func TestVADHangover(t *testing.T) {
 		t.Errorf("utterance keeps %v after the speech, want at least %v", time.Duration(after)*time.Second/rate, hangover)
 	}
 }
+
+func TestRecentKeepsTheLastSamples(t *testing.T) {
+	var r recent
+	if got := r.appendTo(nil); len(got) != 0 {
+		t.Fatalf("empty ring gave %d samples", len(got))
+	}
+	next := int16(0)
+	var all []int16
+	for _, n := range []int{100, 1000, 7999, 3, seedLen + 17, 2500} {
+		blk := make([]int16, n)
+		for i := range blk {
+			blk[i] = next
+			next++
+		}
+		r.push(blk)
+		all = append(all, blk...)
+		want := all[max(0, len(all)-seedLen):]
+		got := r.appendTo(make([]int16, 0, seedLen))
+		if len(got) != len(want) || got[0] != want[0] || got[len(got)-1] != want[len(want)-1] {
+			t.Fatalf("after %d: got %d samples [%d..%d], want %d [%d..%d]", len(all), len(got), got[0], got[len(got)-1], len(want), want[0], want[len(want)-1])
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("after %d: sample %d = %d, want %d", len(all), i, got[i], want[i])
+			}
+		}
+	}
+	if n := testing.AllocsPerRun(100, func() { r.push(all[:1000]) }); n != 0 {
+		t.Errorf("push allocates %v times", n)
+	}
+}

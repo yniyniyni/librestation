@@ -88,6 +88,7 @@ type Session struct {
 	amu    sync.Mutex // guards the audio fields; held only for appends and swaps
 	open   bool       // audio is wanted
 	lv     levels     // fed always, for the noise floor
+	raw    recent     // fed always, to seed the listen after a wake
 	buf    []int16
 	spare  []int16
 	notify chan struct{}
@@ -114,6 +115,7 @@ func New(d Deps) *Session {
 func (s *Session) Audio(pcm []int16) {
 	s.amu.Lock()
 	s.lv.push(pcm)
+	s.raw.push(pcm)
 	if s.open {
 		n := min(len(pcm), maxBuffered-len(s.buf))
 		s.buf = append(s.buf, pcm[:n]...)
@@ -197,7 +199,9 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 		if !first {
 			limit, state = followLimit, "followup"
 		}
-		audio, res := s.listen(ctx, gen, state, limit)
+		// The first listen takes the audio from just before it opened; a
+		// follow-up's would be the reply's tail.
+		audio, res := s.listen(ctx, gen, state, limit, first)
 		if ctx.Err() != nil || res == epStalled {
 			s.idle(gen)
 			return
@@ -257,9 +261,13 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 
 // listen takes audio until the endpointer has an utterance (epDone), finds
 // none (epNoSpeech) or audio stops (epStalled). A cancel gives epPending.
-func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration) ([]int16, epResult) {
+// seed starts it with the last seedLen samples from before it opened.
+func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration, seed bool) ([]int16, epResult) {
 	s.amu.Lock()
 	s.buf, s.open = s.buf[:0], true
+	if seed {
+		s.buf = s.raw.appendTo(s.buf)
+	}
 	floor := s.lv.floor()
 	s.amu.Unlock()
 	defer func() {

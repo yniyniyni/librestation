@@ -158,6 +158,38 @@ func (l *levels) floor() float64 {
 	return min(max(db[int(floorPct*float64(use))], floorMin), floorMax)
 }
 
+// seedLen is the raw audio kept from before a listen opens: the wake fires
+// up to ~400 ms after the trigger word, and the request may start at once.
+const seedLen = sampleRate / 2
+
+// recent keeps the last seedLen samples. push is a copy, no allocation.
+type recent struct {
+	ring [seedLen]int16
+	n    int // samples written in all
+}
+
+func (r *recent) push(pcm []int16) {
+	if len(pcm) > len(r.ring) {
+		r.n += len(pcm) - len(r.ring)
+		pcm = pcm[len(pcm)-len(r.ring):]
+	}
+	i := r.n % len(r.ring)
+	c := copy(r.ring[i:], pcm)
+	copy(r.ring[:], pcm[c:])
+	r.n += len(pcm)
+}
+
+// appendTo appends the kept samples, oldest first.
+func (r *recent) appendTo(dst []int16) []int16 {
+	have := min(r.n, len(r.ring))
+	i := (r.n - have) % len(r.ring)
+	if i+have <= len(r.ring) {
+		return append(dst, r.ring[i:i+have]...)
+	}
+	dst = append(dst, r.ring[i:]...)
+	return append(dst, r.ring[:have-(len(r.ring)-i)]...)
+}
+
 func samplesIn(d time.Duration) int { return int(d * sampleRate / time.Second) }
 
 // level is a frame's RMS in dBFS.

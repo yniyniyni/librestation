@@ -644,3 +644,38 @@ func TestStockMissingSpeaksFallbackLine(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestStartedBeforeWakeIsKept(t *testing.T) {
+	g := newRig(t, reply("Лайкнула."))
+	// Room noise, then the request begins 400 ms before the wake fires.
+	g.say(noise(g.r, 2*time.Second, quietDB))
+	speech := tone(time.Second, speechDB)
+	g.say(speech[:samples(400*time.Millisecond)])
+	g.wake(nil)
+	g.untilListening()
+	g.say(speech[samples(400*time.Millisecond):])
+	g.say(noise(g.r, time.Second, quietDB))
+	g.until("reply", func() bool { return len(g.tts.said()) == 1 })
+	// 100 ms of the seed before the speech (less than the pre-roll), the
+	// whole second of speech, the hangover.
+	if reqs := g.llm.requests(); len(reqs) != 1 || !near(audioLen(reqs[0]), 1250*time.Millisecond, 60*time.Millisecond) {
+		t.Errorf("audio %v, want the whole request", audioLen(reqs[0]))
+	}
+}
+
+func TestFollowUpIsNotSeeded(t *testing.T) {
+	g := newRig(t, reply("Ставлю."), reply("Готово."))
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.until("follow-up wait", func() bool { return g.clock.pending(followDelay) })
+	g.say(tone(400*time.Millisecond, speechDB)) // the reply's tail, before the follow-up opens
+	g.clock.Advance(followDelay)
+	g.untilState("followup")
+	g.untilListening()
+	g.say(g.utterance())
+	g.until("second reply", func() bool { return len(g.tts.said()) == 2 })
+	if reqs := g.llm.requests(); len(reqs) != 2 || !near(audioLen(reqs[1]), 1450*time.Millisecond, 60*time.Millisecond) {
+		t.Errorf("follow-up audio %v: audio from before it opened leaked in", audioLen(reqs[1]))
+	}
+}
