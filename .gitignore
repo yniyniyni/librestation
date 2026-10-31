@@ -11,6 +11,7 @@ backup/
 *.bundle
 rootfs.tar.xz
 *.tar.part
+.cache/
 
 # secrets — never commit (they live only on the speaker)
 api-key

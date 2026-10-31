@@ -77,17 +77,26 @@ echo "pushing to $dev"
 # does not block the update.
 stage=$base/.librestation-stage
 root_shell "rm -rf $stage"
-adb_cmd shell "mkdir -p $stage/voice $stage/soloist"
+adb_cmd shell "mkdir -p $stage/voice $stage/soloist $stage/sounds"
 for f in voice/dist/voiced voice/dist/ledd voice/dist/mic.dex voice/dist/negatives.bin \
     voice/mic/mic.sh voice/mic/hwvol.sh; do
     adb_cmd push "$here/../$f" "$stage/voice/"
+done
+# Stock phrases voiced plays when the network or Gemini fails.
+for f in no_internet something_went_wrong; do
+    if [ -s "$here/../backup/sounds/$f.wav" ]; then
+        adb_cmd push "$here/../backup/sounds/$f.wav" "$stage/sounds/"
+    else
+        echo "warning: backup/sounds/$f.wav is missing (backup/ is not in git), that stock phrase will not play" >&2
+    fi
 done
 for f in soloist/soloist-service.sh soloist/setup-rootfs.sh soloist/chroot.sh soloist/start.sh \
     soloist/stop.sh soloist/soloist.pa aaudio-pipe/aaudio_pipe; do
     adb_cmd push "$here/../$f" "$stage/soloist/"
 done
-root_shell "mkdir -p $voice_dir/data $soloist_dir
+root_shell "mkdir -p $voice_dir/data $voice_dir/sounds $soloist_dir
 for f in $stage/voice/*; do mv -f \"\$f\" $voice_dir/; done
+for f in $stage/sounds/*; do if [ -f \"\$f\" ]; then mv -f \"\$f\" $voice_dir/sounds/; fi; done
 for f in $stage/soloist/*; do mv -f \"\$f\" $soloist_dir/; done
 rm -rf $stage"
 root_shell "chmod 755 $voice_dir/voiced $voice_dir/ledd $voice_dir/mic.sh $voice_dir/hwvol.sh $soloist_dir/soloist-service.sh $soloist_dir/setup-rootfs.sh $soloist_dir/chroot.sh $soloist_dir/start.sh $soloist_dir/stop.sh $soloist_dir/aaudio_pipe"

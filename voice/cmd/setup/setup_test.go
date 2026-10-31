@@ -2,13 +2,23 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
+
+	"voice/internal/adb"
 )
 
 func TestHostsOfSkipsOwnAddress(t *testing.T) {
@@ -145,5 +155,128 @@ func TestCredStringsFromXray(t *testing.T) {
 	got := credStrings(v)
 	if len(got) != 1 || got[0] != "11111111-2222-3333-4444-555555555555" {
 		t.Fatalf("creds %q", got)
+	}
+}
+
+// fakeDevice answers every adb call with out and a successful exit; a root
+// script then reports whatever status out carries.
+func fakeDevice(out string) *adb.Device {
+	return &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "cat >/dev/null; printf '%s' \"$1\"", "sh", out)
+	}}
+}
+
+func TestPKCEChallenge(t *testing.T) {
+	// the example of RFC 7636, appendix B
+	got := pkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
+	if want := "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"; got != want {
+		t.Fatalf("challenge %s, want %s", got, want)
+	}
+}
+
+func TestSpotifyCallbackExtractsCode(t *testing.T) {
+	get := func(query string) (int, string, error) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		type res struct {
+			code string
+			err  error
+		}
+		done := make(chan res, 1)
+		go func() {
+			c, err := awaitCallback(ctx, ln, "st4te")
+			done <- res{c, err}
+		}()
+		var status int
+		for _, q := range strings.Split(query, "|") {
+			r, err := http.Get("http://" + ln.Addr().String() + "/callback?" + q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Body.Close()
+			status = r.StatusCode
+		}
+		r := <-done
+		return status, r.code, r.err
+	}
+	if st, code, err := get("code=abc&state=st4te"); err != nil || code != "abc" || st != 200 {
+		t.Fatalf("good: %d %q %v", st, code, err)
+	}
+	// a wrong state is refused and the right one still gets through
+	if st, code, err := get("code=evil&state=other|code=abc&state=st4te"); err != nil || code != "abc" || st != 200 {
+		t.Fatalf("after wrong state: %d %q %v", st, code, err)
+	}
+	if _, code, err := get("error=access_denied&state=st4te"); err == nil || code != "" || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("denied: %q %v", code, err)
+	}
+}
+
+func TestPiperStepNeedsRootfs(t *testing.T) {
+	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=1\n")}
+	ok, detail, err := checkPiper(e)
+	if err != nil || ok || detail != "нужен rootfs" {
+		t.Fatalf("ok=%v detail=%q err=%v", ok, detail, err)
+	}
+	e.d = fakeDevice("__librestation_rc=0\n")
+	if ok, detail, err := checkPiper(e); err != nil || !ok {
+		t.Fatalf("installed: ok=%v detail=%q err=%v", ok, detail, err)
+	}
+}
+
+func TestFetchCachedChecksAndDeletes(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		io.WriteString(w, "voice")
+	}))
+	defer srv.Close()
+	sum := sha256.Sum256([]byte("voice"))
+	dir := t.TempDir()
+	d := download{"v.onnx", srv.URL + "/v.onnx", hex.EncodeToString(sum[:])}
+	for range 2 { // the second call uses the cache
+		p, err := fetchCached(newUI(false), dir, d)
+		if err != nil || p != filepath.Join(dir, "v.onnx") {
+			t.Fatalf("%q %v", p, err)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("%d downloads, want 1", hits)
+	}
+	bad := download{"bad.onnx", srv.URL + "/bad.onnx", strings.Repeat("0", 64)}
+	if _, err := fetchCached(newUI(false), dir, bad); err == nil {
+		t.Fatal("wrong hash accepted")
+	}
+	if m, _ := filepath.Glob(filepath.Join(dir, "bad.onnx*")); len(m) != 0 {
+		t.Fatalf("mismatching download kept: %v", m)
+	}
+}
+
+func TestExchangeCode(t *testing.T) {
+	var form url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		form = r.PostForm
+		if r.PostForm.Get("code") == "bad" {
+			w.WriteHeader(400)
+			io.WriteString(w, `{"error":"invalid_grant","error_description":"Invalid authorization code"}`)
+			return
+		}
+		io.WriteString(w, `{"access_token":"a","refresh_token":"r-1"}`)
+	}))
+	defer srv.Close()
+	got, err := exchangeCode(srv.URL, "cid", "good", "ver")
+	if err != nil || got != "r-1" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if form.Get("grant_type") != "authorization_code" || form.Get("client_id") != "cid" || form.Get("code_verifier") != "ver" || form.Get("redirect_uri") != spotifyRedirectURI {
+		t.Fatalf("form %v", form)
+	}
+	if _, err := exchangeCode(srv.URL, "cid", "bad", "ver"); err == nil || !strings.Contains(err.Error(), "invalid_grant") {
+		t.Fatalf("error %v", err)
 	}
 }

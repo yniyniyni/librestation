@@ -86,6 +86,12 @@ func steps() []step {
 			hint: "смотрите лог: adb shell -tt 'mysudo -n tail -50 " + soloistDir + "/soloist.log'"},
 		{name: "Модель Gemini", optional: true, check: checkModel, fix: fixModel,
 			ask: "Выбрать модель?", update: "Выбрать другую модель Gemini?"},
+		{name: "Голос Piper", optional: true, check: checkPiper, fix: fixPiper,
+			ask:  "Скачать Piper и русский голос (около 90 МБ) и поставить в rootfs?",
+			hint: "нужны Piper и голос ru_RU-irina-medium в rootfs: /opt/piper/piper, voice.onnx, voice.onnx.json"},
+		{name: "Spotify Web API", optional: true, check: checkSpotify, fix: fixSpotify,
+			ask: "Привязать Spotify для ассистента?", update: "Привязать Spotify заново?"},
+		{name: "Ассистент", optional: true, check: checkAssistant},
 	}
 }
 
@@ -159,6 +165,9 @@ func checkSpace(e *env) (bool, string, error) {
 	need := int64(100)
 	if ok, _ := e.d.RootOK("test -d " + rootfs + "/usr"); !ok {
 		need = 1700
+	}
+	if ok, _ := e.d.RootOK("test -x " + rootfs + piperDir + "/piper"); !ok {
+		need += 100 // Piper and its voice
 	}
 	if mb < need {
 		return false, fmt.Sprintf("свободно %d МБ, нужно хотя бы %d", mb, need), nil
