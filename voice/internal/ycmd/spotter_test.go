@@ -97,7 +97,7 @@ func TestPushNoAlloc(t *testing.T) {
 }
 
 // rawGain is the spotter's input gain from the plan's global constraints.
-const rawGain = 1.0 / 32
+const rawGain = 1.0 / 64
 
 // rawCh0 reads channel 0 of a 16-channel 48 kHz capture the way voiced
 // feeds the spotter: DC-removing mixer, 3:1 decimator, then rawGain.
