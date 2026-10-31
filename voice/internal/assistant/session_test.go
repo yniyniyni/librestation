@@ -619,3 +619,28 @@ func TestMultiSentenceReplyPipelined(t *testing.T) {
 		t.Errorf("play order %v, want [1 2]", order)
 	}
 }
+
+func TestStockMissingSpeaksFallbackLine(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{&url.Error{Op: "Post", URL: "https://example.invalid", Err: errors.New("dial tcp: connection refused")}, "Нет связи с интернетом."},
+		{errors.New("gemini: 400 bad request"), "Что-то пошло не так."},
+	} {
+		g := newRig(t, func(context.Context, agent.Request, func(string)) (agent.Content, error) {
+			return agent.Content{}, c.err
+		})
+		g.s.d.Stock = func(string) ([]int16, int, error) { return nil, 0, errors.New("wav: not a RIFF/WAVE file") }
+		g.wake(nil)
+		g.untilListening()
+		g.say(g.utterance())
+		g.untilState("idle")
+		if got := g.tts.said(); !slices.Equal(got, []string{c.want}) {
+			t.Errorf("%v: tts got %q, want %q", c.err, got, c.want)
+		}
+		if p, _ := g.player.counts(); p != 1 {
+			t.Errorf("%v: plays %d, want the fallback line", c.err, p)
+		}
+	}
+}

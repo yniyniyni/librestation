@@ -67,7 +67,8 @@ func checkSpotify(e *env) (bool, string, error) {
 }
 
 // checkAssistant is for doctor: the assistant is working when the panel
-// reports a status for it. There is nothing to fix here.
+// reports a status for it and the stock error phrases are WAV files (an MP3
+// renamed to .wav never plays). There is nothing to fix here.
 func checkAssistant(e *env) (bool, string, error) {
 	var s assistantState
 	if err := panelState(e, &s); err != nil {
@@ -76,8 +77,29 @@ func checkAssistant(e *env) (bool, string, error) {
 	if st := strings.TrimSpace(string(s.Assistant.Status)); st == "" || st == "null" {
 		return false, "нет статуса (нет ключа Gemini или нет Piper?)", nil
 	}
+	var script strings.Builder
+	for _, f := range stockSounds {
+		p := voiceDir + "/sounds/" + f + ".wav"
+		fmt.Fprintf(&script, "if [ \"$(head -c 4 %s 2>/dev/null)\" != RIFF ]; then echo bad=%s; fi\n", p, f)
+	}
+	out, err := e.d.Root(script.String())
+	if err != nil {
+		return false, "", err
+	}
+	var bad []string
+	for _, l := range strings.Split(out, "\n") {
+		if f, ok := strings.CutPrefix(strings.TrimSpace(l), "bad="); ok {
+			bad = append(bad, f+".wav")
+		}
+	}
+	if len(bad) > 0 {
+		return false, "не WAV или нет на колонке: " + strings.Join(bad, ", ") + " (перезалейте ./deploy.sh)", nil
+	}
 	return true, "", nil
 }
+
+// stockSounds are the phrases voiced plays when the network or Gemini fails.
+var stockSounds = []string{"no_internet", "something_went_wrong"}
 
 func fixSpotify(e *env) error {
 	e.u.say("  В приложении на https://developer.spotify.com/dashboard (подойдёт то же, что у Soloist)")

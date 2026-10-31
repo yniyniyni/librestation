@@ -329,3 +329,23 @@ func TestExchangeCodeErrorBodies(t *testing.T) {
 		t.Fatalf("200 body: %v", err)
 	}
 }
+
+func TestCheckAssistantStockSounds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"assistant":{"status":{"state":"idle"}}}`)
+	}))
+	defer srv.Close()
+	host, port, _ := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	oldPort := panelPort
+	panelPort = port
+	defer func() { panelPort = oldPort }()
+
+	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=0\n"), host: host}
+	if ok, detail, err := checkAssistant(e); err != nil || !ok {
+		t.Fatalf("good: ok=%v %q %v", ok, detail, err)
+	}
+	e.d = fakeDevice("bad=no_internet\r\n__librestation_rc=0\n")
+	if ok, detail, err := checkAssistant(e); err != nil || ok || !strings.Contains(detail, "no_internet.wav") || strings.Contains(detail, "something_went_wrong") {
+		t.Fatalf("bad: ok=%v %q %v", ok, detail, err)
+	}
+}

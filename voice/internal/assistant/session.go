@@ -299,14 +299,32 @@ func (s *Session) fail(ctx context.Context, gen int, err error) {
 	if isNetwork(err) {
 		name = "no_internet"
 	}
-	if s.d.Stock != nil {
-		if pcm, rate, err := s.d.Stock(name); err != nil {
-			log.Printf("assistant: stock %s: %v", name, err)
-		} else if err := s.d.Player.Play(ctx, pcm, rate); err != nil && ctx.Err() == nil {
-			log.Printf("assistant: play %s: %v", name, err)
-		}
+	pcm, rate, err := s.stock(ctx, name)
+	if err != nil {
+		log.Printf("assistant: %s: %v", name, err)
+	} else if err := s.d.Player.Play(ctx, pcm, rate); err != nil && ctx.Err() == nil {
+		log.Printf("assistant: play %s: %v", name, err)
 	}
 	s.idle(gen)
+}
+
+// stockLines are said through the TTS when a stock phrase will not load;
+// Piper is local, so they work offline.
+var stockLines = map[string]string{
+	"no_internet":          "Нет связи с интернетом.",
+	"something_went_wrong": "Что-то пошло не так.",
+}
+
+// stock loads the stock phrase name, or synthesises its line instead.
+func (s *Session) stock(ctx context.Context, name string) ([]int16, int, error) {
+	if s.d.Stock != nil {
+		pcm, rate, err := s.d.Stock(name)
+		if err == nil {
+			return pcm, rate, nil
+		}
+		log.Printf("assistant: stock %s: %v", name, err)
+	}
+	return s.synth(ctx, stockLines[name])
 }
 
 func isNetwork(err error) bool {

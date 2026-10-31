@@ -82,13 +82,30 @@ for f in voice/dist/voiced voice/dist/ledd voice/dist/mic.dex voice/dist/negativ
     voice/mic/mic.sh voice/mic/hwvol.sh; do
     adb_cmd push "$here/../$f" "$stage/voice/"
 done
-# Stock phrases voiced plays when the network or Gemini fails.
+# Stock phrases voiced plays when the network or Gemini fails. The stock
+# files are MP3 despite the .wav name; voiced reads only PCM WAV, so convert
+# copies to 16-bit mono 24 kHz WAV (backup/ itself is never touched).
+sounds_tmp=$(mktemp -d)
+trap 'rm -rf "$sounds_tmp"' EXIT
 for f in no_internet something_went_wrong; do
-    if [ -s "$here/../backup/sounds/$f.wav" ]; then
-        adb_cmd push "$here/../backup/sounds/$f.wav" "$stage/sounds/"
-    else
+    src=$here/../backup/sounds/$f.wav
+    out=$sounds_tmp/$f.wav
+    if [ ! -s "$src" ]; then
         echo "warning: backup/sounds/$f.wav is missing (backup/ is not in git), that stock phrase will not play" >&2
+        continue
     fi
+    if command -v ffmpeg >/dev/null 2>&1; then
+        ffmpeg -loglevel error -y -i "$src" -ac 1 -ar 24000 -sample_fmt s16 "$out" || rm -f "$out"
+    elif command -v afconvert >/dev/null 2>&1; then
+        afconvert -f WAVE -d LEI16@24000 -c 1 "$src" "$out" || rm -f "$out"
+    else
+        cp "$src" "$out"
+    fi
+    if [ ! -s "$out" ] || [ "$(head -c 4 "$out")" != RIFF ]; then
+        echo "warning: backup/sounds/$f.wav is not a WAV and could not be converted (install ffmpeg), skipping it; voiced will say the phrase through TTS" >&2
+        continue
+    fi
+    adb_cmd push "$out" "$stage/sounds/"
 done
 for f in soloist/soloist-service.sh soloist/setup-rootfs.sh soloist/chroot.sh soloist/start.sh \
     soloist/stop.sh soloist/soloist.pa aaudio-pipe/aaudio_pipe; do
