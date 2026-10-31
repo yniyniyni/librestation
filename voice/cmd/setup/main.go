@@ -3,6 +3,8 @@
 //
 //	./setup              walk through every step, fixing what is missing
 //	./setup doctor       only check, change nothing; exit 1 if something is wrong
+//	./setup export-rootfs [-o rootfs.tar.xz]   pack this speaker's rootfs for
+//	                     another one, without keys, proxy, Soloist login or binaries
 //	./setup ... -device 192.168.1.50   which speaker (else ADB_DEVICE, else ask)
 //
 // Each step first checks whether it is already in place, so setup can be run
@@ -30,9 +32,17 @@ func main() {
 	}
 	fs := flag.NewFlagSet(mode, flag.ExitOnError)
 	device := fs.String("device", os.Getenv("ADB_DEVICE"), "speaker adb address, ip[:port]")
+	out := fs.String("o", "rootfs.tar.xz", "export-rootfs: archive to write")
 	fs.Parse(args)
+	if mode == "export-rootfs" {
+		if err := runExport(newUI(isTerminal()), *device, *out); err != nil {
+			fmt.Fprintln(os.Stderr, "✗", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if mode != "setup" && mode != "doctor" {
-		fmt.Fprintf(os.Stderr, "usage: setup [doctor] [-device ip:5555]\n")
+		fmt.Fprintf(os.Stderr, "usage: setup [doctor | export-rootfs [-o rootfs.tar.xz]] [-device ip:5555]\n")
 		os.Exit(2)
 	}
 	interactive := mode == "setup" && isTerminal()

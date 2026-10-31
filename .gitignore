@@ -9,6 +9,8 @@ librespot/
 rec/
 backup/
 *.bundle
+rootfs.tar.xz
+*.tar.part
 
 # secrets — never commit (they live only on the speaker)
 api-key

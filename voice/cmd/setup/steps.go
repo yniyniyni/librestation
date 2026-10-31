@@ -58,7 +58,7 @@ func steps() []step {
 			ask: "Собрать и залить voiced, ledd, aaudio_pipe и скрипты?", update: "Пересобрать и залить текущую версию?"},
 		{name: "Debian rootfs с PulseAudio", check: checkRootfs, fix: fixRootfs,
 			ask:  "Залить и распаковать rootfs (архив rootfs.tar.xz)?",
-			hint: "нужен архив Debian arm64 с PulseAudio, см. README"},
+			hint: "нужен архив Debian arm64 с PulseAudio: на работающей колонке его делает ./setup export-rootfs, см. README"},
 		{name: "Spotify Soloist", check: checkSoloist, fix: fixSoloist,
 			ask:  "Положить бинарник Soloist в rootfs?",
 			hint: "Soloist для linux/aarch64 получают у Spotify; в репозитории его нет"},
@@ -187,7 +187,11 @@ func checkRootfs(e *env) (bool, string, error) {
 }
 
 func fixRootfs(e *env) error {
-	p := e.u.ask("Путь к rootfs.tar.xz на этом компьютере", "")
+	def := ""
+	if _, err := os.Stat(filepath.Join(e.repo, "rootfs.tar.xz")); err == nil {
+		def = filepath.Join(e.repo, "rootfs.tar.xz")
+	}
+	p := hostPath(e.u.ask("Путь к rootfs.tar.xz на этом компьютере", def))
 	if p == "" {
 		return fmt.Errorf("архив не указан")
 	}
@@ -211,7 +215,7 @@ func checkSoloist(e *env) (bool, string, error) {
 }
 
 func fixSoloist(e *env) error {
-	p := e.u.ask("Путь к бинарнику soloist (linux/aarch64)", "")
+	p := hostPath(e.u.ask("Путь к бинарнику soloist (linux/aarch64)", ""))
 	if p == "" {
 		return fmt.Errorf("путь не указан")
 	}

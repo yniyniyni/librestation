@@ -55,6 +55,12 @@ func (d *Device) Push(local, remote string) error {
 	return err
 }
 
+// Pull copies a speaker file to the host.
+func (d *Device) Pull(remote, local string) error {
+	_, err := d.run(nil, "pull", remote, local)
+	return err
+}
+
 // Write stores data in remote as the shell user, readable only by it.
 // The data goes over stdin and never into a command line.
 func (d *Device) Write(remote string, data []byte) error {
