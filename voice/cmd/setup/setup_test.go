@@ -352,9 +352,19 @@ func TestCheckAssistantStockSounds(t *testing.T) {
 }
 
 func TestCheckYcmd(t *testing.T) {
-	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=0\n")}
+	log := filepath.Join(t.TempDir(), "scripts")
+	d := &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "cat >>\"$1\"; printf '__librestation_rc=0\\n'", "sh", log)
+	}}
+	e := &env{u: newUI(false), d: d}
 	if ok, _, err := checkYcmd(e); err != nil || !ok {
 		t.Fatalf("in place: ok=%v err=%v", ok, err)
+	}
+	b, _ := os.ReadFile(log)
+	for _, f := range ycmdFiles {
+		if !strings.Contains(string(b), "test -s "+ycmdDir+"/"+f) {
+			t.Errorf("%s is not checked:\n%s", f, b)
+		}
 	}
 	e.d = fakeDevice("__librestation_rc=1\n")
 	if ok, _, err := checkYcmd(e); err != nil || ok {
@@ -390,5 +400,20 @@ func TestFixYcmdExtractsFromAPK(t *testing.T) {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("no %q in the scripts sent to the speaker:\n%s", want, b)
 		}
+	}
+}
+
+func TestFixYcmdEmptyExtraction(t *testing.T) {
+	dir := t.TempDir()
+	last := filepath.Join(dir, "last")
+	// A script arrives on stdin (the push), then runs without stdin; the
+	// model files count as missing: the verification script has "test -s".
+	d := &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", `in=$(cat); if [ -n "$in" ]; then printf '%s' "$in" >"$1"; else case "$(cat "$1")" in *"test -s"*) echo __librestation_rc=1;; *) echo __librestation_rc=0;; esac; fi`, "sh", last)
+	}}
+	e := &env{u: newUI(false), d: d}
+	err := fixYcmd(e)
+	if err == nil || !strings.Contains(err.Error(), "нет модели быстрых команд") {
+		t.Fatalf("err = %v", err)
 	}
 }

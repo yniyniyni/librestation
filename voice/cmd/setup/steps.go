@@ -337,6 +337,12 @@ func fixYcmd(e *env) error {
 	if _, err := e.d.Root(fmt.Sprintf("mkdir -p %[1]s\n/vendor/xbin/busybox unzip -o -j %[2]s 'assets/quark/spotter_models/command/*' -d %[1]s\nchmod -R a+rX %[3]s/yandex", ycmdDir, ycmdAPK, voiceDir)); err != nil {
 		return err
 	}
+	// An APK of another layout matches nothing and unzip still succeeds.
+	if ok, _, err := checkYcmd(e); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("в APK нет модели быстрых команд (%s) — другая версия прошивки?", strings.Join(ycmdFiles, ", "))
+	}
 	// voiced reads the model at start, like the keys.
 	if up, _, _ := checkServices(e); up {
 		e.u.say("  Перезапускаю сервисы, чтобы подхватить модель…")
