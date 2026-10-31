@@ -498,16 +498,14 @@ func (c *Client) Current(ctx context.Context) (Item, bool, error) {
 
 // SetLiked saves a track to (or removes it from) the user's library.
 func (c *Client) SetLiked(ctx context.Context, uri string, liked bool) error {
-	id, ok := strings.CutPrefix(uri, "spotify:track:")
-	if !ok || id == "" {
+	if id, ok := strings.CutPrefix(uri, "spotify:track:"); !ok || id == "" {
 		return fmt.Errorf("spotify: не трек: %q", uri)
 	}
 	method := http.MethodPut
 	if !liked {
 		method = http.MethodDelete
 	}
-	// TODO(verify): Spotify may have replaced /v1/me/tracks?ids= with a
-	// generic /v1/me/library endpoint; check the current docs on a device.
-	_, err := c.call(ctx, method, "/v1/me/tracks", url.Values{"ids": {id}}, nil, nil)
+	// The old /v1/me/tracks endpoint now answers 403; /v1/me/library takes URIs.
+	_, err := c.call(ctx, method, "/v1/me/library", url.Values{"uris": {uri}}, nil, nil)
 	return err
 }

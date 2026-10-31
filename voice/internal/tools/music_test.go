@@ -30,20 +30,20 @@ func musicClient(t *testing.T, api http.HandlerFunc) *spotifyapi.Client {
 const currentJSON = `{"item":{"type":"track","uri":"spotify:track:t1","name":"Starboy","artists":[{"name":"The Weeknd"}]}}`
 
 func TestLikeCurrentTrack(t *testing.T) {
-	var method, ids string
+	var method, uris string
 	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/me/player/currently-playing" {
 			w.Write([]byte(currentJSON))
 			return
 		}
-		method, ids = r.Method, r.URL.Query().Get("ids")
+		method, uris = r.Method, r.URL.Query().Get("uris")
 	})
 	res, err := LikeTrack{S: c}.Run(context.Background(), map[string]any{"liked": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if method != http.MethodPut || ids != "t1" {
-		t.Errorf("library call = %s ids=%q", method, ids)
+	if method != http.MethodPut || uris != "spotify:track:t1" {
+		t.Errorf("library call = %s uris=%q", method, uris)
 	}
 	if res["track"] != "Starboy" || res["liked"] != true {
 		t.Errorf("res = %v", res)

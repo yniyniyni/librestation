@@ -332,11 +332,11 @@ func TestSetLiked(t *testing.T) {
 	f := newFake(t)
 	var got []string
 	f.api = func(w http.ResponseWriter, r *http.Request) {
-		got = append(got, r.Method+" "+r.URL.Path+"?ids="+r.URL.Query().Get("ids"))
+		got = append(got, r.Method+" "+r.URL.Path+"?uris="+r.URL.Query().Get("uris"))
 	}
 	f.c.SetLiked(context.Background(), "spotify:track:t1", true)
 	f.c.SetLiked(context.Background(), "spotify:track:t1", false)
-	if strings.Join(got, ",") != "PUT /v1/me/tracks?ids=t1,DELETE /v1/me/tracks?ids=t1" {
+	if strings.Join(got, ",") != "PUT /v1/me/library?uris=spotify:track:t1,DELETE /v1/me/library?uris=spotify:track:t1" {
 		t.Errorf("got = %v", got)
 	}
 	if err := f.c.SetLiked(context.Background(), "spotify:album:x", true); err == nil {
