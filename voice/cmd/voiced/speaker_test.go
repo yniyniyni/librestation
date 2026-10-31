@@ -212,3 +212,180 @@ func TestSpeakerWedgedHelperTimesOut(t *testing.T) {
 		t.Fatalf("wakes %d, want 2 (the helper was restarted)", wakes)
 	}
 }
+
+// tickingClock advances by tick on every reading, so time passes while the
+// speaker writes, as with a pipe paced by the device.
+type tickingClock struct {
+	mu   sync.Mutex
+	t    time.Time
+	tick time.Duration
+}
+
+func (c *tickingClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(c.tick)
+	return c.t
+}
+
+// Play waits from the start of writing: writing that took most of the reply
+// does not add to the wait.
+func TestPlayWaitsFromStart(t *testing.T) {
+	var wakes int
+	s, _, waited := newTestSpeaker([]string{"sh", "-c", "cat > /dev/null"}, &wakes)
+	defer s.Close()
+	clk := &tickingClock{t: time.Unix(1000, 0), tick: speakerChunk}
+	s.now = clk.now
+	t0 := clk.t
+	if err := s.Play(context.Background(), make([]int16, 24000), 24000); err != nil {
+		t.Fatal(err)
+	}
+	done := clk.t.Add(*waited)
+	want := time.Second + speakerBuffer
+	if got := done.Sub(t0); got < want-3*clk.tick || got > want+3*clk.tick {
+		t.Fatalf("Play done %v after start, want about %v", got, want)
+	}
+}
+
+// The first Live audio of a reply is held back until liveLead has gathered,
+// then written at once.
+func TestPlayLiveLead(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	var wakes int
+	s, _, _ := newTestSpeaker([]string{"sh", "-c", "cat > " + out}, &wakes)
+	defer s.Close()
+	chunk := make([]int16, 2400) // 100 ms
+	if err := s.PlayLive(context.Background(), chunk, 24000); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if b, _ := os.ReadFile(out); len(b) != 0 {
+		t.Fatalf("first 100 ms chunk wrote %d bytes, want none yet", len(b))
+	}
+	if wakes != 0 {
+		t.Fatalf("wakes %d before any write, want 0", wakes)
+	}
+	if err := s.PlayLive(context.Background(), chunk, 24000); err != nil {
+		t.Fatal(err)
+	}
+	want := 4800 * 8
+	waitFor(t, func() bool { b, _ := os.ReadFile(out); return len(b) >= want })
+	if b, _ := os.ReadFile(out); len(b) != want {
+		t.Fatalf("wrote %d bytes, want %d (200 ms)", len(b), want)
+	}
+	if err := s.PlayLive(context.Background(), make([]int16, 240), 24000); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { b, _ := os.ReadFile(out); return len(b) == want+240*8 })
+	if wakes != 1 {
+		t.Fatalf("wakes %d, want 1", wakes)
+	}
+}
+
+// FinishLive waits until everything written since the reply began has played,
+// not just the buffer after the last write.
+func TestFinishLiveWaitsForAll(t *testing.T) {
+	var wakes int
+	s, clk, waited := newTestSpeaker([]string{"sh", "-c", "cat > /dev/null"}, &wakes)
+	defer s.Close()
+	ctx := context.Background()
+	play := func(ms int) {
+		t.Helper()
+		if err := s.PlayLive(ctx, make([]int16, 24*ms), 24000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	play(100)
+	play(100) // 200 ms written at 0, plays until 0.2 s
+	clk.advance(100 * time.Millisecond)
+	play(300) // queued behind it: plays until 0.5 s
+	clk.advance(100 * time.Millisecond)
+	if err := s.FinishLive(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if want := 300*time.Millisecond + speakerBuffer; *waited != want {
+		t.Fatalf("FinishLive waited %v, want %v", *waited, want)
+	}
+
+	// A short reply still in the lead-in is written by FinishLive.
+	*waited = 0
+	clk.advance(time.Second)
+	play(100)
+	if err := s.FinishLive(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if want := 100*time.Millisecond + speakerBuffer; *waited != want {
+		t.Fatalf("FinishLive of a lead-in waited %v, want %v", *waited, want)
+	}
+	// With nothing written it does not wait.
+	*waited = 0
+	if err := s.FinishLive(ctx); err != nil || *waited != 0 {
+		t.Fatalf("empty FinishLive = %v, waited %v; want nil, 0", err, *waited)
+	}
+}
+
+// Flush drops the held-back lead-in and the helper with its queue, releases a
+// blocked write and a drain wait at once, and the next PlayLive starts a fresh
+// helper.
+func TestFlushKillsAndRestarts(t *testing.T) {
+	var wakes int
+	s, _, waited := newTestSpeaker([]string{"sh", "-c", "exec sleep 30"}, &wakes) // never reads
+	defer s.Close()
+	ctx := context.Background()
+
+	// The lead-in is dropped: FinishLive after Flush has nothing to wait for.
+	if err := s.PlayLive(ctx, make([]int16, 2400), 24000); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush()
+	if err := s.FinishLive(ctx); err != nil || *waited != 0 {
+		t.Fatalf("FinishLive after Flush = %v, waited %v; want nil, 0", err, *waited)
+	}
+
+	// A write blocked on the helper returns at once, without an error.
+	res := make(chan error, 1)
+	go func() { res <- s.PlayLive(ctx, make([]int16, 24000*5), 24000) }()
+	time.Sleep(100 * time.Millisecond)
+	start := time.Now()
+	s.Flush()
+	select {
+	case err := <-res:
+		if err != nil {
+			t.Fatalf("flushed PlayLive = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("PlayLive did not return after Flush")
+	}
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("Flush took %v", d)
+	}
+	if s.proc != nil {
+		t.Fatal("helper kept after Flush")
+	}
+
+	// The next reply starts a fresh helper and wakes the output again.
+	s.sleep = sleepCtx
+	s.now = time.Now
+	out := filepath.Join(t.TempDir(), "out")
+	s.cmd = []string{"sh", "-c", "cat > " + out}
+	if err := s.PlayLive(ctx, make([]int16, 4800), 24000); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { b, _ := os.ReadFile(out); return len(b) == 4800*8 })
+	if wakes != 2 {
+		t.Fatalf("wakes %d, want 2 (Flush restarts the helper)", wakes)
+	}
+
+	// The wait for a reply to play out ends at once too.
+	go func() { res <- s.FinishLive(ctx) }()
+	time.Sleep(50 * time.Millisecond)
+	s.Flush()
+	select {
+	case err := <-res:
+		if err != nil {
+			t.Fatalf("flushed FinishLive = %v, want nil", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("FinishLive did not return after Flush")
+	}
+}

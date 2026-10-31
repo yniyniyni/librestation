@@ -28,7 +28,13 @@ const (
 	// speakerWriteTimeout bounds one chunk's write: a helper that stops
 	// reading is killed instead of blocking Play for good.
 	speakerWriteTimeout = 2 * time.Second
+	// liveLead is the Live audio held back before a reply's first write, so
+	// network jitter between chunks does not starve the stream.
+	liveLead = 200 * time.Millisecond
 )
+
+// errFlushed cancels the Play, PlayLive or FinishLive that Flush interrupts.
+var errFlushed = errors.New("speaker: flushed")
 
 // speaker plays replies through a resident aaudio_pipe. It runs without a
 // gain file, so the loudness of a reply is only the amplifier's, the same as
@@ -41,9 +47,14 @@ type speaker struct {
 	sleep        func(ctx context.Context, d time.Duration) error
 	writeTimeout time.Duration
 
-	play sync.Mutex // one Play at a time; guards the fields below
-	proc *speakerProc
-	last time.Time // when the last chunk was written; zero = stream not running
+	play    sync.Mutex // one Play at a time; guards the fields below
+	proc    *speakerProc
+	last    time.Time // when the last chunk was written; zero = stream not running
+	lead    []float32 // Live audio held back before the reply's first write
+	liveEnd time.Time // when the Live reply written so far ends playing; zero = none
+
+	op       sync.Mutex              // guards cancelOp
+	cancelOp context.CancelCauseFunc // the running call under s.play, for Flush; nil = none
 }
 
 // speakerProc is one run of the helper.
@@ -124,82 +135,167 @@ func (s *speaker) kill() {
 		p.cmd.Process.Kill()
 	}
 	s.proc, s.last = nil, time.Time{}
+	s.lead, s.liveEnd = nil, time.Time{}
+}
+
+// Flush drops all queued audio at once: the held-back Live lead-in and, by
+// killing the helper, what is in the device. A write or wait in progress
+// returns nil. The next Play or PlayLive starts a fresh helper.
+func (s *speaker) Flush() {
+	s.op.Lock()
+	if s.cancelOp != nil {
+		s.cancelOp(errFlushed)
+	}
+	s.op.Unlock()
+	s.play.Lock()
+	defer s.play.Unlock()
+	s.kill()
+}
+
+// begin makes ctx cancellable by Flush for one call under s.play. The
+// returned func ends the call and turns a flushed result into nil.
+func (s *speaker) begin(ctx context.Context) (context.Context, func(*error)) {
+	ctx, cancel := context.WithCancelCause(ctx)
+	s.op.Lock()
+	s.cancelOp = cancel
+	s.op.Unlock()
+	return ctx, func(err *error) {
+		s.op.Lock()
+		s.cancelOp = nil
+		s.op.Unlock()
+		if *err != nil && context.Cause(ctx) == errFlushed {
+			*err = nil
+		}
+		cancel(nil)
+	}
+}
+
+// open starts the helper if needed and reports a wake from idle. The caller
+// holds s.play.
+func (s *speaker) open() (*speakerProc, error) {
+	p, err := s.start()
+	if err != nil {
+		return nil, err
+	}
+	if s.last.IsZero() || s.now().Sub(s.last) > speakerIdle {
+		if s.onWake != nil {
+			s.onWake()
+		}
+	}
+	return p, nil
 }
 
 // Play writes pcm (mono, rate Hz) to the stream and returns once it has had
 // time to play. Cancelling ctx stops writing at once; at most the device
 // buffer keeps playing. If the helper dies the error is returned and the next
 // Play restarts it.
-func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
+func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) (err error) {
 	s.play.Lock()
 	defer s.play.Unlock()
+	ctx, done := s.begin(ctx)
+	defer done(&err)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if rate <= 0 {
 		return fmt.Errorf("speaker: bad rate %d", rate)
 	}
-	p, err := s.start()
+	p, err := s.open()
 	if err != nil {
 		return err
 	}
-	if s.last.IsZero() || s.now().Sub(s.last) > speakerIdle {
-		if s.onWake != nil {
-			s.onWake()
-		}
-	}
 	frames := resample24k(pcm, rate)
-	if err := s.writeLocked(ctx, p, frames); err != nil {
-		return err
-	}
 	if len(frames) == 0 {
 		return nil
 	}
-	played := time.Duration(len(frames)) * time.Second / speakerRate
-	wait := s.last.Add(played + speakerBuffer).Sub(s.now())
+	start := s.now()
+	if err := s.writeLocked(ctx, p, frames); err != nil {
+		return err
+	}
+	wait := start.Add(framesDuration(frames) + speakerBuffer).Sub(s.now())
 	if wait <= 0 {
 		return nil
 	}
 	return s.sleep(ctx, wait)
 }
 
-// PlayLive appends one Live audio chunk without waiting for the device buffer
-// to drain. Live sends many small chunks; waiting after each one starves the
-// stream and causes audible gaps.
-func (s *speaker) PlayLive(ctx context.Context, pcm []int16, rate int) error {
+// PlayLive appends one Live audio chunk without waiting for it to play. The
+// first liveLead of a reply is held back and written in one go; after that
+// each chunk is written at once. FinishLive ends the reply.
+func (s *speaker) PlayLive(ctx context.Context, pcm []int16, rate int) (err error) {
 	s.play.Lock()
 	defer s.play.Unlock()
+	ctx, done := s.begin(ctx)
+	defer done(&err)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if rate <= 0 {
 		return fmt.Errorf("speaker: bad rate %d", rate)
 	}
-	p, err := s.start()
-	if err != nil {
-		return err
-	}
-	if s.last.IsZero() || s.now().Sub(s.last) > speakerIdle {
-		if s.onWake != nil {
-			s.onWake()
+	frames := resample24k(pcm, rate)
+	if s.liveEnd.IsZero() {
+		s.lead = append(s.lead, frames...)
+		if framesDuration(s.lead) < liveLead {
+			return nil
 		}
+		frames, s.lead = s.lead, nil
 	}
-	return s.writeLocked(ctx, p, resample24k(pcm, rate))
+	return s.writeLive(ctx, frames)
 }
 
-// FinishLive lets the last Live chunk reach the device before the assistant
-// opens the follow-up listener.
-func (s *speaker) FinishLive(ctx context.Context) error {
+// FinishLive writes what is still held back and waits until the whole reply
+// has played: from when its audio started, not from the last write.
+func (s *speaker) FinishLive(ctx context.Context) (err error) {
 	s.play.Lock()
 	defer s.play.Unlock()
-	if s.last.IsZero() {
+	ctx, done := s.begin(ctx)
+	defer done(&err)
+	frames := s.lead
+	s.lead = nil
+	if err := s.writeLive(ctx, frames); err != nil {
+		return err
+	}
+	end := s.liveEnd
+	s.liveEnd = time.Time{}
+	if end.IsZero() {
 		return nil
 	}
-	wait := s.last.Add(speakerBuffer).Sub(s.now())
+	wait := end.Add(speakerBuffer).Sub(s.now())
 	if wait <= 0 {
 		return nil
 	}
 	return s.sleep(ctx, wait)
+}
+
+// writeLive writes frames of the current Live reply and moves its end: the
+// audio plays after what was queued, or from now if the stream ran dry. A
+// failed write ends the reply. The caller holds s.play.
+func (s *speaker) writeLive(ctx context.Context, frames []float32) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	p, err := s.open()
+	if err == nil {
+		t := s.now()
+		if err = s.writeLocked(ctx, p, frames); err == nil {
+			s.liveEnd = later(s.liveEnd, t).Add(framesDuration(frames))
+			return nil
+		}
+	}
+	s.lead, s.liveEnd = nil, time.Time{}
+	return err
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
+func framesDuration(frames []float32) time.Duration {
+	return time.Duration(len(frames)) * time.Second / speakerRate
 }
 
 func (s *speaker) writeLocked(ctx context.Context, p *speakerProc, frames []float32) error {
@@ -247,6 +343,10 @@ func (s *speaker) writeLocked(ctx context.Context, p *speakerProc, frames []floa
 		n, err := p.in.Write(buf)
 		s.last = s.now()
 		if err != nil {
+			if context.Cause(ctx) == errFlushed {
+				s.kill() // Flush kills it anyway; no frame to finish
+				return ctx.Err()
+			}
 			if ctx.Err() != nil {
 				finish()
 				if rest := (8 - n%8) % 8; rest > 0 && n+rest <= len(buf) {

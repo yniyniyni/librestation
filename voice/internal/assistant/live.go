@@ -27,6 +27,7 @@ type LiveSession interface {
 type livePlayer interface {
 	PlayLive(context.Context, []int16, int) error
 	FinishLive(context.Context) error
+	Flush() // drop all queued audio at once (barge-in)
 }
 
 var errLiveDone = errors.New("assistant: Live conversation ended")
