@@ -59,15 +59,15 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 
 	llm := agent.NewClient(key)
 	llm.Model = judgeModel
-	ag := &agent.Agent{Model: model, LLM: llm, Tools: []agent.Tool{
-		tools.Clock{},
-		tools.Weather{DefaultCity: func() string { return settings().City }},
-		tools.Web{LLM: llm, Model: model},
-		tools.Playback{A: act, SetVolume: func(v int) error { return vol.Step(v - vol.Volume()) }},
-		music(tools.PlayMusic{S: sp}),
-		music(tools.LikeTrack{S: sp}),
-		music(tools.NowPlaying{S: sp}),
-	}}
+	ag := &agent.Agent{Model: model, LLM: llm, Tools: tools.All(tools.Deps{
+		Spotify:     sp,
+		Actuator:    act,
+		SetVolume:   func(v int) error { return vol.Step(v - vol.Volume()) },
+		DefaultCity: func() string { return settings().City },
+		LLM:         llm,
+		Model:       model,
+		Music:       music,
+	})}
 
 	if err := os.MkdirAll(c.piperOut, 0o755); err != nil {
 		log.Printf("piper: %v", err)

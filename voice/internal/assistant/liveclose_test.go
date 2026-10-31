@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"voice/internal/agent"
 	"voice/internal/tools"
 )
 
@@ -52,13 +51,10 @@ func TestCloseAfter(t *testing.T) {
 }
 
 // TestEveryToolClassified fails when a tool has no close class, so a new tool
-// cannot silently fall into the default dialog window. Keep the list in step
-// with buildAssistant in cmd/voiced/assistant.go.
+// cannot silently fall into the default dialog window. tools.All is the list
+// buildAssistant gives the agent.
 func TestEveryToolClassified(t *testing.T) {
-	all := []agent.Tool{
-		tools.Clock{}, tools.Weather{}, tools.Web{}, tools.Playback{},
-		tools.PlayMusic{}, tools.LikeTrack{}, tools.NowPlaying{},
-	}
+	all := tools.All(tools.Deps{})
 	for _, tool := range all {
 		name := tool.Decl().Name
 		n := 0
