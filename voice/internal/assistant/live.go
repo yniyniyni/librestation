@@ -78,7 +78,11 @@ func (s *Session) runLive(ctx context.Context, gen int, onNoRequest func()) {
 			s.idle(gen)
 			return
 		}
-		if err := s.liveTurn(ctx, gen, audio); err != nil {
+		log.Printf("assistant: Live input %d ms", len(audio)*1000/16000)
+		tctx, cancel := context.WithTimeout(ctx, turnTimeout)
+		err := s.liveTurn(tctx, gen, audio)
+		cancel()
+		if err != nil {
 			if errors.Is(err, errLiveDone) {
 				s.idle(gen)
 				return
@@ -109,14 +113,18 @@ func (s *Session) liveTurn(ctx context.Context, gen int, audio []int16) error {
 	if s.d.Live == nil {
 		return errors.New("assistant: Live is not configured")
 	}
+	started := time.Now()
+	log.Printf("assistant: Live dial")
 	conn, err := s.d.Live(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+	log.Printf("assistant: Live connected in %v", time.Since(started).Round(time.Millisecond))
 	if err := conn.SendAudio(ctx, audio); err != nil {
 		return err
 	}
+	log.Printf("assistant: Live audio sent in %v", time.Since(started).Round(time.Millisecond))
 	s.set(gen, "listening", "listening")
 	byName := map[string]agent.Tool{}
 	for _, t := range s.d.Agent.Tools {
@@ -127,6 +135,7 @@ func (s *Session) liveTurn(ctx context.Context, gen int, audio []int16) error {
 		if err != nil {
 			return err
 		}
+		log.Printf("assistant: Live message after %v", time.Since(started).Round(time.Millisecond))
 		if m.GoAway != nil {
 			return errors.New("Live connection is ending")
 		}
