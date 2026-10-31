@@ -113,7 +113,7 @@ func TestSpeakerWakeAfterIdle(t *testing.T) {
 // A write blocked on a backed-up pipe is released by cancel.
 func TestSpeakerCancelStops(t *testing.T) {
 	var wakes int
-	s, _, _ := newTestSpeaker([]string{"sh", "-c", "sleep 30"}, &wakes) // never reads
+	s, _, _ := newTestSpeaker([]string{"sh", "-c", "exec sleep 30"}, &wakes) // never reads
 	defer s.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	res := make(chan error, 1)
@@ -127,6 +127,29 @@ func TestSpeakerCancelStops(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Play did not return after cancel")
+	}
+}
+
+// After a cancel nothing more is written, and what was written is whole frames.
+func TestSpeakerCancelStopsWriting(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out")
+	var wakes int
+	s, _, _ := newTestSpeaker([]string{"sh", "-c", "sleep 0.3; cat > " + out}, &wakes)
+	defer s.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	res := make(chan error, 1)
+	go func() { res <- s.Play(ctx, make([]int16, 24000*5), 24000) }()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	if err := <-res; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Play = %v, want context.Canceled", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+	b1, _ := os.ReadFile(out)
+	time.Sleep(200 * time.Millisecond)
+	b2, _ := os.ReadFile(out)
+	if len(b1) != len(b2) || len(b2)%8 != 0 || len(b2) >= 24000*8*5/2 {
+		t.Fatalf("wrote %d then %d bytes, want a stable whole-frame count well under 5 s", len(b1), len(b2))
 	}
 }
 
@@ -155,6 +178,7 @@ func TestSpeakerRestartsAfterDeath(t *testing.T) {
 		t.Fatal("Play to a dead helper succeeded")
 	}
 	s.cmd = []string{"sh", "-c", "cat > /dev/null"}
+	// Immediately after the failure, with no pause for the reaper.
 	if err := s.Play(context.Background(), pcm[:2400], 24000); err != nil {
 		t.Fatalf("next Play: %v", err)
 	}

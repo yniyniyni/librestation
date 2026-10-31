@@ -106,10 +106,19 @@ func (s *speaker) start() (*speakerProc, error) {
 
 // Close stops the helper.
 func (s *speaker) Close() {
-	if s.proc != nil {
-		s.proc.in.Close()
-		s.proc.cmd.Process.Kill()
+	s.play.Lock()
+	defer s.play.Unlock()
+	s.kill()
+}
+
+// kill stops the helper and forgets it, so the next Play starts a fresh one on
+// a clean stream. The caller holds s.play.
+func (s *speaker) kill() {
+	if p := s.proc; p != nil {
+		p.in.Close()
+		p.cmd.Process.Kill()
 	}
+	s.proc, s.last = nil, time.Time{}
 }
 
 // Play writes pcm (mono, rate Hz) to the stream and returns once it has had
@@ -137,8 +146,25 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 
 	// A blocked write (aaudio_pipe backed up) is released by the deadline.
 	p.in.SetWriteDeadline(time.Time{})
-	stop := context.AfterFunc(ctx, func() { p.in.SetWriteDeadline(time.Now()) })
-	defer stop()
+	// The callback may only touch the deadline while this Play is still
+	// writing; once guard.done is set a late callback does nothing.
+	var guard struct {
+		sync.Mutex
+		done bool
+	}
+	finish := func() {
+		guard.Lock()
+		guard.done = true
+		guard.Unlock()
+	}
+	stop := context.AfterFunc(ctx, func() {
+		guard.Lock()
+		defer guard.Unlock()
+		if !guard.done {
+			p.in.SetWriteDeadline(time.Now())
+		}
+	})
+	defer func() { finish(); stop() }()
 
 	frames := resample24k(pcm, rate)
 	per := int(int64(speakerRate) * int64(speakerChunk) / int64(time.Second))
@@ -161,13 +187,18 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 		s.last = s.now()
 		if err != nil {
 			if ctx.Err() != nil {
-				// Finish the frame cut by the deadline so the stream stays aligned.
+				// Finish the frame cut by the deadline so the stream stays
+				// aligned; if that fails, restart the helper on a clean stream.
+				finish()
 				if rest := (8 - n%8) % 8; rest > 0 {
-					p.in.SetWriteDeadline(s.now().Add(time.Second))
-					p.in.Write(buf[n : n+rest])
+					p.in.SetWriteDeadline(time.Now().Add(time.Second))
+					if _, err := p.in.Write(buf[n : n+rest]); err != nil {
+						s.kill()
+					}
 				}
 				return ctx.Err()
 			}
+			s.kill()
 			return fmt.Errorf("speaker: %w", err)
 		}
 	}

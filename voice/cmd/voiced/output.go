@@ -52,7 +52,10 @@ func newOutput(hwCmd []string, gainFile string) *output {
 func (o *output) set(v int) {
 	o.gainMu.Lock()
 	o.mu.Lock()
-	o.writeGain(v, o.duckF)
+	f := o.duckF
+	o.mu.Unlock()
+	o.writeGain(v, f)
+	o.mu.Lock()
 	o.target = v
 	dir := 0
 	if o.prev >= 0 && v != o.prev {
