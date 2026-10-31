@@ -21,6 +21,7 @@ import (
 	miccap "voice/internal/capture"
 	"voice/internal/dsp"
 	"voice/internal/frontend"
+	"voice/internal/judge"
 	"voice/internal/kws"
 	"voice/internal/led/proto"
 	"voice/internal/wav"
@@ -35,6 +36,15 @@ type Options struct {
 	Actuator  Actuator // runs word actions; nil = actions are only logged
 	// OnLED receives events for the LED daemon (nil = off). It must not block.
 	OnLED func(proto.Event)
+	// Judge labels hits with an audio model (nil = off); JudgeModel names it
+	// for the UI.
+	Judge      Judge
+	JudgeModel string
+}
+
+// Judge is the audio model that labels hits (judge.Client).
+type Judge interface {
+	Judge(ctx context.Context, h judge.Hit) (judge.Verdict, error)
 }
 
 // Settings is persisted in <data>/settings.json.
@@ -42,6 +52,11 @@ type Settings struct {
 	Gain   float64                  `json:"gain"`    // frontend output gain
 	DryRun bool                     `json:"dry_run"` // log hits without acting
 	Words  map[string]*WordSettings `json:"words"`
+	// JudgeOff stops sending hits to the audio model even with a key.
+	JudgeOff bool `json:"judge_off"`
+	// AutoFalseUndo marks hits whose action the user took back as false
+	// alarms without asking.
+	AutoFalseUndo bool `json:"auto_false_undo"`
 }
 
 type WordSettings struct {
@@ -57,22 +72,38 @@ type word struct {
 
 // Hit is one detection, kept for the UI (with audio for false-alarm marking).
 type Hit struct {
-	ID    int       `json:"id"`
-	Word  string    `json:"word"`
-	Name  string    `json:"name"`
-	Score float32   `json:"score"`
-	At    time.Time `json:"at"`
-	Fired bool      `json:"fired"` // the word's action was run
+	ID     int       `json:"id"`
+	Word   string    `json:"word"`
+	Name   string    `json:"name"`
+	Score  float32   `json:"score"`
+	At     time.Time `json:"at"`
+	Action string    `json:"action,omitempty"`
+	Fired  bool      `json:"fired"` // the word's action was run
 	// Debounced: the same action ran moments ago, so this hit was only logged.
 	Debounced bool   `json:"debounced,omitempty"`
 	Error     string `json:"error,omitempty"`
+	Playback  bool   `json:"playback,omitempty"` // music was playing
+	// Judge is the audio model's call; JudgeError why there is none.
+	Judge      *judge.Verdict `json:"judge,omitempty"`
+	JudgeError string         `json:"judge_error,omitempty"`
+	Undone     float64        `json:"undone,omitempty"` // seconds until the user took the action back
+	// Verdict is "false" or "ok" once decided; Auto when the station
+	// decided it. FalseFile is the clip saved as the word's hard negative.
+	Verdict   string `json:"verdict,omitempty"`
+	Auto      bool   `json:"auto,omitempty"`
+	FalseFile string `json:"false_file,omitempty"`
+
 	audio     []int16
+	volBefore int  // volume when the hit fired, -1 unknown
+	volMoved  bool // the volume has moved the action's way since
+	pruned    bool // dropped from the list: its files go
 }
 
 type Daemon struct {
 	opt Options
 
-	onActionDone func() // test hook
+	onActionDone func()             // test hook
+	retrain      func(string) error // test hook for autoRetrain; nil = startTraining
 
 	mu       sync.Mutex
 	settings Settings
@@ -99,6 +130,13 @@ type Daemon struct {
 	enrollTouched time.Time
 
 	rec recorder
+
+	judgeQ     chan *Hit      // hits waiting for the audio model
+	judgeDelay time.Duration  // wait before judging, so a take-back is known
+	io         sync.WaitGroup // background hit writes
+	ioMu       sync.Mutex     // serialises hit writes; taken before mu
+	playback   string         // last Soloist status
+	volume     int            // last observed volume, -1 unknown
 
 	bands   *dsp.Bands // playback reference spectrum; nil without OnLED
 	lastLED time.Time  // last audio event sent (audio goroutine only)
@@ -145,7 +183,7 @@ func New(opt Options) (*Daemon, error) {
 		return nil, err
 	}
 	d := &Daemon{opt: opt, ring: newRing(ringSecs * kws.SampleRate),
-		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout}
+		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout, volume: -1}
 	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
@@ -157,6 +195,10 @@ func New(opt Options) (*Daemon, error) {
 	}
 	if opt.OnLED != nil {
 		d.bands = dsp.NewBands(miccap.Rate)
+	}
+	d.judgeQ, d.judgeDelay = make(chan *Hit, judgeQueue), undoWindow
+	if err := d.loadHits(); err != nil {
+		return nil, err
 	}
 	if err := d.loadWords(); err != nil {
 		return nil, err
@@ -238,6 +280,7 @@ func (d *Daemon) rebuildDetector() error {
 // Run captures and processes audio until ctx ends. Yandex's voice stack is
 // killed first (and again whenever the mic reads silence) so we get the mic.
 func (d *Daemon) Run(ctx context.Context) {
+	go d.runJudge(ctx)
 	if len(d.opt.MicCmd) == 0 {
 		d.mu.Lock()
 		d.audioErr = "no capture command"
@@ -318,12 +361,14 @@ func (d *Daemon) process(pcm []int16) float64 {
 // onHit records a detection and runs the word's action off the audio
 // goroutine; caller holds d.mu.
 func (d *Daemon) onHit(id string, score float32) {
-	h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: time.Now()}
-	h.audio = d.ring.last(3 * kws.SampleRate)
+	h := &Hit{Word: id, Name: d.wordName(id), Score: score, At: d.now(), volBefore: d.volume,
+		Playback: d.playback == "playing"}
+	h.audio = d.ring.last(hitSecs * kws.SampleRate)
 	var action string
 	if s := d.settings.Words[id]; s != nil {
 		action = s.Action
 	}
+	h.Action = action
 	if t, ok := d.lastAction[action]; ok && action != "" && !d.settings.DryRun && d.now().Sub(t) < actionDebounce {
 		h.Debounced = true
 		action = ""
@@ -331,6 +376,7 @@ func (d *Daemon) onHit(id string, score float32) {
 	if action != "" && !d.settings.DryRun {
 		h.Fired = true
 		d.lastAction[action] = d.now()
+		d.revertedLocked(action) // this command may take back the previous one
 		switch action {
 		case "pause", "play", "next", "prev":
 			if d.opt.OnLED != nil {
@@ -344,16 +390,13 @@ func (d *Daemon) onHit(id string, score float32) {
 				d.mu.Lock()
 				h.Error = err.Error()
 				d.mu.Unlock()
+				d.persist(h)
 			}
 			d.actionDone()
 		}()
 	}
-	d.hitSeq++
-	h.ID = d.hitSeq
-	d.hits = append(d.hits, h)
-	if len(d.hits) > 20 {
-		d.hits = d.hits[len(d.hits)-20:]
-	}
+	d.addHitLocked(h)
+	d.judgeLaterLocked(h)
 	log.Printf("hit %s score %.3f action %q debounced %v", id, score, action, h.Debounced)
 }
 

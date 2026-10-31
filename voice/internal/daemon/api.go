@@ -31,6 +31,7 @@ type wordView struct {
 	FalsePerH   float64   `json:"false_per_h"`
 	Takes       int       `json:"takes"`
 	FalseClips  int       `json:"false_clips"`
+	NewFalses   int       `json:"new_falses"` // since the last training; autoRetrainFalses retrains
 	Created     time.Time `json:"created"`
 	Score       float32   `json:"score"`
 	Notes       []string  `json:"notes,omitempty"`
@@ -51,10 +52,18 @@ type stateView struct {
 		Error string  `json:"error,omitempty"`
 		Level float64 `json:"level"`
 	} `json:"audio"`
-	Words  []wordView  `json:"words"`
-	Hits   []*Hit      `json:"hits"`
-	Enroll *enrollView `json:"enroll"`
-	Train  trainState  `json:"train"`
+	Words    []wordView   `json:"words"`
+	Hits     []Hit        `json:"hits"`
+	Enroll   *enrollView  `json:"enroll"`
+	Train    trainState   `json:"train"`
+	Judge    judgeView    `json:"judge"`
+	Settings settingsView `json:"settings"`
+}
+
+// settingsView is the part of Settings the hits card edits.
+type settingsView struct {
+	Judge         bool `json:"judge"`
+	AutoFalseUndo bool `json:"auto_false_undo"`
 }
 
 func (d *Daemon) state() stateView {
@@ -76,14 +85,16 @@ func (d *Daemon) state() stateView {
 		v.Words = append(v.Words, wordView{
 			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity, Action: s.Action,
 			Threshold: w.Model.Threshold, Recall: w.Model.Recall, FalsePerH: w.Model.FalsePerH,
-			Takes: w.Model.Takes, FalseClips: len(falses), Created: w.Model.Created,
+			Takes: w.Model.Takes, FalseClips: len(falses), NewFalses: d.newFalses(w.ID), Created: w.Model.Created,
 			Score: scores[w.ID], Notes: w.Model.TrainNotes,
 		})
 	}
-	v.Hits = make([]*Hit, len(d.hits))
+	v.Hits = make([]Hit, len(d.hits))
 	for i, h := range d.hits {
-		v.Hits[len(d.hits)-1-i] = h // newest first
+		v.Hits[len(d.hits)-1-i] = *h // newest first; copied, it changes after unlock
 	}
+	v.Settings = settingsView{Judge: !d.settings.JudgeOff, AutoFalseUndo: d.settings.AutoFalseUndo}
+	v.Judge = d.judgeViewLocked()
 	if e := d.enroll; e != nil {
 		ev := &enrollView{Name: e.Name, HasAmbient: len(e.Ambient) > 0, MinTakes: minTakes,
 			SpeechSecs: float64(len(e.Speech)) / kws.SampleRate, Takes: []float64{}}
@@ -185,28 +196,61 @@ func (d *Daemon) Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
+		a, err := d.hitAudio(h)
+		if err != nil {
+			httpErr(w, err)
+			return
+		}
 		w.Header().Set("Content-Type", "audio/wav")
-		w.Write(wav.Encode(h.audio, kws.SampleRate))
+		w.Write(wav.Encode(a, kws.SampleRate))
 	})
-	mux.HandleFunc("POST /api/hits/{n}/false", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /api/hits/{n}/judge", func(w http.ResponseWriter, r *http.Request) {
 		h := d.hit(r.PathValue("n"))
 		if h == nil {
 			http.NotFound(w, r)
 			return
 		}
-		p := filepath.Join(d.wordDir(h.Word), fmt.Sprintf("false-%d.wav", h.At.Unix()))
-		if err := wav.WriteFile(p, h.audio, kws.SampleRate); err != nil {
+		if !d.rejudge(h) {
+			httpErr(w, errors.New("модель не настроена: нет ключа"))
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	})
+	// {verdict} is "false" (keep the clip as a hard negative of the word) or
+	// "ok" (the hit was right; takes back a clip saved for it).
+	mux.HandleFunc("POST /api/hits/{n}/{verdict}", func(w http.ResponseWriter, r *http.Request) {
+		h := d.hit(r.PathValue("n"))
+		if h == nil {
+			http.NotFound(w, r)
+			return
+		}
+		if err := d.setVerdict(h, r.PathValue("verdict")); err != nil {
+			httpErr(w, err)
+			return
+		}
+		writeJSON(w, map[string]bool{"ok": true})
+	})
+	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Judge         *bool `json:"judge"`
+			AutoFalseUndo *bool `json:"auto_false_undo"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
 			return
 		}
 		d.mu.Lock()
-		for i, x := range d.hits {
-			if x == h {
-				d.hits = append(d.hits[:i], d.hits[i+1:]...)
-				break
-			}
+		defer d.mu.Unlock()
+		if req.Judge != nil {
+			d.settings.JudgeOff = !*req.Judge
 		}
-		d.mu.Unlock()
+		if req.AutoFalseUndo != nil {
+			d.settings.AutoFalseUndo = *req.AutoFalseUndo
+		}
+		if err := d.saveSettings(); err != nil {
+			httpErr(w, err)
+			return
+		}
 		writeJSON(w, map[string]bool{"ok": true})
 	})
 	mux.HandleFunc("POST /api/record", func(w http.ResponseWriter, r *http.Request) {

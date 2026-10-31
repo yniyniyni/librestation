@@ -43,6 +43,7 @@ func newTest(t *testing.T, act Actuator, action string, dry bool) (*Daemon, chan
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(d.waitIO)
 	d.settings.Words["x"] = &WordSettings{Enabled: true, Action: action}
 	d.settings.DryRun = dry
 	done := make(chan struct{}, 4)
