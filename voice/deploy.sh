@@ -1,6 +1,8 @@
 #!/bin/sh
 # Build the station binaries and push them to a rooted Yandex Station.
-# Remote commands that need root are always run through mysudo sh.
+# Remote commands that need root go through mysudo, which needs a tty and
+# splits its arguments on spaces (`mysudo sh -c "a b"` runs `sh -c a`), so each
+# one is written to a script on the speaker and run as `mysudo -n sh <script>`.
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -24,7 +26,13 @@ adb_cmd() { adb -s "$dev" "$@"; }
 root_shell() {
     # Call only with commands made from trusted local variables; no user input is
     # interpolated into the command string except validated absolute paths.
-    adb_cmd shell -tt "mysudo -n sh -c \"$*\""
+    # mysudo always exits 0, so the script reports its own status.
+    script=$base/.librestation-root.sh
+    printf '(\nset -e\n%s\n)\necho "__rc=$?"\n' "$*" | adb_cmd shell "cat > $script"
+    out=$(adb_cmd shell -tt "mysudo -n sh $script" | tr -d '\r')
+    adb_cmd shell "rm -f $script"
+    printf '%s\n' "$out" | grep -v '^__rc=' || true
+    printf '%s\n' "$out" | grep -q '^__rc=0$'
 }
 
 need_cmd() {

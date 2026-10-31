@@ -44,6 +44,21 @@ chmod 600 $S/api-key $R/etc/soloist/api-key
 # the PulseAudio config is deployed next to this script (the rootfs is root-only)
 [ -s $S/soloist.pa ] && cp $S/soloist.pa $R/etc/pulse/soloist.pa
 
+# Soloist does not keep to --cache-size (it grew past 700 MB at 300 and
+# nearly filled /data). The cache is one file per track and only saves
+# downloads, so the oldest files go until it fits; the newest is never cut.
+CACHE=$R/var/cache/soloist/cache
+CACHE_MAX=$((300 * 1024 * 1024))
+trim_cache() {
+    total=0
+    $BB ls -lt $CACHE/*/*.file 2>/dev/null | while read -r _ _ _ _ size _ _ _ f; do
+        total=$((total + size))
+        [ $total -gt $CACHE_MAX ] && rm -f "$f"
+    done
+}
+trim_cache
+( while true; do sleep 300; trim_cache; done ) &
+
 [ -p $FIFO ] || { rm -f $FIFO; mkfifo $FIFO; }
 # a pid file left by a power cut makes pulseaudio refuse to start
 rm -f $R/root/.config/pulse/*-runtime/pid
