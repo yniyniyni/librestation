@@ -161,10 +161,11 @@ func (d *Daemon) hitAudio(h *Hit) ([]int16, error) {
 }
 
 // markFalseLocked makes h a false alarm: its clip becomes a hard negative of
-// the word at the next training. Caller holds d.mu and persists h.
+// the word at the next training. A Yandex command has nothing to train: it
+// is only marked. Caller holds d.mu and persists h.
 func (d *Daemon) markFalseLocked(h *Hit, auto bool) {
 	h.Verdict, h.Auto = "false", auto
-	if h.FalseFile == "" {
+	if h.FalseFile == "" && h.Source != "yandex" {
 		h.FalseFile = fmt.Sprintf("false-%d.wav", h.At.Unix())
 	}
 }
@@ -217,6 +218,7 @@ func (d *Daemon) revertedLocked(action string) {
 }
 
 // ObservePlayback takes Soloist's playback status ("playing", "paused").
+// Music counts as playing until the status leaves "playing".
 func (d *Daemon) ObservePlayback(status string) {
 	var action string
 	switch status {
@@ -231,6 +233,9 @@ func (d *Daemon) ObservePlayback(status string) {
 	defer d.mu.Unlock()
 	prev := d.playback
 	d.playback = status
+	if status == "playing" || prev == "playing" {
+		d.lastPlaying = d.now()
+	}
 	if prev != "" && prev != status {
 		d.revertedLocked(action)
 	}

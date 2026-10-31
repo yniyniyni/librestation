@@ -24,6 +24,7 @@ type fakeAssistant struct {
 	wakes  int
 	blocks int
 	hushes int
+	state  string // "" = from busy
 	noReq  func()
 }
 
@@ -39,11 +40,20 @@ func (f *fakeAssistant) Hush()      { f.mu.Lock(); f.hushes++; f.mu.Unlock() }
 func (f *fakeAssistant) State() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.state != "" {
+		return f.state
+	}
 	if f.busy {
 		return "speaking"
 	}
 	return "idle"
 }
+func (f *fakeAssistant) setState(s string) {
+	f.mu.Lock()
+	f.state = s
+	f.mu.Unlock()
+}
+func (f *fakeAssistant) hushed() int { f.mu.Lock(); defer f.mu.Unlock(); return f.hushes }
 func (f *fakeAssistant) setBusy(b bool) {
 	f.mu.Lock()
 	f.busy = b

@@ -25,6 +25,7 @@ import (
 	"voice/internal/kws"
 	"voice/internal/led/proto"
 	"voice/internal/wav"
+	"voice/internal/ycmd"
 )
 
 type Options struct {
@@ -51,6 +52,10 @@ type Options struct {
 	// for the UI.
 	Judge      Judge
 	JudgeModel string
+	// Commands is Yandex's quick-command model, run on channel 0 of the raw
+	// capture (nil = none); CommandsErr says why there is none.
+	Commands    *ycmd.Model
+	CommandsErr string
 }
 
 // Judge is the audio model that labels hits (judge.Client).
@@ -88,6 +93,15 @@ type Settings struct {
 	AutoFalseUndo bool `json:"auto_false_undo"`
 	// Assistant is read by the session on every turn.
 	Assistant AssistantSettings `json:"assistant"`
+	// Quick switches Yandex's quick commands.
+	Quick QuickSettings `json:"quick"`
+}
+
+// QuickSettings turn Yandex's quick commands off, all or by group (pause,
+// next, prev, volume, play). Everything is on by default.
+type QuickSettings struct {
+	Off      bool            `json:"off"`
+	Disabled map[string]bool `json:"disabled,omitempty"`
 }
 
 // AssistantSettings are the assistant's choices in the panel.
@@ -165,6 +179,9 @@ type Hit struct {
 	Verdict   string `json:"verdict,omitempty"`
 	Auto      bool   `json:"auto,omitempty"`
 	FalseFile string `json:"false_file,omitempty"`
+	// Source is "yandex" for Yandex's quick commands ("" = our word); their
+	// Word and Name are the command.
+	Source string `json:"source,omitempty"`
 
 	audio     []int16
 	volBefore int  // volume when the hit fired, -1 unknown
@@ -214,6 +231,12 @@ type Daemon struct {
 
 	bands   *dsp.Bands // playback reference spectrum; nil without OnLED
 	lastLED time.Time  // last audio event sent (audio goroutine only)
+
+	spot        *ycmd.Spotter // nil without Options.Commands (audio goroutine only)
+	yin         *ycmd.Input   // the spotter's input (audio goroutine only)
+	yring       *ring         // the spotter's 16 kHz input, for hit clips
+	started     time.Time     // when New ran
+	lastPlaying time.Time     // when music was last seen playing
 }
 
 // actionDebounce is how long the same action is ignored after it ran: several
@@ -257,7 +280,12 @@ func New(opt Options) (*Daemon, error) {
 		return nil, err
 	}
 	d := &Daemon{opt: opt, ring: newRing(ringSecs * kws.SampleRate),
-		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout, volume: -1}
+		now: time.Now, lastAction: map[string]time.Time{}, enrollIdle: enrollIdleTimeout, volume: -1,
+		yring: newRing(hitSecs * kws.SampleRate)}
+	d.started = d.now()
+	if opt.Commands != nil {
+		d.spot, d.yin = ycmd.NewSpotter(opt.Commands), ycmd.NewInput()
+	}
 	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
@@ -376,7 +404,7 @@ func (d *Daemon) Run(ctx context.Context) {
 	killYandex()
 	r := &miccap.Runner{
 		Cmd:       d.opt.MicCmd,
-		OnBlock:   func(b []int16) { d.onRaw(b); d.onAudio(fe.Process(b)) },
+		OnBlock:   func(b []int16) { d.onRaw(b); d.spotCommands(b); d.onAudio(fe.Process(b)) },
 		OnSilence: killYandex,
 	}
 	err := r.Run(ctx)
@@ -468,35 +496,48 @@ func (d *Daemon) onHit(id string, score float32) {
 		h.Debounced = true // quick commands wait while the assistant talks
 		action = ""
 	}
-	if t, ok := d.lastAction[action]; ok && action != "" && !d.settings.DryRun && d.now().Sub(t) < actionDebounce {
-		h.Debounced = true
-		action = ""
-	}
 	if action != "" && !d.settings.DryRun {
-		h.Fired = true
-		d.lastAction[action] = d.now()
-		d.revertedLocked(action) // this command may take back the previous one
-		switch action {
-		case "pause", "play", "next", "prev":
-			if d.opt.OnLED != nil {
-				d.opt.OnLED(proto.Event{T: "cmd", A: action})
-			}
-		}
-		act := d.opt.Actuator
-		go func() {
-			if err := runAction(act, action); err != nil {
-				log.Printf("action %s: %v", action, err)
-				d.mu.Lock()
-				h.Error = err.Error()
-				d.mu.Unlock()
-				d.persist(h)
-			}
-			d.actionDone()
-		}()
+		d.actLocked(h, action)
 	}
 	d.addHitLocked(h)
 	d.judgeLaterLocked(h)
-	log.Printf("hit %s score %.3f action %q debounced %v", id, score, action, h.Debounced)
+	log.Printf("hit %s score %.3f action %q fired %v debounced %v", id, score, action, h.Fired, h.Debounced)
+}
+
+// actLocked runs action for the new hit h off the audio goroutine, unless the
+// same action ran within actionDebounce. "hush" stops the assistant's reply;
+// the rest go to the Actuator. Caller holds d.mu and adds h after.
+func (d *Daemon) actLocked(h *Hit, action string) {
+	if t, ok := d.lastAction[action]; ok && d.now().Sub(t) < actionDebounce {
+		h.Debounced = true
+		return
+	}
+	h.Fired = true
+	d.lastAction[action] = d.now()
+	d.revertedLocked(action) // this command may take back the previous one
+	switch action {
+	case "pause", "play", "next", "prev":
+		if d.opt.OnLED != nil {
+			d.opt.OnLED(proto.Event{T: "cmd", A: action})
+		}
+	}
+	act, asst := d.opt.Actuator, d.opt.Assistant
+	go func() {
+		var err error
+		if action == "hush" {
+			asst.Hush() // takes its own locks: never under d.mu
+		} else {
+			err = runAction(act, action)
+		}
+		if err != nil {
+			log.Printf("action %s: %v", action, err)
+			d.mu.Lock()
+			h.Error = err.Error()
+			d.mu.Unlock()
+			d.persist(h)
+		}
+		d.actionDone()
+	}()
 }
 
 // assistantNoRequest marks the hit that woke the assistant as a false alarm:
