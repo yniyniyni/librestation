@@ -89,6 +89,7 @@ type Session struct {
 	d     Deps
 	after func(time.Duration) <-chan time.Time
 
+	emu    sync.Mutex // orders duck/LED events: a gen check and its callback are one step
 	mu     sync.Mutex
 	gen    int // the current run; stale runs change nothing
 	st     Status
@@ -184,7 +185,8 @@ func (s *Session) Wake(ctx context.Context, onNoRequest func()) {
 
 // Hush stops a running request: the reply is cut off, the music comes back,
 // the ring goes off and the conversation is forgotten. It does not wait for
-// the cancelled run, which changes nothing from here on; a later Wake starts
+// the cancelled run, which changes nothing from here on (its events and its
+// onNoRequest are dropped); a later Wake starts
 // after it has stopped. From idle it does nothing.
 func (s *Session) Hush() {
 	s.mu.Lock()
@@ -200,6 +202,10 @@ func (s *Session) Hush() {
 	s.hist = nil
 	s.mu.Unlock()
 	log.Printf("assistant: hushed")
+	// A stale run may be inside a duck or LED callback; emu makes ours
+	// land after it, and later stale calls see the new gen.
+	s.emu.Lock()
+	defer s.emu.Unlock()
 	if s.d.Duck != nil {
 		s.d.Duck(1)
 	}
@@ -240,7 +246,7 @@ func (s *Session) listening() bool {
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
 	noRequest := func(first bool) {
-		if first && onNoRequest != nil {
+		if first && onNoRequest != nil && s.current(gen) {
 			onNoRequest()
 		}
 	}
@@ -487,24 +493,30 @@ func (s *Session) idle(gen int) {
 	s.led(gen, proto.Event{T: "ai"})
 }
 
-// duck sets the music's gain unless gen is stale, as led does.
-func (s *Session) duck(gen int, f float64) {
+// current reports whether gen is still the current run.
+func (s *Session) current(gen int) bool {
 	s.mu.Lock()
-	stale := gen != s.gen
-	s.mu.Unlock()
-	if !stale && s.d.Duck != nil {
+	defer s.mu.Unlock()
+	return gen == s.gen
+}
+
+// duck sets the music's gain unless gen is stale, as led does. The check and
+// the call are one step under emu, so a stale run cannot land an event after
+// Hush's.
+func (s *Session) duck(gen int, f float64) {
+	s.emu.Lock()
+	defer s.emu.Unlock()
+	if s.current(gen) && s.d.Duck != nil {
 		s.d.Duck(f)
 	}
 }
 
-// led sends e unless gen is stale. Only the current run's goroutines call
-// it, and a new run starts after the old one has stopped, so a stale event
-// cannot land after the new run's.
+// led sends e unless gen is stale; see duck. A new run starts after the old
+// one has stopped, so a stale event cannot land after the new run's.
 func (s *Session) led(gen int, e proto.Event) {
-	s.mu.Lock()
-	stale := gen != s.gen
-	s.mu.Unlock()
-	if !stale && s.d.LED != nil {
+	s.emu.Lock()
+	defer s.emu.Unlock()
+	if s.current(gen) && s.d.LED != nil {
 		s.d.LED(e)
 	}
 }

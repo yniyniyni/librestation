@@ -185,6 +185,8 @@ type rig struct {
 	ducks  []float64
 	events []string // LED states and ducks, in order
 	stocks []string
+
+	duckGate func(float64) // called before a duck is recorded; may block
 }
 
 func newRig(t *testing.T, steps ...func(context.Context, agent.Request, func(string)) (agent.Content, error)) *rig {
@@ -194,6 +196,9 @@ func newRig(t *testing.T, steps ...func(context.Context, agent.Request, func(str
 		TTS:    func() tts.Engine { return g.tts },
 		Player: g.player,
 		Duck: func(f float64) {
+			if g.duckGate != nil {
+				g.duckGate(f)
+			}
 			g.mu.Lock()
 			g.ducks = append(g.ducks, f)
 			g.events = append(g.events, fmt.Sprintf("duck %g", f))
@@ -807,7 +812,7 @@ func TestHushWhileSpeaking(t *testing.T) {
 	if d := g.duckLog(); len(d) == 0 || d[len(d)-1] != 1 {
 		t.Errorf("ducks %v, want the music restored", d)
 	}
-	if ev := g.eventLog(); ev[len(ev)-2] != "duck 1" || ev[len(ev)-1] != "led off" {
+	if ev := g.eventLog(); len(ev) < 2 || ev[len(ev)-2] != "duck 1" || ev[len(ev)-1] != "led off" {
 		t.Errorf("events %v, want duck 1 then led off last", ev)
 	}
 	// The next wake starts without the cancelled conversation.
@@ -847,5 +852,46 @@ func TestHushThenStaleRun(t *testing.T) {
 	}
 	if st := g.s.State(); st != "idle" {
 		t.Errorf("state %s, want idle", st)
+	}
+}
+
+// A stale run inside a Duck callback must not land its event after Hush's.
+func TestHushOrdersAfterStaleDuck(t *testing.T) {
+	g := newRig(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	g.duckGate = func(f float64) {
+		if f == duckGain {
+			close(entered)
+			<-release
+		}
+	}
+	g.wake(nil)
+	<-entered // the run is between its gen check and its Duck call
+	hushed := make(chan struct{})
+	go func() { g.s.Hush(); close(hushed) }()
+	select {
+	case <-hushed: // ordering is already broken; release anyway
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	<-hushed
+	g.s.wait()
+	ev := g.eventLog()
+	if want := []string{"duck 0.2", "duck 1", "led off"}; !slices.Equal(ev, want) {
+		t.Errorf("events %v, want %v", ev, want)
+	}
+}
+
+func TestHushDropsNoRequestCallback(t *testing.T) {
+	g := newRig(t)
+	called := make(chan struct{}, 1)
+	g.wake(func() { called <- struct{}{} })
+	g.untilListening()
+	g.s.Hush()
+	g.s.wait()
+	select {
+	case <-called:
+		t.Error("onNoRequest called for a hushed run")
+	default:
 	}
 }
