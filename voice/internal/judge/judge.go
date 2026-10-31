@@ -32,10 +32,18 @@ const (
 
 // Verdict is the model's call on one hit.
 type Verdict struct {
-	Command    bool    `json:"command"`    // a person said the word to the speaker
-	Confidence float64 `json:"confidence"` // 0..1
-	Heard      string  `json:"heard"`      // what speech the model heard, if any
-	Reason     string  `json:"reason"`     // one short sentence
+	// Probability that a person said the word to the speaker as a command:
+	// 0 = clearly not (lyrics, TV, no speech), 1 = clearly a command. One
+	// number, because a separate yes/no plus "confidence" was read by the
+	// model as the chance of a command and contradicted the yes/no.
+	Probability float64 `json:"probability"`
+	Heard       string  `json:"heard"`  // what speech the model heard, if any
+	Reason      string  `json:"reason"` // one short sentence
+
+	// Command and Confidence are the old answer, kept so hits judged
+	// before the change still read.
+	Command    *bool   `json:"command,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 // Hit is what the judge is told about a detection.
@@ -73,7 +81,7 @@ func ReadKey(path string) (string, error) {
 const prompt = `This audio clip was recorded by the microphone of a smart speaker, after echo cancellation, and ends at the moment its on-device keyword spotter detected the Russian command word «%s» (action: %s).
 The speaker has no wake word: the word alone triggers the action, so false alarms come from song lyrics or speech played by the speaker itself and only partly removed by echo cancellation, from TV or video, from people talking that happen to say something similar, and from noise.
 %s
-Decide whether a person in the room said «%s» (or a clear form of it) as a command to the speaker. A person saying it inside a longer sentence to someone else is not a command. Answer in JSON: command (true only for a real command), confidence (0 to 1), heard (the words you hear near the end of the clip, empty if none), reason (one short sentence in Russian).`
+Decide whether a person in the room said «%s» (or a clear form of it) as a command to the speaker. A person saying it inside a longer sentence to someone else is not a command. Answer in JSON: probability (from 0 to 1, how likely it is that a person said the word as a command to the speaker: 0 for lyrics, TV, other speech or no speech at all, 1 for a clear command), heard (the words you hear near the end of the clip, empty if none), reason (one short sentence in Russian).`
 
 // Judge asks the model about one hit.
 func (c *Client) Judge(ctx context.Context, h Hit) (Verdict, error) {
@@ -109,12 +117,11 @@ func (c *Client) Judge(ctx context.Context, h Hit) (Verdict, error) {
 			"responseSchema": map[string]any{
 				"type": "OBJECT",
 				"properties": map[string]any{
-					"command":    map[string]any{"type": "BOOLEAN"},
-					"confidence": map[string]any{"type": "NUMBER"},
-					"heard":      map[string]any{"type": "STRING"},
-					"reason":     map[string]any{"type": "STRING"},
+					"probability": map[string]any{"type": "NUMBER"},
+					"heard":       map[string]any{"type": "STRING"},
+					"reason":      map[string]any{"type": "STRING"},
 				},
-				"required": []string{"command", "confidence", "heard", "reason"},
+				"required": []string{"probability", "heard", "reason"},
 			},
 		},
 	}
@@ -180,6 +187,6 @@ func (c *Client) Judge(ctx context.Context, h Hit) (Verdict, error) {
 	if err := json.Unmarshal([]byte(out.String()), &v); err != nil {
 		return Verdict{}, fmt.Errorf("gemini: answer is not the JSON asked for: %v", err)
 	}
-	v.Confidence = min(max(v.Confidence, 0), 1)
+	v.Probability = min(max(v.Probability, 0), 1)
 	return v, nil
 }

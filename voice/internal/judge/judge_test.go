@@ -43,14 +43,14 @@ func answer(text string) string {
 
 func TestJudgeSendsClipAndParsesVerdict(t *testing.T) {
 	var req map[string]any
-	c := fakeGemini(t, 200, answer(`{"command":false,"confidence":0.9,"heard":"стоп машина","reason":"это строчка песни"}`), &req)
+	c := fakeGemini(t, 200, answer(`{"probability":0.1,"heard":"стоп машина","reason":"это строчка песни"}`), &req)
 	audio := make([]int16, 16000)
 	audio[5] = 1234
 	v, err := c.Judge(context.Background(), Hit{Word: "стоп", Action: "pause", Audio: audio, Rate: 16000, Undone: 3, Playback: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v.Command || v.Confidence != 0.9 || v.Heard != "стоп машина" || v.Reason == "" {
+	if v.Probability != 0.1 || v.Heard != "стоп машина" || v.Reason == "" {
 		t.Fatalf("verdict %+v", v)
 	}
 	parts := req["contents"].([]any)[0].(map[string]any)["parts"].([]any)
@@ -71,6 +71,9 @@ func TestJudgeSendsClipAndParsesVerdict(t *testing.T) {
 	}
 	gc := req["generationConfig"].(map[string]any)
 	if gc["responseMimeType"] != "application/json" || gc["responseSchema"] == nil {
+		t.Fatalf("generationConfig %v", gc)
+	}
+	if req := gc["responseSchema"].(map[string]any)["required"].([]any); len(req) != 3 || req[0] != "probability" {
 		t.Fatalf("generationConfig %v", gc)
 	}
 }

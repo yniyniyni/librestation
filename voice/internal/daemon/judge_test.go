@@ -66,7 +66,7 @@ func falseClips(d *Daemon) int {
 }
 
 func TestJudgedFalseAlarmSavesClip(t *testing.T) {
-	j := &fakeJudge{v: judge.Verdict{Command: false, Confidence: 0.9, Heard: "стоп машина", Reason: "песня"}}
+	j := &fakeJudge{v: judge.Verdict{Probability: 0.1, Heard: "стоп машина", Reason: "песня"}}
 	d, done := judgeTest(t, j, "pause")
 	d.ObservePlayback("playing")
 	hit(d)
@@ -82,7 +82,7 @@ func TestJudgedFalseAlarmSavesClip(t *testing.T) {
 }
 
 func TestJudgedCommandIsOK(t *testing.T) {
-	d, done := judgeTest(t, &fakeJudge{v: judge.Verdict{Command: true, Confidence: 0.95}}, "pause")
+	d, done := judgeTest(t, &fakeJudge{v: judge.Verdict{Probability: 0.95}}, "pause")
 	hit(d)
 	<-done
 	if h := waitJudged(t, d); h.Verdict != "ok" || !h.Auto || falseClips(d) != 0 {
@@ -91,7 +91,7 @@ func TestJudgedCommandIsOK(t *testing.T) {
 }
 
 func TestUnsureCallLeavesVerdictOpen(t *testing.T) {
-	d, done := judgeTest(t, &fakeJudge{v: judge.Verdict{Command: false, Confidence: 0.4}}, "pause")
+	d, done := judgeTest(t, &fakeJudge{v: judge.Verdict{Probability: 0.5}}, "pause")
 	hit(d)
 	<-done
 	if h := waitJudged(t, d); h.Verdict != "" || h.Judge == nil || falseClips(d) != 0 {
@@ -100,7 +100,7 @@ func TestUnsureCallLeavesVerdictOpen(t *testing.T) {
 }
 
 func TestJudgeKeepsUserVerdict(t *testing.T) {
-	j := &fakeJudge{v: judge.Verdict{Command: false, Confidence: 0.99}}
+	j := &fakeJudge{v: judge.Verdict{Probability: 0.01}}
 	d, done := judgeTest(t, j, "pause")
 	d.judgeDelay = time.Hour // judged only when asked below
 	hit(d)
@@ -119,7 +119,7 @@ func TestJudgeKeepsUserVerdict(t *testing.T) {
 // A take-back marked the hit false; the model heard a real command, so the
 // station's own guess is replaced and the clip taken back.
 func TestJudgeOverridesTakeBack(t *testing.T) {
-	j := &fakeJudge{v: judge.Verdict{Command: true, Confidence: 0.9}}
+	j := &fakeJudge{v: judge.Verdict{Probability: 0.9}}
 	d, done := judgeTest(t, j, "pause")
 	d.judgeDelay = 50 * time.Millisecond
 	d.settings.AutoFalseUndo = true
@@ -154,7 +154,7 @@ func TestJudgeErrorShown(t *testing.T) {
 }
 
 func TestJudgeOffOrMissing(t *testing.T) {
-	j := &fakeJudge{v: judge.Verdict{Command: true, Confidence: 1}}
+	j := &fakeJudge{v: judge.Verdict{Probability: 1}}
 	d, done := judgeTest(t, j, "pause")
 	d.settings.JudgeOff = true
 	hit(d)
@@ -175,7 +175,7 @@ func TestJudgeOffOrMissing(t *testing.T) {
 }
 
 func TestJudgedHitSurvivesRestart(t *testing.T) {
-	j := &fakeJudge{v: judge.Verdict{Command: false, Confidence: 0.8, Reason: "ТВ"}}
+	j := &fakeJudge{v: judge.Verdict{Probability: 0.2, Reason: "ТВ"}}
 	d, done := judgeTest(t, j, "pause")
 	hit(d)
 	<-done

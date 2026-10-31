@@ -140,7 +140,7 @@
 
   <div class="row muted" style="font-size:13px">
     <span class="grow">Если команда сработала зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.
-      Через 10 с после срабатывания Gemini слушает запись и сам ставит «ложное» или «верное», если уверен;
+      Через 10 с после срабатывания Gemini слушает запись и оценивает вероятность команды: от 70% ставит «верное», до 30% — «ложное»;
       ложные записи идут в обучение. Ваш выбор Gemini не меняет.
       Команды, отменённые в течение 10 с (пауза → продолжить, следующий → назад, громче → обратно колёсиком),
       подсвечены.</span>
@@ -210,9 +210,11 @@ function hitJudge(h) {
   if (h.judge_error) return `<div class="msg bad" title="${esc(h.judge_error)}">Gemini: ошибка <button data-rejudge="${h.id}">Ещё раз</button></div>`;
   const j = h.judge;
   if (!j) return "";
-  const call = j.command ? "команда" : "ложное";
   const heard = j.heard ? ` · слышно «${esc(j.heard)}»` : "";
-  return `<div class="stats" title="${esc(j.reason)}">Gemini: ${call} (${Math.round(j.confidence * 100)}%)${heard}${j.reason ? ` — ${esc(j.reason)}` : ""}</div>`;
+  // probability is the chance it was a command; hits judged before it carry command + confidence
+  const call = j.command != null ? `${j.command ? "команда" : "ложное"} (${Math.round(j.confidence * 100)}%)` :
+    `${j.probability >= 0.7 ? "команда" : j.probability <= 0.3 ? "ложное" : "не уверен"} · вероятность команды ${Math.round(j.probability * 100)}%`;
+  return `<div class="stats" title="${esc(j.reason)}">Gemini: ${call}${heard}${j.reason ? ` — ${esc(j.reason)}` : ""}</div>`;
 }
 function hitVerdict(h) {
   const play = `<button data-play="/api/hits/${h.id}">▶</button>`;

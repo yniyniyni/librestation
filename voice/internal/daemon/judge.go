@@ -18,9 +18,11 @@ import (
 // hard negative of the word, as a manual "false" does.
 
 const (
-	// judgeBar is the confidence below which the model's call is shown but
-	// does not decide the verdict.
-	judgeBar = 0.6
+	// A call decides the verdict only when the model is fairly sure: a
+	// command at judgeOK or more, a false alarm at judgeFalse or less. In
+	// between it is only shown.
+	judgeOK    = 0.7
+	judgeFalse = 0.3
 	// judgeQueue bounds hits waiting for the model; more are not judged.
 	judgeQueue = 16
 	// judgeTimeout bounds one call.
@@ -103,7 +105,7 @@ func (d *Daemon) judgeHit(ctx context.Context, h *Hit) {
 		log.Printf("judge hit %d %s: %v", h.ID, h.Word, err)
 	} else {
 		h.Judge, h.JudgeError = &v, ""
-		log.Printf("judge hit %d %s: command %v (%.2f) heard %q: %s", h.ID, h.Word, v.Command, v.Confidence, v.Heard, v.Reason)
+		log.Printf("judge hit %d %s: command probability %.2f, heard %q: %s", h.ID, h.Word, v.Probability, v.Heard, v.Reason)
 		d.applyJudgeLocked(h)
 	}
 	d.mu.Unlock()
@@ -116,11 +118,14 @@ func (d *Daemon) judgeHit(ctx context.Context, h *Hit) {
 // Caller holds d.ioMu and d.mu.
 func (d *Daemon) applyJudgeLocked(h *Hit) {
 	v := h.Judge
-	if v == nil || v.Confidence < judgeBar || (h.Verdict != "" && !h.Auto) {
+	if v == nil || (h.Verdict != "" && !h.Auto) {
 		return
 	}
-	if !v.Command {
+	switch {
+	case v.Probability <= judgeFalse:
 		d.markFalseLocked(h, true)
+		return
+	case v.Probability < judgeOK:
 		return
 	}
 	if ff := h.FalseFile; ff != "" {
