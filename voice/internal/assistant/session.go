@@ -51,7 +51,9 @@ const (
 	// its audio.
 	keepTurns = 3
 
-	notReady = "Режим разговора пока не готов"
+	// alreadyTalking answers start_conversation on the agent path: Live is the
+	// default, so the agent only runs when Live is unavailable.
+	alreadyTalking = "Я и так на связи — говори."
 )
 
 var errSpeakStuck = errors.New("assistant: reply playback stuck")
@@ -99,6 +101,7 @@ type Session struct {
 	hist   []agent.Content // the conversation so far, from completed turns
 	cancel context.CancelFunc
 	done   chan struct{}
+	handle string // the Live conversation's resumption handle, for a wake during it
 
 	amu    sync.Mutex // guards the audio fields; held only for appends and swaps
 	open   bool       // audio is wanted
@@ -209,6 +212,7 @@ func (s *Session) Wake(ctx context.Context, onNoRequest func()) {
 	log.Printf("assistant: wake %s", src)
 	if fromIdle {
 		hist = nil
+		s.handle = ""
 	}
 	s.cancel, s.done = cancel, done
 	s.setLocked("listening")
@@ -340,7 +344,7 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed b
 			}
 			s.mu.Unlock()
 			if out.StartConversation {
-				sp.say(notReady) // plan 3 replaces this
+				sp.say(alreadyTalking)
 			}
 		}
 		terr := sp.finish()

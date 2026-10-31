@@ -54,9 +54,9 @@ func TestCloseAfter(t *testing.T) {
 // cannot silently fall into the default dialog window. tools.All is the list
 // buildAssistant gives the agent.
 func TestEveryToolClassified(t *testing.T) {
-	all := tools.All(tools.Deps{})
-	for _, tool := range all {
-		name := tool.Decl().Name
+	// Live declares all of them, and its own end_conversation and no_request.
+	for _, d := range LiveDeclarations(tools.All(tools.Deps{})) {
+		name := d.Name
 		n := 0
 		for _, set := range []map[string]bool{closingTools, infoTools, dialogTools} {
 			if set[name] {
@@ -67,7 +67,9 @@ func TestEveryToolClassified(t *testing.T) {
 			t.Errorf("tool %q is in %d close classes, want exactly 1", name, n)
 		}
 	}
-	if !closingTools["end_conversation"] {
-		t.Error("end_conversation is not a closing tool")
+	for _, name := range []string{"end_conversation", "no_request"} {
+		if !closingTools[name] {
+			t.Errorf("%s is not a closing tool", name)
+		}
 	}
 }

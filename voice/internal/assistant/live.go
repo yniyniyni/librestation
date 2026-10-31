@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -50,12 +51,14 @@ const (
 	liveStall = 15 * time.Second
 	// toolTimeout bounds one tool call.
 	toolTimeout = 15 * time.Second
+	// briefLen is how much of a transcript the log keeps.
+	briefLen = 40
 	// liveDialLimit bounds the first dial of a conversation: past it the
 	// agent takes over, with what the user said meanwhile.
 	liveDialLimit = 3 * time.Second
 )
 
-const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation.`
+const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation. Если в услышанном нет обращения к тебе — музыка, телевизор, разговор не с тобой — вызови no_request и ничего не говори.`
 
 func LiveDeclarations(tools []agent.Tool) []geminilive.Declaration {
 	out := make([]geminilive.Declaration, 0, len(tools)+1)
@@ -63,7 +66,10 @@ func LiveDeclarations(tools []agent.Tool) []geminilive.Declaration {
 		d := t.Decl()
 		out = append(out, geminilive.Declaration{Name: d.Name, Description: d.Description, Parameters: d.Params, Behavior: "BLOCKING"})
 	}
-	out = append(out, geminilive.Declaration{Name: "end_conversation", Description: "Закончить разговор по просьбе пользователя.", Parameters: map[string]any{"type": "OBJECT", "properties": map[string]any{}}, Behavior: "BLOCKING"})
+	none := map[string]any{"type": "OBJECT", "properties": map[string]any{}}
+	out = append(out,
+		geminilive.Declaration{Name: "end_conversation", Description: "Закончить разговор по просьбе пользователя.", Parameters: none, Behavior: "BLOCKING"},
+		geminilive.Declaration{Name: "no_request", Description: "В услышанном нет обращения к помощнику (музыка, телевизор, разговор не с ним): молча закончить.", Parameters: none, Behavior: "BLOCKING"})
 	return out
 }
 
@@ -196,9 +202,16 @@ type toolBatch struct {
 // having done nothing else, when Live does not connect within liveDialLimit:
 // the conversation then goes to the agent, with what Live would have heard.
 func (s *Session) runLive(ctx context.Context, gen int, lp livePlayer, seed bool, onNoRequest func()) (bool, liveLeft) {
-	seeded := s.liveOn(seed) // audio queues while the connection opens
+	// Audio queues while the connection opens. The pre-roll comes from
+	// channel 0, where the chip has already taken the reply's echo out, so a
+	// wake during a conversation gets one too: the audio of the changeover.
+	seeded := s.liveOn(true)
+	if !seed {
+		seeded = 0 // not the agent's: its seed is from before an idle wake only
+	}
+	handle := s.lastHandle()
 	started := time.Now()
-	c, err := s.dialFirst(ctx)
+	c, err := s.dialFirst(ctx, handle)
 	if err != nil {
 		left := s.liveTake(seeded)
 		if ctx.Err() != nil {
@@ -209,7 +222,7 @@ func (s *Session) runLive(ctx context.Context, gen int, lp livePlayer, seed bool
 		return false, left
 	}
 	log.Printf("assistant: Live session open in %v", time.Since(started).Round(time.Millisecond))
-	r := &liveRun{s: s, gen: gen, ctx: ctx, lp: lp, onNoRequest: onNoRequest,
+	r := &liveRun{s: s, gen: gen, ctx: ctx, lp: lp, onNoRequest: onNoRequest, handle: handle,
 		byName: map[string]agent.Tool{}, cancels: map[string]context.CancelFunc{}, toolDone: make(chan toolBatch)}
 	for _, t := range s.d.Agent.Tools {
 		r.byName[t.Decl().Name] = t
@@ -221,7 +234,7 @@ func (s *Session) runLive(ctx context.Context, gen int, lp livePlayer, seed bool
 // dialFirst opens the conversation's Live session, giving up after
 // liveDialLimit. The bound only cancels a dial still under way: the context
 // of one that succeeded is left alone, as the connection may depend on it.
-func (s *Session) dialFirst(ctx context.Context) (LiveSession, error) {
+func (s *Session) dialFirst(ctx context.Context, handle string) (LiveSession, error) {
 	dctx, cancel := context.WithCancel(ctx)
 	var mu sync.Mutex
 	dialled, late := false, false
@@ -238,7 +251,7 @@ func (s *Session) dialFirst(ctx context.Context) (LiveSession, error) {
 		case <-stop:
 		}
 	}()
-	c, err := s.d.Live(dctx, "")
+	c, err := s.d.Live(dctx, handle)
 	mu.Lock()
 	dialled = true
 	mu.Unlock()
@@ -271,13 +284,17 @@ func (r *liveRun) run(c LiveSession) {
 	r.listen(startLimit)
 	r.loop()
 
+	cancelled := r.ctx.Err() != nil
+	if cancelled {
+		r.lp.Flush() // Hush or a new wake: the reply stops now, not after the tools
+	}
 	if r.conn != nil {
 		r.conn.close()
 	}
 	stopTools()
 	r.twg.Wait()
 	r.s.liveOff()
-	cut := r.err != nil || r.ctx.Err() != nil || r.state == "speaking" || r.finishing
+	cut := !cancelled && (r.err != nil || r.state == "speaking" || r.finishing)
 	stopOut()
 	owg.Wait()
 	if cut {
@@ -337,7 +354,11 @@ func (r *liveRun) loop() {
 func (r *liveRun) to(state string) {
 	if r.state != state {
 		r.state = state
-		r.s.set(r.gen, state, state)
+		led := state
+		if state == "followup" {
+			led = "listening" // the ring has no scene of its own for it
+		}
+		r.s.set(r.gen, state, led)
 	}
 }
 
@@ -401,8 +422,8 @@ func (r *liveRun) endTurn(close string) {
 	if t.first >= 0 {
 		first = fmt.Sprintf("%d ms", t.first.Milliseconds())
 	}
-	log.Printf("assistant: Live turn: heard %q, tools %s, reply %q, first audio %s, close %s",
-		strings.TrimSpace(t.heard), tools, strings.TrimSpace(t.reply), first, close)
+	log.Printf("assistant: Live turn: heard %s, tools %s, reply %s, first audio %s, close %s",
+		brief(t.heard), tools, brief(t.reply), first, close)
 }
 
 func (r *liveRun) message(lm liveMsg) bool {
@@ -415,6 +436,7 @@ func (r *liveRun) message(lm liveMsg) bool {
 	m := lm.m
 	if u := m.SessionResumptionUpdate; u != nil && u.Resumable && u.NewHandle != "" {
 		r.handle = u.NewHandle
+		r.s.keepHandle(r.gen, u.NewHandle)
 	}
 	if c := m.ToolCallCancellation; c != nil {
 		for _, id := range c.IDs {
@@ -424,6 +446,9 @@ func (r *liveRun) message(lm liveMsg) bool {
 		}
 	}
 	if m.ToolCall != nil {
+		if slices.ContainsFunc(m.ToolCall.FunctionCalls, func(c geminilive.FunctionCall) bool { return c.Name == "no_request" }) {
+			return r.noRequest()
+		}
 		r.call(m.ToolCall.FunctionCalls)
 	}
 	if c := m.ServerContent; c != nil {
@@ -497,7 +522,9 @@ func (r *liveRun) turnComplete() {
 		r.drop = false // the end of the reply a barge-in cut
 		return
 	}
-	if r.turn == nil {
+	if r.turn == nil || r.tools > 0 {
+		// While tools run the turn is not over, whatever the server says: the
+		// reply to their results ends with its own turnComplete.
 		return
 	}
 	r.stall = nil
@@ -525,6 +552,21 @@ func (r *liveRun) played(p livePlayed) bool {
 	}
 	r.followup(wait)
 	return true
+}
+
+// noRequest ends the conversation silently: the model heard nothing meant
+// for it. On the first turn the wake was false.
+func (r *liveRun) noRequest() bool {
+	if r.state == "speaking" || r.finishing {
+		r.out.flush()
+	}
+	r.drop, r.finishing = false, false
+	first := r.turns == 0 || r.turns == 1 && r.turn != nil // no turn has ended yet
+	if first && r.onNoRequest != nil && r.s.current(r.gen) {
+		r.onNoRequest()
+	}
+	r.why = "no request"
+	return false
 }
 
 // bargeIn cuts the reply off: the user spoke over it.
@@ -713,10 +755,36 @@ func (s *Session) recordLive(gen int, t *liveTurn) {
 	s.st.LastError = ""
 }
 
+// keepHandle remembers the conversation's resumption handle, for a wake
+// during it.
+func (s *Session) keepHandle(gen int, h string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if gen == s.gen {
+		s.handle = h
+	}
+}
+
+func (s *Session) lastHandle() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.handle
+}
+
 func (s *Session) liveError(gen int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if gen == s.gen {
 		s.st.LastError = err.Error()
 	}
+}
+
+// brief is s for the log: its length and the first briefLen characters.
+func brief(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) <= briefLen {
+		return fmt.Sprintf("%d chars %q", len(r), s)
+	}
+	return fmt.Sprintf("%d chars %q", len(r), string(r[:briefLen])+"…")
 }

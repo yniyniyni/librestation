@@ -13,7 +13,9 @@ const (
 )
 
 // closingTools end the conversation as soon as their reply has played.
-var closingTools = map[string]bool{"play_music": true, "playback": true, "like_track": true, "end_conversation": true}
+// no_request (Live only) closes silently before any reply; it is here so
+// every declared tool has a class.
+var closingTools = map[string]bool{"play_music": true, "playback": true, "like_track": true, "end_conversation": true, "no_request": true}
 
 // infoTools give a fact and leave a short window for a follow-up.
 var infoTools = map[string]bool{"get_weather": true, "get_time": true}

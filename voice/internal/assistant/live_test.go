@@ -6,6 +6,7 @@ import (
 	"errors"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -699,6 +700,16 @@ func (g *liveRig) drop(f *fakeLive) {
 	}
 }
 
+// releaser opens a release channel once, also when the test fails early, so
+// a blocked tool lets the conversation stop. Call it after the wake: cleanups
+// run last first.
+func releaser(t *testing.T, ch chan struct{}) func() {
+	var once sync.Once
+	rel := func() { once.Do(func() { close(ch) }) }
+	t.Cleanup(rel)
+	return rel
+}
+
 // settle lets the session act on what it was just given when there is
 // nothing to wait for.
 func settle() { time.Sleep(30 * time.Millisecond) }
@@ -710,11 +721,12 @@ func TestLiveToolAcrossResume(t *testing.T) {
 	g := newLiveRig(t, liveTool{name: "web_answer", release: release})
 	f1, f2 := g.conn(), g.conn()
 	g.open()
+	rel := releaser(t, release)
 	g.send(f1, mHandle("h1"), mHeard("найди"), mTool("q1", "web_answer", `{}`), mGoAway())
 	g.untilState("thinking")
 	g.drop(f1)
 	g.until("resumed", func() bool { return len(g.dials()) == 2 })
-	close(release)
+	rel()
 	g.until("old answer tried", func() bool { return f1.respondAttempts() == 1 })
 	settle()
 	g.reply(f2, "найди ещё", "Нашёл.")
@@ -873,5 +885,138 @@ func TestLiveStallAfterTools(t *testing.T) {
 	g.ended()
 	if s := g.stockLog(); !slices.Equal(s, []string{"no_internet"}) {
 		t.Errorf("stock %v, want [no_internet]", s)
+	}
+}
+
+// A false wake: the model finds nothing addressed to it. The conversation
+// closes silently, the reply's audio is dropped and the wake is marked false.
+func TestLiveNoRequestFirstTurn(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	var noReq sync.WaitGroup
+	noReq.Add(1)
+	g.wake(noReq.Done)
+	g.until("Live dial", func() bool { return len(g.dials()) == 1 })
+	g.send(f, mHeard("а по телевизору"), mAudio())
+	g.untilState("speaking")
+	g.send(f, mTool("n1", "no_request", `{}`))
+	g.ended()
+	noReq.Wait()
+	if g.flushes() == 0 {
+		t.Error("audio of the turn not dropped")
+	}
+	if s := g.stockLog(); len(s) != 0 {
+		t.Errorf("stock %v, want silence", s)
+	}
+	if n := g.finishes(); n != 0 {
+		t.Errorf("FinishLive %d times, want 0", n)
+	}
+}
+
+func TestLiveNoRequestLaterTurn(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.wake(func() { t.Error("onNoRequest after a real turn") })
+	g.until("Live dial", func() bool { return len(g.dials()) == 1 })
+	g.reply(f, "привет", "Привет.")
+	g.send(f, mTool("n1", "no_request", `{}`))
+	g.ended()
+	if s := g.stockLog(); len(s) != 0 {
+		t.Errorf("stock %v, want silence", s)
+	}
+}
+
+// A turnComplete that arrives while a tool still runs does not end the turn:
+// the close decision waits for the tool's result.
+func TestLiveTurnCompleteWaitsForTools(t *testing.T) {
+	release := make(chan struct{})
+	g := newLiveRig(t, liveTool{name: "play_music", release: release})
+	f := g.conn()
+	g.open()
+	rel := releaser(t, release)
+	g.send(f, mHeard("включи"), mTool("p1", "play_music", `{}`), mDone())
+	settle()
+	if g.finishes() != 0 || f.isClosed() {
+		t.Fatalf("turn ended before the tool answered (finishes %d)", g.finishes())
+	}
+	rel()
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.send(f, mAudio(), mSaid("Включаю."), mDone())
+	g.ended() // play_music closes at once
+	if n := g.finishes(); n != 1 {
+		t.Errorf("FinishLive %d times, want 1", n)
+	}
+}
+
+// Hush cuts the reply at once, before waiting for a tool that is slow to stop.
+func TestLiveHushFlushesFirst(t *testing.T) {
+	release := make(chan struct{})
+	g := newLiveRig(t, liveTool{name: "web_answer", release: release})
+	f := g.conn()
+	g.open()
+	rel := releaser(t, release)
+	g.send(f, mHeard("найди"), mTool("q", "web_answer", `{}`), mAudio())
+	g.untilState("speaking")
+	g.s.Hush()
+	g.until("flush", func() bool { return g.flushes() >= 1 })
+	rel()
+	g.ended()
+}
+
+// A wake during a conversation resumes it with the last handle, and the
+// new session gets the audio from the changeover.
+func TestLiveWakeMidSessionResumes(t *testing.T) {
+	g := newLiveRig(t)
+	f1, f2 := g.conn(), g.conn()
+	g.open()
+	g.send(f1, mHandle("h9"))
+	g.reply(f1, "привет", "Привет.")
+	g.speak(noise(g.r, time.Second, quietDB))
+	g.wake(nil)
+	g.until("new session", func() bool { return len(g.dials()) == 2 })
+	if d := g.dials(); d[1] != "h9" {
+		t.Fatalf("second dial %q, want h9", d[1])
+	}
+	g.until("pre-roll sent", func() bool { return f2.streamed() >= seedLen })
+	g.reply(f2, "ещё", "Да.")
+}
+
+// A wake from idle starts afresh, without the last conversation's handle.
+func TestLiveWakeFromIdleIsFresh(t *testing.T) {
+	g := newLiveRig(t)
+	f1, f2 := g.conn(), g.conn()
+	g.open()
+	g.send(f1, mHandle("h9"))
+	g.reply(f1, "привет", "Привет.")
+	g.clock.Advance(dialogWindow)
+	g.ended()
+	g.wake(nil)
+	g.until("new session", func() bool { return len(g.dials()) == 2 })
+	if d := g.dials(); d[1] != "" {
+		t.Fatalf("second dial %q, want a new session", d[1])
+	}
+	g.reply(f2, "привет", "Привет.")
+}
+
+// The follow-up shows the listening ring: the ring has no "followup" scene.
+func TestLiveFollowUpRing(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.reply(f, "привет", "Привет.")
+	for _, s := range g.ledStates() {
+		if s == "followup" {
+			t.Fatalf("ring %v has followup", g.ledStates())
+		}
+	}
+}
+
+func TestBrief(t *testing.T) {
+	long := strings.Repeat("а", 100)
+	if got, want := brief(long), `100 chars "`+strings.Repeat("а", 40)+`…"`; got != want {
+		t.Errorf("brief = %s, want %s", got, want)
+	}
+	if got := brief(" да "); got != `2 chars "да"` {
+		t.Errorf("brief = %s", got)
 	}
 }

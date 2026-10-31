@@ -487,7 +487,7 @@ func TestStartConversationNotReadyYet(t *testing.T) {
 	g.untilListening()
 	g.say(g.utterance())
 	g.until("follow-up wait", func() bool { return g.clock.pending(followDelay) })
-	if got := g.tts.said(); !slices.Equal(got, []string{notReady}) {
+	if got := g.tts.said(); !slices.Equal(got, []string{alreadyTalking}) {
 		t.Errorf("tts got %q", got)
 	}
 	g.clock.Advance(followDelay)
