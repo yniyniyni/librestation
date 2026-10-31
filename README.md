@@ -15,10 +15,10 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 
 - ADB по сети;
 - команду `mysudo`, через которую доступен root-shell;
-- рабочий вызов `mysudo su shell -c '...'`.
+- рабочий вызов `mysudo sh -c '...'`.
 
 Все команды, которые выполняются на колонке с правами root, в этом проекте
-проходят через `mysudo su shell`. Если колонка рутована другим способом,
+проходят через `mysudo sh`. Если колонка рутована другим способом,
 пользователь должен самостоятельно адаптировать команды и установочные скрипты.
 Поддержка других root-обвязок этим README не обещается.
 
@@ -41,7 +41,7 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 ### Колонка
 
 - Яндекс Станция Макс (`yandexstation_2`) на Android 9.
-- Root через `mysudo su shell` и ADB по сети.
+- Root через `mysudo sh` и ADB по сети.
 - Свободное место под Debian arm64 rootfs, модели и логи.
 - Подготовленный Debian rootfs для `linux/aarch64` с PulseAudio.
 - Сборка Spotify Soloist для `linux/aarch64` и **свой** developer API key Soloist.
@@ -65,7 +65,7 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 
 ## Полная установка с нуля
 
-Ниже описан стандартный путь для root-обвязки `mysudo su shell`.
+Ниже описан стандартный путь для root-обвязки `mysudo sh`.
 Начинайте из корня репозитория.
 
 ### 1. Подключить ADB и проверить root
@@ -73,10 +73,10 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 ```sh
 export ADB_DEVICE=<ip-колонки>:5555
 adb connect "$ADB_DEVICE"
-adb -s "$ADB_DEVICE" shell 'mysudo su shell -c "id"'
+adb -s "$ADB_DEVICE" shell 'mysudo sh -c "id"'
 ```
 
-В выводе должен быть root (`uid=0`). Если `adb connect` или `mysudo su shell`
+В выводе должен быть root (`uid=0`). Если `adb connect` или `mysudo sh`
 не работают, сначала исправьте root/ADB на самой колонке.
 
 ### 2. Подготовить host-инструменты
@@ -139,7 +139,7 @@ export REMOTE_SOLOIST_DIR="$REMOTE_BASE/soloist"
 adb -s "$ADB_DEVICE" push /path/to/rootfs.tar.xz \
   /data/local/tmp/soloist/rootfs.tar.xz
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "sh /data/local/tmp/soloist/setup-rootfs.sh"'
+  'mysudo sh -c "sh /data/local/tmp/soloist/setup-rootfs.sh"'
 ```
 
 `setup-rootfs.sh` остановит старый librespot-пайплайн, распакует архив и удалит
@@ -149,7 +149,7 @@ adb -s "$ADB_DEVICE" shell -tt \
 
 ```sh
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "SOLOIST_BASE=/custom/soloist sh /custom/soloist/setup-rootfs.sh"'
+  'mysudo sh -c "SOLOIST_BASE=/custom/soloist sh /custom/soloist/setup-rootfs.sh"'
 ```
 
 ### 5. Установить Soloist в rootfs
@@ -161,7 +161,7 @@ rootfs:
 adb -s "$ADB_DEVICE" push /path/to/soloist \
   /data/local/tmp/soloist/rootfs/opt/soloist/soloist
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "chmod 755 /data/local/tmp/soloist/rootfs/opt/soloist/soloist"'
+  'mysudo sh -c "chmod 755 /data/local/tmp/soloist/rootfs/opt/soloist/soloist"'
 ```
 
 Если используется Xray, отдельно положите бинарник в
@@ -173,7 +173,7 @@ adb -s "$ADB_DEVICE" push /path/to/xray \
 adb -s "$ADB_DEVICE" push /path/to/xray.json \
   /data/local/tmp/soloist/xray.json
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "chmod 755 /data/local/tmp/soloist/rootfs/opt/xray/xray && chmod 600 /data/local/tmp/soloist/xray.json"'
+  'mysudo sh -c "chmod 755 /data/local/tmp/soloist/rootfs/opt/xray/xray && chmod 600 /data/local/tmp/soloist/xray.json"'
 ```
 
 `xray.json` содержит сетевую конфигурацию и может содержать секреты. Не
@@ -200,25 +200,25 @@ ADB_DEVICE="$ADB_DEVICE" sh soloist/put-key.zsh
 
 ```sh
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "sh /data/local/tmp/soloist/start.sh"'
+  'mysudo sh -c "sh /data/local/tmp/soloist/start.sh"'
 ```
 
 Проверить лог:
 
 ```sh
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "tail -f /data/local/tmp/soloist/soloist.log"'
+  'mysudo sh -c "tail -f /data/local/tmp/soloist/soloist.log"'
 ```
 
 Остановить всё:
 
 ```sh
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "sh /data/local/tmp/soloist/stop.sh"'
+  'mysudo sh -c "sh /data/local/tmp/soloist/stop.sh"'
 ```
 
 Для автозапуска добавьте вызов `start.sh` в загрузочный скрипт именно вашего
-root-решения, также через `mysudo su shell`. Процесс автозапуска зависит от
+root-решения, также через `mysudo sh`. Процесс автозапуска зависит от
 способа root и в проекте намеренно не привязан к конкретному менеджеру.
 
 ## После запуска
@@ -240,14 +240,14 @@ http://<ip-колонки>:8780
 
 ```sh
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "pm uninstall -k --user 0 com.yandex.io.sdk"'
+  'mysudo sh -c "pm uninstall -k --user 0 com.yandex.io.sdk"'
 ```
 
 Вернуть компонент:
 
 ```sh
 adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo su shell -c "cmd package install-existing com.yandex.io.sdk"'
+  'mysudo sh -c "cmd package install-existing com.yandex.io.sdk"'
 ```
 
 Стоковые анимации экрана Яндекса в репозиторий не входят. `deploy.sh` пытается
@@ -291,7 +291,7 @@ adb -s "$ADB_DEVICE" shell -tt \
 
 Сейчас скрипты уже разделяют host-пути и device-пути, умеют работать с
 `ANDROID_SDK`/`NDK` на macOS и Linux и используют единый root-вызов
-`mysudo su shell`. Дальше установку можно сделать ещё удобнее:
+`mysudo sh`. Дальше установку можно сделать ещё удобнее:
 
 - добавить `tools/install.sh`, который проверяет ОС, версии Go/Java/SDK/NDK,
   подключение ADB и root-доступ до начала сборки;
@@ -300,7 +300,7 @@ adb -s "$ADB_DEVICE" shell -tt \
 - автоматически находить `adb`, `javac`, `d8` и NDK в стандартных путях macOS/Linux,
   оставляя явные переменные окружения приоритетными;
 - сделать отдельный `tools/push-rootfs.sh`, который загрузит архив, распакует его
-  через `mysudo su shell` и проверит наличие `opt/soloist/soloist`;
+  через `mysudo sh` и проверит наличие `opt/soloist/soloist`;
 - добавить проверку архитектуры и контрольные суммы для rootfs, Soloist и Xray;
 - добавить безопасный `xray.json.example` без секретов и отдельную команду для
   загрузки настоящей конфигурации;
