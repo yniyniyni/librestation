@@ -160,8 +160,11 @@ func (s *Session) liveTurn(ctx context.Context, gen int, audio []int16) error {
 				if call.Name == "end_conversation" {
 					resp["ok"] = true
 					responses = append(responses, geminilive.FunctionResponse{ID: call.ID, Name: call.Name, Response: resp})
+					if err := conn.Respond(ctx, responses); err != nil {
+						return err
+					}
 					s.idle(gen)
-					return nil
+					return errLiveDone
 				}
 				t := byName[call.Name]
 				if t == nil {
