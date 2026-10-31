@@ -183,3 +183,25 @@ func BenchmarkFrame(b *testing.B) {
 		s.Push(pcm[k:k+160], nil) // one 10 ms frame
 	}
 }
+
+// BenchmarkBlock pushes 20 ms blocks as the daemon does, so each op runs
+// two frames through the network together; ns/frame is half of ns/op.
+func BenchmarkBlock(b *testing.B) {
+	dir := os.Getenv("YCMD_DIR")
+	if dir == "" {
+		b.Skip("YCMD_DIR not set")
+	}
+	m, err := Load(dir)
+	if err != nil {
+		b.Fatal(err)
+	}
+	s := NewSpotter(m)
+	pcm := sine(1000, 440, 16000)
+	s.Push(pcm, nil)
+	b.ResetTimer()
+	for i := range b.N {
+		k := 320 * (i % 49)
+		s.Push(pcm[k:k+320], nil) // one 20 ms block
+	}
+	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(2*b.N), "ns/frame")
+}
