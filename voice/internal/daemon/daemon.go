@@ -68,6 +68,10 @@ type Assistant interface {
 	Wake(ctx context.Context, onNoRequest func())
 	// Busy is true while a request is running.
 	Busy() bool
+	// Hush stops the reply and goes idle; from idle it does nothing.
+	Hush()
+	// State is idle|listening|thinking|speaking|followup.
+	State() string
 }
 
 // Settings is persisted in <data>/settings.json.

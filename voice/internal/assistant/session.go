@@ -182,8 +182,37 @@ func (s *Session) Wake(ctx context.Context, onNoRequest func()) {
 	}()
 }
 
+// Hush stops a running request: the reply is cut off, the music comes back,
+// the ring goes off and the conversation is forgotten. It does not wait for
+// the cancelled run, which changes nothing from here on; a later Wake starts
+// after it has stopped. From idle it does nothing.
+func (s *Session) Hush() {
+	s.mu.Lock()
+	if s.st.State == "idle" {
+		s.mu.Unlock()
+		return
+	}
+	s.gen++ // the cancelled run is stale from now on
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.setLocked("idle")
+	s.hist = nil
+	s.mu.Unlock()
+	log.Printf("assistant: hushed")
+	if s.d.Duck != nil {
+		s.d.Duck(1)
+	}
+	if s.d.LED != nil {
+		s.d.LED(proto.Event{T: "ai"})
+	}
+}
+
+// State is Status().State: idle|listening|thinking|speaking|followup.
+func (s *Session) State() string { return s.Status().State }
+
 // Busy is true from Wake until the session is idle again.
-func (s *Session) Busy() bool { return s.Status().State != "idle" }
+func (s *Session) Busy() bool { return s.State() != "idle" }
 
 func (s *Session) Status() Status {
 	s.mu.Lock()

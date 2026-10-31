@@ -788,3 +788,64 @@ func TestBargeInIsNotSeeded(t *testing.T) {
 		t.Errorf("barge-in audio %v: the seed leaked in", d)
 	}
 }
+
+func TestHushWhileSpeaking(t *testing.T) {
+	g := newRig(t, reply("Ставлю."), reply("Хорошо."))
+	g.player.hold = make(chan struct{})
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.untilState("speaking")
+	g.s.Hush()
+	if st := g.s.State(); st != "idle" {
+		t.Errorf("state %s right after Hush, want idle", st)
+	}
+	if g.s.Busy() {
+		t.Error("busy after Hush")
+	}
+	g.until("playback cancelled", func() bool { _, c := g.player.counts(); return c == 1 })
+	if d := g.duckLog(); len(d) == 0 || d[len(d)-1] != 1 {
+		t.Errorf("ducks %v, want the music restored", d)
+	}
+	if ev := g.eventLog(); ev[len(ev)-2] != "duck 1" || ev[len(ev)-1] != "led off" {
+		t.Errorf("events %v, want duck 1 then led off last", ev)
+	}
+	// The next wake starts without the cancelled conversation.
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.until("second reply", func() bool { return len(g.tts.said()) == 2 })
+	if reqs := g.llm.requests(); len(reqs) != 2 || len(reqs[1].Contents) != 1 {
+		t.Errorf("a wake after Hush should start without history")
+	}
+}
+
+func TestHushIdle(t *testing.T) {
+	g := newRig(t)
+	g.s.Hush()
+	if ev := g.eventLog(); len(ev) != 0 {
+		t.Errorf("events %v from Hush while idle", ev)
+	}
+	if st := g.s.State(); st != "idle" {
+		t.Errorf("state %s, want idle", st)
+	}
+}
+
+func TestHushThenStaleRun(t *testing.T) {
+	g := newRig(t, reply("Ставлю."))
+	g.player.hold = make(chan struct{})
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.untilState("speaking")
+	g.s.Hush()
+	before := g.eventLog()
+	close(g.player.hold) // the cancelled run winds down
+	g.s.wait()
+	if ev := g.eventLog(); !slices.Equal(ev, before) {
+		t.Errorf("events %v after the cancelled run ended, were %v", ev, before)
+	}
+	if st := g.s.State(); st != "idle" {
+		t.Errorf("state %s, want idle", st)
+	}
+}
