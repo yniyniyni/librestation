@@ -453,10 +453,15 @@ func TestFixYcmdExtractsFromAPK(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
+	if strings.Contains(string(b), "unzip -o -j") || strings.Contains(string(b), " -j ") {
+		t.Errorf("busybox unzip has no -j:\n%s", b)
+	}
 	for _, want := range []string{
-		"/vendor/xbin/busybox unzip -o -j " + ycmdAPK,
+		"/vendor/xbin/busybox unzip -o " + ycmdAPK,
 		"'assets/quark/spotter_models/command/*'",
-		"-d " + ycmdDir,
+		"-d " + ycmdTmp,
+		"mv " + ycmdTmp + "/assets/quark/spotter_models/command/words.txt " + ycmdDir + "/",
+		"rm -rf " + ycmdTmp,
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("no %q in the scripts sent to the speaker:\n%s", want, b)

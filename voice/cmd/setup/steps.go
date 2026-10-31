@@ -313,6 +313,9 @@ func fixIOSDK(e *env) error {
 const (
 	ycmdAPK = "/system/priv-app/ServicesIosdk/ServicesIosdk.apk"
 	ycmdDir = voiceDir + "/yandex/command"
+	// ycmdTmp is where the APK is unpacked: this busybox unzip has no -j, so
+	// the files come out under their paths in the archive.
+	ycmdTmp = voiceDir + "/yandex/.ycmd-tmp"
 )
 
 var ycmdFiles = []string{"acoustic_model.nnet", "flags.txt", "words.txt"}
@@ -357,8 +360,21 @@ func fixYcmd(e *env) error {
 	if !have {
 		return fmt.Errorf("в прошивке нет ServicesIosdk.apk — быстрые команды Яндекса недоступны")
 	}
-	// The speaker has no unzip of its own; busybox does.
-	if _, err := e.d.Root(fmt.Sprintf("mkdir -p %[1]s\n/vendor/xbin/busybox unzip -o -j %[2]s 'assets/quark/spotter_models/command/*' -d %[1]s\nchmod -R a+rX %[3]s/yandex", ycmdDir, ycmdAPK, voiceDir)); err != nil {
+	// The speaker has no unzip of its own; busybox does, without -j. The temp
+	// dir is cleared before and after, whether or not unpacking worked.
+	// A failed step must not skip the cleanup, so the chain feeds rc (the script runs under set -e).
+	var mvs strings.Builder
+	for _, f := range ycmdFiles {
+		fmt.Fprintf(&mvs, " && mv %s/assets/quark/spotter_models/command/%s %s/", ycmdTmp, f, ycmdDir)
+	}
+	script := fmt.Sprintf(`rm -rf %[1]s
+mkdir -p %[1]s %[2]s
+rc=0
+{ /vendor/xbin/busybox unzip -o %[3]s 'assets/quark/spotter_models/command/*' -d %[1]s%[4]s; } || rc=1
+rm -rf %[1]s
+chmod -R a+rX %[5]s/yandex
+[ $rc -eq 0 ]`, ycmdTmp, ycmdDir, ycmdAPK, mvs.String(), voiceDir)
+	if _, err := e.d.Root(script); err != nil {
 		return err
 	}
 	// An APK of another layout matches nothing and unzip still succeeds.
