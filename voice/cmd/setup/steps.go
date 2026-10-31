@@ -295,21 +295,50 @@ func (p *progress) Write(b []byte) (int, error) {
 }
 
 func checkSoloist(e *env) (bool, string, error) {
-	ok, err := e.d.RootOK("test -x " + rootfs + "/opt/soloist/soloist")
+	// -f too: test -x passes for a directory, and a dir pushed by mistake
+	// ends in "exec: /opt/soloist/soloist: Permission denied"
+	bin := rootfs + "/opt/soloist/soloist"
+	ok, err := e.d.RootOK("test -f " + bin + "\ntest -x " + bin)
 	return ok, "", err
 }
 
 func fixSoloist(e *env) error {
-	p := hostPath(e.u.ask("Путь к бинарнику soloist (linux/aarch64)", ""))
+	p := hostPath(e.u.ask("Путь к бинарнику soloist (linux/aarch64) или к папке с ним", ""))
 	if p == "" {
 		return fmt.Errorf("путь не указан")
 	}
-	tmp := adb.Tmp + "/.librestation-soloist"
-	if err := e.d.Push(p, tmp); err != nil {
+	bin, err := soloistBinary(p)
+	if err != nil {
 		return err
 	}
-	_, err := e.d.Root(fmt.Sprintf("mkdir -p %s/opt/soloist\nmv -f %s %s/opt/soloist/soloist\nchmod 755 %s/opt/soloist/soloist", rootfs, tmp, rootfs, rootfs))
+	tmp := adb.Tmp + "/.librestation-soloist"
+	// a leftover dir at tmp would swallow the push
+	if _, err := e.d.Root("rm -rf " + tmp); err != nil {
+		return err
+	}
+	if err := e.d.Push(bin, tmp); err != nil {
+		return err
+	}
+	dst := rootfs + "/opt/soloist/soloist"
+	_, err = e.d.Root(fmt.Sprintf("mkdir -p %s/opt/soloist\nrm -rf %s\nmv -f %s %s\nchmod 755 %s", rootfs, dst, tmp, dst, dst))
 	return err
+}
+
+// soloistBinary is p itself, or the soloist file inside p when p is the
+// unpacked Soloist folder (binary, CHANGELOG.md, licenses).
+func soloistBinary(p string) (string, error) {
+	st, err := os.Stat(p)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return p, nil
+	}
+	bin := filepath.Join(p, "soloist")
+	if st, err := os.Stat(bin); err != nil || st.IsDir() {
+		return "", fmt.Errorf("%s — папка, и в ней нет файла soloist; укажите сам бинарник", p)
+	}
+	return bin, nil
 }
 
 func fileCheck(path string) func(*env) (bool, string, error) {
