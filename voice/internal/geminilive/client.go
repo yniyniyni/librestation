@@ -183,9 +183,6 @@ func (c *Client) StreamAudio(ctx context.Context, pcm []int16) error {
 	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audio": Blob{MimeType: "audio/pcm;rate=16000", Data: b}}})
 }
 
-// SendAudio is a thin shim for the old per-phrase caller.
-// Deprecated: removed in Task 5 together with the per-phrase flow in assistant/live.go.
-func (c *Client) SendAudio(ctx context.Context, pcm []int16) error { return c.StreamAudio(ctx, pcm) }
 func (c *Client) Respond(ctx context.Context, r []FunctionResponse) error {
 	return c.write(ctx, map[string]any{"toolResponse": map[string]any{"functionResponses": r}})
 }

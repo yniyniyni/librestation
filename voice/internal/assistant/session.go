@@ -70,8 +70,10 @@ type Deps struct {
 	Duck   func(float64)     // music gain factor; 1 = not ducked
 	LED    func(proto.Event) // ring state
 	Stock  func(name string) ([]int16, int, error)
-	Live   func(context.Context) (LiveSession, error)
-	Now    func() time.Time // nil = time.Now
+	// Live opens a Live session, resuming handle if it is not "". Nil, or a
+	// Player that cannot stream, leaves every conversation to the agent.
+	Live func(ctx context.Context, handle string) (LiveSession, error)
+	Now  func() time.Time // nil = time.Now
 }
 
 // Status is the session's state for the panel.
@@ -106,6 +108,14 @@ type Session struct {
 	buf    []int16
 	spare  []int16
 	notify chan struct{}
+
+	// Channel 0, for Live; also under amu.
+	live  bool       // a Live session takes LiveAudio
+	lq    []int16    // LiveAudio waiting to be sent
+	lraw  recent     // fed always, the pre-roll
+	watch voiceWatch // fed always, the local VAD
+	lnote chan struct{}
+	vnote chan struct{}
 }
 
 func New(d Deps) *Session {
@@ -119,6 +129,9 @@ func New(d Deps) *Session {
 		spare:  make([]int16, 0, maxBuffered),
 		seed:   make([]int16, 0, seedLen),
 		notify: make(chan struct{}, 1),
+		lq:     make([]int16, 0, maxLiveQueued),
+		lnote:  make(chan struct{}, 1),
+		vnote:  make(chan struct{}, 1),
 	}
 	s.st = Status{State: "idle", At: d.Now()}
 	return s
@@ -141,6 +154,35 @@ func (s *Session) Audio(pcm []int16) {
 		select {
 		case s.notify <- struct{}{}:
 		default:
+		}
+	}
+}
+
+// LiveAudio takes a 16 kHz block of channel 0 (already ×LiveGain) from the
+// audio goroutine. It never blocks: the voice watch always hears it, and
+// while a Live session is open it is queued for sending, the oldest audio
+// dropped when the queue is full.
+func (s *Session) LiveAudio(pcm []int16) {
+	s.amu.Lock()
+	s.lraw.push(pcm)
+	ev := s.watch.push(pcm)
+	on := s.live
+	if on {
+		if over := len(s.lq) + len(pcm) - maxLiveQueued; over > 0 {
+			if over >= len(s.lq) {
+				pcm = pcm[min(over-len(s.lq), len(pcm)):]
+				s.lq = s.lq[:0]
+			} else {
+				s.lq = s.lq[:copy(s.lq, s.lq[over:])]
+			}
+		}
+		s.lq = append(s.lq, pcm...)
+	}
+	s.amu.Unlock()
+	if on {
+		poke(s.lnote)
+		if ev {
+			poke(s.vnote)
 		}
 	}
 }
@@ -246,9 +288,10 @@ func (s *Session) listening() bool {
 
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
-	if s.d.Live != nil {
-		s.runLive(ctx, gen, onNoRequest)
-		return
+	if lp, ok := s.d.Player.(livePlayer); ok && s.d.Live != nil {
+		if s.runLive(ctx, gen, lp, seed, onNoRequest) {
+			return
+		}
 	}
 	noRequest := func(first bool) {
 		if first && onNoRequest != nil && s.current(gen) {

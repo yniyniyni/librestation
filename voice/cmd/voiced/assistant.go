@@ -94,9 +94,9 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Duck:   out.duck,
 		LED:    led,
 		Stock:  newStockSounds(c.sounds).Load,
-		Live: func(lctx context.Context) (assistant.LiveSession, error) {
+		Live: func(lctx context.Context, handle string) (assistant.LiveSession, error) {
 			return geminilive.Dial(lctx, geminilive.Config{
-				Key: key, Model: c.liveModel, Voice: settings().Voice,
+				Key: key, Model: c.liveModel, Voice: settings().Voice, Handle: handle,
 				Prompt: assistant.LivePrompt, Tools: assistant.LiveDeclarations(ag.Tools),
 			})
 		},
