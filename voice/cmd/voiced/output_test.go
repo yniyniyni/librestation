@@ -2,10 +2,16 @@ package main
 
 import (
 	"context"
+	"math"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"voice/internal/volume"
 )
 
 type lines struct {
@@ -52,4 +58,40 @@ func TestRefreshRewritesSameVolume(t *testing.T) {
 	wait("32\n")
 	o.refresh(32)
 	wait("32\n32\n")
+}
+
+func TestDuckScalesGain(t *testing.T) {
+	gain := filepath.Join(t.TempDir(), "gain")
+	o := newOutput(nil, gain)
+	read := func() float64 {
+		t.Helper()
+		b, err := os.ReadFile(gain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		g, err := strconv.ParseFloat(strings.TrimSpace(string(b)), 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	check := func(v int, f float64) {
+		t.Helper()
+		want := volume.Compensation(v) * f
+		if got := read(); math.Abs(got-want) > 1e-6*want {
+			t.Fatalf("gain %v, want %v", got, want)
+		}
+	}
+	o.duck(0.2) // before any volume is known: nothing to write, factor kept
+	o.duck(1)
+	o.set(50)
+	check(50, 1)
+	o.duck(0.2)
+	check(50, 0.2)
+	o.set(60)
+	check(60, 0.2)
+	o.duck(1)
+	check(60, 1)
+	o.duck(7) // clamped
+	check(60, 1)
 }
