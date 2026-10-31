@@ -3,6 +3,7 @@ package daemon
 import (
 	"log"
 	"math"
+	"slices"
 	"time"
 
 	"voice/internal/kws"
@@ -110,4 +111,16 @@ func (d *Daemon) onCommand(cmd string, conf float64) {
 	d.judgeLaterLocked(h)
 	log.Printf("yandex command %q conf %.3f state %s action %q fired %v debounced %v",
 		cmd, conf, state, action, h.Fired, h.Debounced)
+}
+
+// MissingStockCommands lists the stock command names m does not have; those
+// quick commands never fire.
+func MissingStockCommands(m *ycmd.Model) []string {
+	var out []string
+	for _, n := range stockCommandNames {
+		if !slices.ContainsFunc(m.Commands, func(c ycmd.Command) bool { return c.Name == n }) {
+			out = append(out, n)
+		}
+	}
+	return out
 }

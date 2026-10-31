@@ -80,6 +80,9 @@ func cmdRun(args []string) error {
 		if m.Version != ycmd.TestedVersion {
 			log.Printf("ycmd: warning: model %q is not the tested %q", m.Version, ycmd.TestedVersion)
 		}
+		if miss := daemon.MissingStockCommands(m); len(miss) > 0 {
+			log.Printf("ycmd: в модели нет команд %s — они не сработают", strings.Join(miss, ", "))
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

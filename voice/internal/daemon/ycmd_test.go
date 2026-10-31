@@ -10,6 +10,7 @@ import (
 	"time"
 
 	miccap "voice/internal/capture"
+	"voice/internal/ycmd"
 )
 
 // cmdTest is a daemon with a fake assistant (idle), music playing and a
@@ -309,3 +310,16 @@ func TestYandexClipLevel(t *testing.T) {
 type nopSpotter struct{}
 
 func (nopSpotter) Push([]float32, func(string, float64)) {}
+
+func TestMissingStockCommands(t *testing.T) {
+	m := &ycmd.Model{}
+	for _, n := range stockCommandNames {
+		if n != "назад" && n != "тише" {
+			m.Commands = append(m.Commands, ycmd.Command{Name: n})
+		}
+	}
+	m.Commands = append(m.Commands, ycmd.Command{Name: "алиса"})
+	if g := MissingStockCommands(m); !slices.Equal(g, []string{"назад", "тише"}) {
+		t.Fatalf("missing %v", g)
+	}
+}
