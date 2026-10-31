@@ -49,10 +49,20 @@ func TestLiveWire(t *testing.T) {
 		if setup.Model != "models/gemini-3.8-live" || len(setup.GenerationConfig.ResponseModalities) != 1 || setup.GenerationConfig.ResponseModalities[0] != "AUDIO" || setup.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName != "Kore" || len(setup.Tools) != 1 || setup.InputAudioTranscription == nil || setup.OutputAudioTranscription == nil {
 			t.Errorf("bad setup: %s", msg["setup"])
 		}
+		if !strings.Contains(string(msg["setup"]), `"automaticActivityDetection":{"disabled":true}`) {
+			t.Errorf("manual VAD is not enabled: %s", msg["setup"])
+		}
 		if strings.Contains(string(msg["setup"]), "thinkingConfig") || strings.Contains(string(msg["setup"]), "proactivity") {
 			t.Error("unsupported legacy config")
 		}
 		wsjson.Write(ctx, c, map[string]any{"setupComplete": map[string]any{}})
+		if err = wsjson.Read(ctx, c, &msg); err != nil {
+			done <- err
+			return
+		}
+		if _, ok := msg["realtimeInput"]; !ok || !strings.Contains(string(msg["realtimeInput"]), "activityStart") {
+			t.Errorf("missing activityStart: %s", msg["realtimeInput"])
+		}
 		if err = wsjson.Read(ctx, c, &msg); err != nil {
 			done <- err
 			return
@@ -71,12 +81,8 @@ func TestLiveWire(t *testing.T) {
 			done <- err
 			return
 		}
-		var end struct {
-			AudioStreamEnd bool
-		}
-		json.Unmarshal(msg["realtimeInput"], &end)
-		if !end.AudioStreamEnd {
-			t.Errorf("missing audioStreamEnd: %s", msg["realtimeInput"])
+		if _, ok := msg["realtimeInput"]; !ok || !strings.Contains(string(msg["realtimeInput"]), "activityEnd") {
+			t.Errorf("missing activityEnd: %s", msg["realtimeInput"])
 		}
 		wsjson.Write(ctx, c, map[string]any{"serverContent": map[string]any{"modelTurn": map[string]any{"parts": []any{map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": base64.StdEncoding.EncodeToString([]byte{1, 0})}}}}, "interrupted": true, "turnComplete": true}})
 		wsjson.Write(ctx, c, map[string]any{"toolCall": map[string]any{"functionCalls": []any{map[string]any{"id": "c1", "name": "pause", "args": map[string]any{}}}}})

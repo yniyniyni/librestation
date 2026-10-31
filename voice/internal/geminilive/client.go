@@ -124,6 +124,9 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 		"generationConfig":        map[string]any{"responseModalities": []string{"AUDIO"}, "speechConfig": map[string]any{"voiceConfig": map[string]any{"prebuiltVoiceConfig": map[string]any{"voiceName": cfg.Voice}}}},
 		"systemInstruction":       map[string]any{"parts": []any{map[string]any{"text": cfg.Prompt}}},
 		"inputAudioTranscription": map[string]any{}, "outputAudioTranscription": map[string]any{},
+		// The station already segments each utterance with its local VAD.
+		// Disable server VAD and use explicit activity boundaries below.
+		"realtimeInputConfig": map[string]any{"automaticActivityDetection": map[string]any{"disabled": true}},
 	}
 	if len(cfg.Tools) > 0 {
 		setup["tools"] = []any{map[string]any{"functionDeclarations": cfg.Tools}}
@@ -162,12 +165,13 @@ func (c *Client) SendAudio(ctx context.Context, pcm []int16) error {
 	for i, s := range pcm {
 		binary.LittleEndian.PutUint16(b[2*i:], uint16(s))
 	}
+	if err := c.write(ctx, map[string]any{"realtimeInput": map[string]any{"activityStart": map[string]any{}}}); err != nil {
+		return err
+	}
 	if err := c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audio": Blob{MimeType: "audio/pcm;rate=16000", Data: b}}}); err != nil {
 		return err
 	}
-	// The local VAD already found the end of this utterance. Tell Live
-	// immediately instead of waiting for server-side silence detection.
-	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"audioStreamEnd": true}})
+	return c.write(ctx, map[string]any{"realtimeInput": map[string]any{"activityEnd": map[string]any{}}})
 }
 func (c *Client) Respond(ctx context.Context, r []FunctionResponse) error {
 	return c.write(ctx, map[string]any{"toolResponse": map[string]any{"functionResponses": r}})
