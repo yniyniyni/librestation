@@ -2,7 +2,9 @@
 # Install the project on a rooted Yandex Station Max, or check an installed one.
 #   ./setup                 step by step, fixing what is missing (safe to rerun)
 #   ./setup doctor          only check; exit 1 if something is wrong
+#   ./setup export-rootfs   pack this speaker's rootfs (no keys) for another one
 #   ./setup -device <ip>    which speaker (else ADB_DEVICE, else it asks)
 here=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 command -v go >/dev/null 2>&1 || { echo "нужен Go 1.24+: https://go.dev/dl/" >&2; exit 1; }
+SETUP_CWD=$PWD; export SETUP_CWD
 cd "$here/voice" && exec go run ./cmd/setup "$@"

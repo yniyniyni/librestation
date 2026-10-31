@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -119,5 +120,30 @@ func TestCheckDigest(t *testing.T) {
 	}
 	if err := checkDigest(data, "MD5= x"); err == nil {
 		t.Fatal("no sha256 accepted")
+	}
+}
+
+func TestFindAnyAcrossChunks(t *testing.T) {
+	data := make([]byte, 3<<20)
+	key := []byte("sk-0123456789abcdef")
+	copy(data[1<<20-5:], key) // straddles the first chunk boundary
+	if got, err := findAny(bytes.NewReader(data), [][]byte{[]byte("absent-needle-xyz"), key}); err != nil || got != 1 {
+		t.Fatalf("got %d, %v", got, err)
+	}
+	if got, _ := findAny(bytes.NewReader(data[:1<<20-5]), [][]byte{key}); got != -1 {
+		t.Fatalf("false hit %d", got)
+	}
+}
+
+func TestCredStringsFromXray(t *testing.T) {
+	b, err := vlessConfig("vless://11111111-2222-3333-4444-555555555555@example.org:443?type=tcp&security=reality&pbk=PUBKEY&fp=chrome&sni=www.example.com&sid=ab12&flow=xtls-rprx-vision&encryption=none#name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v any
+	json.Unmarshal(b, &v)
+	got := credStrings(v)
+	if len(got) != 1 || got[0] != "11111111-2222-3333-4444-555555555555" {
+		t.Fatalf("creds %q", got)
 	}
 }

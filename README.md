@@ -46,7 +46,8 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 - Root через `mysudo` и ADB по сети.
 - Около 1,7 ГБ свободного места на `/data`: rootfs занимает ~1,5 ГБ, остальное —
   кэш Soloist (до 300 МБ), модели, записи и логи.
-- Подготовленный Debian rootfs для `linux/aarch64` с PulseAudio.
+- Подготовленный Debian rootfs для `linux/aarch64` с PulseAudio (`rootfs.tar.xz`;
+  с уже работающей колонки его снимает `./setup export-rootfs`, см. ниже).
 - Сборка Spotify Soloist для `linux/aarch64` и **свой** developer API key Soloist.
   Soloist и ключ в репозитории не распространяются.
 - Прокси, если Spotify без него недоступен: на роутере или Xray прямо на колонке
@@ -84,7 +85,8 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 1. инструменты на компьютере (adb, Go, javac, python3, Android SDK и NDK);
 2. root на колонке и свободное место;
 3. сборка и заливка `voiced`, `ledd`, `aaudio_pipe` и скриптов (`voice/deploy.sh`);
-4. Debian rootfs с PulseAudio — спросит путь к `rootfs.tar.xz`;
+4. Debian rootfs с PulseAudio — спросит путь к `rootfs.tar.xz` (если архив лежит
+   в корне репозитория, предложит его сам);
 5. Spotify Soloist — спросит путь к бинарнику `linux/aarch64`;
 6. ключ Soloist и, по желанию, ключ Gemini — ввод скрытый, ключи хранятся
    только на колонке;
@@ -102,6 +104,20 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 
 Без терминала (`./setup < /dev/null`, CI) установщик тоже только проверяет.
 Rootfs, Soloist и ключи в репозиторий не входят, их нужно получить отдельно.
+
+**Rootfs для другой колонки.** На колонке, где всё уже работает:
+
+```sh
+./setup export-rootfs            # или -o путь/к/rootfs.tar.xz
+```
+
+Сервисы останавливаются на время упаковки и потом запускаются снова. В архив не
+попадают ключи Soloist и Gemini, `xray.json`, вход и кэш Soloist, бинарники Soloist
+и Xray, `resolv.conf` и `/root/.config`: на время tar они убираются из rootfs и
+возвращаются обратно, а готовый архив ещё раз проверяется на ключи и данные
+прокси с этой колонки. Нужно столько же свободного места на `/data`, сколько
+занимает rootfs. Получившийся `rootfs.tar.xz` кладут в корень репозитория на
+другом компьютере — шаг 4 `./setup` возьмёт его сам.
 
 **Прокси.** Если Spotify (или Gemini) без прокси недоступен, есть два варианта:
 
