@@ -212,3 +212,77 @@ func level(pcm []int16) float64 {
 	}
 	return 10*math.Log10(e/float64(max(len(pcm), 1))+1e-9) - 90.3
 }
+
+const (
+	// bargeInDBFS is the LiveAudio level (channel 0 ×LiveGain, LiveGain = 2)
+	// that, held for bargeInFor while the reply plays, cuts the reply off.
+	// Measured on the station (ledger, Task 1; channel 0 ×1): the assistant's
+	// own voice leaves a residual of p99 ≈ −39 dBFS, the user's speech at
+	// 1–3 m peaks at p99 ≈ −22…−24 dBFS. −31 dBFS ×1 sits between, +6 dB of
+	// gain makes it −25.
+	bargeInDBFS = -25.0
+	bargeInFor  = 150 * time.Millisecond
+)
+
+// voiceEvent is what the voice watch saw since it was last read.
+type voiceEvent uint8
+
+const (
+	evStart voiceEvent = 1 << iota // the user started speaking
+	evEnd                          // and stopped
+	evLoud                         // loud enough for long enough to barge in
+)
+
+// voiceWatch is the local VAD on the LiveAudio stream: the endpointer's
+// start and end rules against a noise floor fixed when it is armed, and the
+// absolute barge-in level. It is fed every block, under amu.
+type voiceWatch struct {
+	lv    levels
+	seen  int // lv frames already judged
+	floor float64
+
+	run, quiet, loud int
+	speaking         bool
+	ev               voiceEvent
+}
+
+// arm takes a new noise floor from the recent audio and forgets the past.
+func (w *voiceWatch) arm() {
+	w.floor = w.lv.floor()
+	w.run, w.quiet, w.loud, w.speaking, w.ev = 0, 0, 0, false, 0
+}
+
+// push takes in pcm and reports whether a new event was noted.
+func (w *voiceWatch) push(pcm []int16) bool {
+	w.lv.push(pcm)
+	before := w.ev
+	w.seen = max(w.seen, w.lv.frames-len(w.lv.ring))
+	for ; w.seen < w.lv.frames; w.seen++ {
+		w.frame(w.lv.ring[w.seen%len(w.lv.ring)])
+	}
+	return w.ev != before
+}
+
+func (w *voiceWatch) frame(db float64) {
+	if db < bargeInDBFS {
+		w.loud = 0
+	} else if w.loud++; w.loud == int(bargeInFor/frameDur) {
+		w.ev |= evLoud
+	}
+	speech := db >= w.floor+speechAbove
+	if !w.speaking {
+		if !speech {
+			w.run = 0
+		} else if w.run++; w.run >= startFrames {
+			w.speaking, w.run, w.quiet = true, 0, 0
+			w.ev |= evStart
+		}
+		return
+	}
+	if speech {
+		w.quiet = 0
+	} else if w.quiet++; w.quiet >= int(endQuiet/frameDur) {
+		w.speaking = false
+		w.ev |= evEnd
+	}
+}
