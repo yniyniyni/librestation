@@ -195,3 +195,18 @@ func TestDownloadRootfsVerifiesHash(t *testing.T) {
 		t.Fatalf("stale file kept: %q", b)
 	}
 }
+
+func TestSoloistBinaryFromFolder(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := soloistBinary(dir); err == nil {
+		t.Fatal("empty folder accepted")
+	}
+	bin := filepath.Join(dir, "soloist")
+	os.WriteFile(bin, []byte("ELF"), 0o755)
+	if got, err := soloistBinary(dir); err != nil || got != bin {
+		t.Fatalf("folder: %q, %v", got, err)
+	}
+	if got, err := soloistBinary(bin); err != nil || got != bin {
+		t.Fatalf("file: %q, %v", got, err)
+	}
+}
