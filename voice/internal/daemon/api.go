@@ -68,9 +68,9 @@ type stateView struct {
 type assistantView struct {
 	Available     bool              `json:"available"` // the session is built (a Gemini key is present)
 	Status        any               `json:"status"`
-	SpotifyLinked bool              `json:"spotify_linked"`
+	SpotifyLinked *bool             `json:"spotify_linked"` // null until checked
 	Settings      AssistantSettings `json:"settings"`
-	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's -judge-model
+	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's current model
 }
 
 // settingsView is the part of Settings the hits card edits.
@@ -126,18 +126,17 @@ func (d *Daemon) state() stateView {
 // callbacks return at once (they read cached values).
 func (d *Daemon) assistantViewLocked() assistantView {
 	v := assistantView{Available: d.opt.Assistant != nil, Settings: d.settings.Assistant,
-		DefaultModel: d.opt.JudgeModel}
+		DefaultModel: d.assistantDefaultModelLocked()}
 	if v.Settings.TTS == "" {
 		v.Settings.TTS = "piper"
-	}
-	if v.DefaultModel == "" {
-		v.DefaultModel = judge.DefaultModel
 	}
 	if f := d.opt.AssistantStatus; f != nil {
 		v.Status = f()
 	}
 	if f := d.opt.SpotifyLinked; f != nil {
-		v.SpotifyLinked = f()
+		if linked, known := f(); known {
+			v.SpotifyLinked = &linked
+		}
 	}
 	return v
 }

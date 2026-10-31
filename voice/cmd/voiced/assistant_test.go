@@ -67,25 +67,37 @@ func TestTTSChoice(t *testing.T) {
 	}
 }
 
-func TestSpotifyLinkCached(t *testing.T) {
+func TestSpotifyLinkTriState(t *testing.T) {
 	var linked atomic.Bool
 	calls := make(chan struct{}, 8)
-	l := newSpotifyLink(func() bool { calls <- struct{}{}; return linked.Load() })
+	release := make(chan struct{})
+	l := newSpotifyLink(func() bool { <-release; calls <- struct{}{}; return linked.Load() })
+	if _, known := l.Linked(); known {
+		t.Fatal("known before the first read")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go l.run(ctx, time.Hour)
+	if _, known := l.Linked(); known {
+		t.Fatal("known while the first read waits")
+	}
+	close(release)
 	<-calls
-	if l.Linked() {
-		t.Fatal("linked before link")
+	deadline := time.Now().Add(time.Second)
+	for _, known := l.Linked(); !known && time.Now().Before(deadline); _, known = l.Linked() {
+		time.Sleep(time.Millisecond)
+	}
+	if linked, known := l.Linked(); linked || !known {
+		t.Fatalf("first read: linked %v known %v", linked, known)
 	}
 	linked.Store(true)
 	l.Refresh()
 	<-calls
-	deadline := time.Now().Add(time.Second)
-	for !l.Linked() && time.Now().Before(deadline) {
+	deadline = time.Now().Add(time.Second)
+	for linked, _ := l.Linked(); !linked && time.Now().Before(deadline); linked, _ = l.Linked() {
 		time.Sleep(time.Millisecond)
 	}
-	if !l.Linked() {
+	if linked, _ := l.Linked(); !linked {
 		t.Fatal("refresh not seen")
 	}
 }

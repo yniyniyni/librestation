@@ -212,7 +212,7 @@ func TestStateHidesSecrets(t *testing.T) {
 	os.WriteFile(tokFile, []byte(`{"client_id":"cid","refresh_token":"`+token+`"}`), 0o600)
 	sp := spotifyapi.New(tokFile, "")
 	d.opt.Judge, d.opt.JudgeModel = judge.New(key), judge.DefaultModel
-	d.opt.SpotifyLinked = sp.Linked
+	d.opt.SpotifyLinked = func() (bool, bool) { return sp.Linked(), true }
 	d.opt.AssistantStatus = func() any {
 		return assistant.Status{State: "speaking", LastReply: "Сейчас 12:00", At: time.Unix(0, 0)}
 	}
@@ -238,7 +238,45 @@ func TestStateHidesSecrets(t *testing.T) {
 func TestStateWithoutAssistant(t *testing.T) {
 	d, _ := newTest(t, &fakeAct{}, "", false)
 	a := d.state().Assistant
-	if a.Available || a.Status != nil || a.SpotifyLinked {
+	if a.Available || a.Status != nil || a.SpotifyLinked != nil {
 		t.Fatalf("view %+v", a)
+	}
+}
+
+func TestAssistantDefaultModelFollowsJudge(t *testing.T) {
+	d, _ := newAsst(t, &fakeAct{}, "")
+	d.opt.JudgeModel = judge.DefaultModel
+	if m := d.AssistantModel(); m != judge.DefaultModel {
+		t.Fatalf("model %q", m)
+	}
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	if r := post(t, srv.URL+"/api/settings", `{"judge_model":"gemini-3.8-flash"}`); r.StatusCode != 200 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	if v := d.state().Assistant.DefaultModel; v != "gemini-3.8-flash" {
+		t.Fatalf("default_model %q", v)
+	}
+	if m := d.AssistantModel(); m != "gemini-3.8-flash" {
+		t.Fatalf("resolved %q", m)
+	}
+	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"model":"gemini-3.6-flash"}}`); r.StatusCode != 200 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	if m := d.AssistantModel(); m != "gemini-3.6-flash" {
+		t.Fatalf("own model %q", m)
+	}
+}
+
+func TestSpotifyLinkUnknownIsNull(t *testing.T) {
+	d, _ := newAsst(t, &fakeAct{}, "")
+	known := false
+	d.opt.SpotifyLinked = func() (bool, bool) { return false, known }
+	if v := d.state().Assistant.SpotifyLinked; v != nil {
+		t.Fatalf("unknown: %v", *v)
+	}
+	known = true
+	if v := d.state().Assistant.SpotifyLinked; v == nil || *v {
+		t.Fatalf("known: %v", v)
 	}
 }

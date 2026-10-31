@@ -275,7 +275,7 @@ function renderAssistant(s) {
   const st = a.status || {};
   $("asstdot").className = "dot" + (st.state && st.state !== "idle" ? " on" : "");
   $("asststate").textContent = ASST_STATES[st.state] || st.state || "";
-  $("asstspotify").textContent = a.spotify_linked ? "привязан" : "не привязан — запустите ./setup";
+  $("asstspotify").textContent = a.spotify_linked == null ? "проверяю…" : a.spotify_linked ? "привязан" : "не привязан — запустите ./setup";
   const sel = $("asstmodel");
   const ids = s.judge.models.map(m => m.id);
   if (a.settings.model && !ids.includes(a.settings.model)) ids.push(a.settings.model);

@@ -38,9 +38,10 @@ type Options struct {
 	// nil = that action is only logged.
 	Assistant Assistant
 	// AssistantStatus is the session's state for the panel; SpotifyLinked
-	// says whether Spotify is linked. Both must return at once; nil = none.
+	// says whether Spotify is linked, known false until it has been checked.
+	// Both must return at once; nil = none.
 	AssistantStatus func() any
-	SpotifyLinked   func() bool
+	SpotifyLinked   func() (linked, known bool)
 	// OnLED receives events for the LED daemon (nil = off). It must not block.
 	OnLED func(proto.Event)
 	// Judge labels hits with an audio model (nil = off); JudgeModel names it
@@ -84,7 +85,7 @@ type Settings struct {
 
 // AssistantSettings are the assistant's choices in the panel.
 type AssistantSettings struct {
-	Model string `json:"model,omitempty"` // "" = the judge's model
+	Model string `json:"model,omitempty"` // "" = the judge's current model
 	TTS   string `json:"tts"`             // "piper" (default) or "gemini"
 	Voice string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
 	City  string `json:"city,omitempty"`  // weather's default city
@@ -102,6 +103,26 @@ func (d *Daemon) AssistantSettings() AssistantSettings {
 		s.TTS = "piper"
 	}
 	return s
+}
+
+// AssistantModel is the model for the assistant's next turn: its own choice,
+// or the judge's current one.
+func (d *Daemon) AssistantModel() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if m := d.settings.Assistant.Model; m != "" {
+		return m
+	}
+	return d.assistantDefaultModelLocked()
+}
+
+// assistantDefaultModelLocked is what an empty assistant model means; caller
+// holds d.mu.
+func (d *Daemon) assistantDefaultModelLocked() string {
+	if m := d.judgeModelLocked(); m != "" {
+		return m
+	}
+	return judge.DefaultModel
 }
 
 type WordSettings struct {
