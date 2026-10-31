@@ -386,3 +386,54 @@ func TestRealSpotCommands(t *testing.T) {
 		})
 	}
 }
+
+// recSpotter keeps what it was given.
+type recSpotter struct{ got [][]float32 }
+
+func (r *recSpotter) Push(pcm []float32, _ func(string, float64)) {
+	r.got = append(r.got, append([]float32(nil), pcm...))
+}
+
+// TestChannel0Shared: with the Yandex model and the assistant both present
+// (the production setup), one channel-0 computation per block feeds both:
+// the spotter at InputGain as before, the clip ring at x1, and the assistant
+// at x1 times LiveGain.
+func TestChannel0Shared(t *testing.T) {
+	d, a := newAsst(t, &fakeAct{}, "")
+	rec := &recSpotter{}
+	d.spot, d.yin = rec, ycmd.NewInput()
+	ref := ycmd.NewInput() // the same input on its own, for the expected values
+	const blocks = 10
+	var want []float32
+	for b := 0; b < blocks; b++ {
+		blk := make([]int16, miccap.BlockFrames*miccap.Channels)
+		for i := 0; i < miccap.BlockFrames; i++ {
+			n := b*miccap.BlockFrames + i
+			blk[i*miccap.Channels] = int16(8000 * math.Sin(2*math.Pi*300*float64(n)/miccap.Rate))
+		}
+		d.spotCommands(blk)
+		want = ref.Process(blk)
+	}
+	if len(rec.got) != blocks || len(a.live) != blocks {
+		t.Fatalf("spotter %d blocks, assistant %d, want %d each", len(rec.got), len(a.live), blocks)
+	}
+	got, live := rec.got[blocks-1], a.live[blocks-1]
+	d.mu.Lock()
+	clip := d.yring.last(len(got))
+	d.mu.Unlock()
+	if len(live) != len(got) || len(clip) != len(got) {
+		t.Fatalf("lengths spotter %d, assistant %d, clip %d", len(got), len(live), len(clip))
+	}
+	for i, v := range got {
+		if v != want[i] {
+			t.Fatalf("spotter sample %d = %v, want %v (unchanged)", i, v, want[i])
+		}
+		x1 := float64(v) / ycmd.InputGain
+		if math.Abs(float64(clip[i])-x1) > 1 {
+			t.Fatalf("clip sample %d = %d, want %.0f (x1)", i, clip[i], x1)
+		}
+		if math.Abs(float64(live[i])-x1*LiveGain) > 1 {
+			t.Fatalf("assistant sample %d = %d, want %.0f (x1 x LiveGain)", i, live[i], x1*LiveGain)
+		}
+	}
+}
