@@ -186,3 +186,29 @@ func TestSpeakerRestartsAfterDeath(t *testing.T) {
 		t.Fatalf("wakes %d, want 2 (restart wakes again)", wakes)
 	}
 }
+
+// A helper that stops reading fails the Play within the write timeout, and
+// the next Play starts a fresh helper.
+func TestSpeakerWedgedHelperTimesOut(t *testing.T) {
+	var wakes int
+	s, _, _ := newTestSpeaker([]string{"sh", "-c", "exec sleep 30"}, &wakes) // never reads
+	defer s.Close()
+	s.writeTimeout = 200 * time.Millisecond
+	res := make(chan error, 1)
+	go func() { res <- s.Play(context.Background(), make([]int16, 24000*5), 24000) }()
+	select {
+	case err := <-res:
+		if err == nil || errors.Is(err, context.Canceled) {
+			t.Fatalf("Play = %v, want a write timeout", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Play to a wedged helper did not return")
+	}
+	s.cmd = []string{"sh", "-c", "cat > /dev/null"}
+	if err := s.Play(context.Background(), make([]int16, 2400), 24000); err != nil {
+		t.Fatalf("next Play: %v", err)
+	}
+	if wakes != 2 {
+		t.Fatalf("wakes %d, want 2 (the helper was restarted)", wakes)
+	}
+}

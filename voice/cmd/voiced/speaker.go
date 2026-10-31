@@ -24,6 +24,9 @@ const (
 	// speakerBuffer is the audio still queued in the device after the last
 	// write.
 	speakerBuffer = 340 * time.Millisecond
+	// speakerWriteTimeout bounds one chunk's write: a helper that stops
+	// reading is killed instead of blocking Play for good.
+	speakerWriteTimeout = 2 * time.Second
 )
 
 // speaker plays replies through a resident aaudio_pipe. It runs without a
@@ -33,8 +36,9 @@ type speaker struct {
 	cmd    []string
 	onWake func() // the output woke from idle: the HAL may have reset the amplifier
 
-	now   func() time.Time
-	sleep func(ctx context.Context, d time.Duration) error
+	now          func() time.Time
+	sleep        func(ctx context.Context, d time.Duration) error
+	writeTimeout time.Duration
 
 	play sync.Mutex // one Play at a time; guards the fields below
 	proc *speakerProc
@@ -49,7 +53,7 @@ type speakerProc struct {
 }
 
 func newSpeaker(cmd []string, onWake func()) *speaker {
-	return &speaker{cmd: cmd, onWake: onWake, now: time.Now, sleep: sleepCtx}
+	return &speaker{cmd: cmd, onWake: onWake, now: time.Now, sleep: sleepCtx, writeTimeout: speakerWriteTimeout}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -94,7 +98,7 @@ func (s *speaker) start() (*speakerProc, error) {
 	}
 	p := &speakerProc{cmd: cmd, in: w, dead: make(chan struct{})}
 	go func() {
-		logLines(out)
+		logLines("speaker", out)
 		err := cmd.Wait()
 		w.Close()
 		close(p.dead)
@@ -144,13 +148,20 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 		}
 	}
 
-	// A blocked write (aaudio_pipe backed up) is released by the deadline.
-	p.in.SetWriteDeadline(time.Time{})
+	// A blocked write (aaudio_pipe backed up) is released by the deadline:
+	// each chunk gets writeTimeout, and a cancel moves it to now.
 	// The callback may only touch the deadline while this Play is still
 	// writing; once guard.done is set a late callback does nothing.
 	var guard struct {
 		sync.Mutex
 		done bool
+	}
+	arm := func() {
+		guard.Lock()
+		defer guard.Unlock()
+		if ctx.Err() == nil { // else the callback has set it, or will
+			p.in.SetWriteDeadline(time.Now().Add(s.writeTimeout))
+		}
 	}
 	finish := func() {
 		guard.Lock()
@@ -183,6 +194,7 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) error {
 		if start.IsZero() {
 			start = s.now()
 		}
+		arm()
 		n, err := p.in.Write(buf)
 		s.last = s.now()
 		if err != nil {

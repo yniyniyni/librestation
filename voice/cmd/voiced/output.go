@@ -144,7 +144,7 @@ func (o *output) run(ctx context.Context) {
 			if out, err = cmd.StdoutPipe(); err == nil {
 				cmd.Stderr = cmd.Stdout
 				if err = cmd.Start(); err == nil {
-					go logLines(out)
+					go logLines("amplifier helper", out)
 					cur, err = o.ramp(ctx, in, cur)
 					in.Close()
 					cmd.Wait()
@@ -196,11 +196,11 @@ func (o *output) ramp(ctx context.Context, in io.Writer, cur int) (int, error) {
 }
 
 // logLines logs the helper's complaints; read-backs of good values are dropped.
-func logLines(r io.Reader) {
+func logLines(prefix string, r io.Reader) {
 	sc := bufio.NewScanner(r)
 	for sc.Scan() {
 		if line := sc.Text(); !strings.HasPrefix(line, "hw_master_volume=") {
-			log.Printf("amplifier helper: %s", line)
+			log.Printf("%s: %s", prefix, line)
 		}
 	}
 }
