@@ -137,14 +137,19 @@ type player struct {
 	order     []int16 // pcm[0] of each play
 	cancelled int
 	hold      chan struct{}
+	wedge     chan struct{} // while set, Play ignores ctx until it is closed
 }
 
 func (p *player) Play(ctx context.Context, pcm []int16, rate int) error {
 	p.mu.Lock()
 	p.plays++
 	p.order = append(p.order, pcm[0])
-	hold := p.hold
+	hold, wedge := p.hold, p.wedge
 	p.mu.Unlock()
+	if wedge != nil {
+		<-wedge
+		return nil
+	}
 	if hold == nil {
 		return nil
 	}
@@ -712,5 +717,28 @@ func TestHistoryCappedAcrossFollowUps(t *testing.T) {
 	// Three earlier turns (audio + reply each) and the new audio.
 	if n := len(reqs[4].Contents); n != 7 {
 		t.Errorf("fifth turn has %d contents, want 7", n)
+	}
+}
+
+func TestWedgedPlaybackGoesIdleAfterTheBound(t *testing.T) {
+	g := newRig(t, reply("Ставлю."))
+	wedge := make(chan struct{})
+	g.player.wedge = wedge
+	t.Cleanup(func() { close(wedge) }) // after the session has stopped: frees the stuck Play
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.untilState("speaking")
+	g.until("speak bound", func() bool { return g.clock.pending(speakLimit) })
+	g.clock.Advance(speakLimit)
+	g.untilState("idle")
+	if g.s.Busy() {
+		t.Error("busy after the speak bound")
+	}
+	if st := g.s.Status(); st.LastError == "" {
+		t.Error("no LastError for the stuck playback")
+	}
+	if len(g.stockLog()) != 0 {
+		t.Errorf("stock %q played into a stuck player", g.stockLog())
 	}
 }

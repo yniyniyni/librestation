@@ -37,6 +37,9 @@ const (
 
 	turnTimeout  = 20 * time.Second
 	synthTimeout = 15 * time.Second
+	// speakLimit bounds one reply, from the model call to the end of
+	// playback: a player that never returns must not keep the session busy.
+	speakLimit = 60 * time.Second
 
 	// maxBuffered bounds the audio waiting for the session's goroutine.
 	maxBuffered = 12 * sampleRate
@@ -48,6 +51,8 @@ const (
 
 	notReady = "Режим разговора пока не готов"
 )
+
+var errSpeakStuck = errors.New("assistant: reply playback stuck")
 
 // Player plays PCM at its rate; it returns when the audio has had time to
 // play, or early when ctx is cancelled.
@@ -238,6 +243,13 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 		}
 		terr := sp.finish()
 		if ctx.Err() != nil {
+			s.idle(gen)
+			return
+		}
+		if errors.Is(terr, errSpeakStuck) {
+			// No stock phrase: it would go to the same stuck player.
+			log.Printf("%v", terr)
+			s.record(gen, out, terr)
 			s.idle(gen)
 			return
 		}
@@ -437,9 +449,10 @@ func (s *Session) led(gen int, e proto.Event) {
 // speech synthesises queued sentences and plays them in order; sentence N+1
 // is synthesised while N plays.
 type speech struct {
-	in     chan string
-	cancel context.CancelFunc
-	done   chan struct{}
+	in      chan string
+	cancel  context.CancelFunc
+	done    chan struct{}
+	expired chan struct{} // closed when speakLimit ran out before done
 
 	mu  sync.Mutex
 	err error
@@ -447,7 +460,16 @@ type speech struct {
 
 func (s *Session) speak(ctx context.Context, gen int) *speech {
 	ctx, cancel := context.WithCancel(ctx)
-	sp := &speech{in: make(chan string, maxQueued), cancel: cancel, done: make(chan struct{})}
+	sp := &speech{in: make(chan string, maxQueued), cancel: cancel, done: make(chan struct{}), expired: make(chan struct{})}
+	limit := s.after(speakLimit)
+	go func() {
+		select {
+		case <-limit:
+			cancel()
+			close(sp.expired)
+		case <-sp.done:
+		}
+	}()
 	type clip struct {
 		pcm  []int16
 		rate int
@@ -531,10 +553,18 @@ func (sp *speech) fail(err error) {
 func (sp *speech) stop() { sp.cancel() }
 
 // finish waits for the queue to play out and returns the first synthesis
-// error.
+// error, or errSpeakStuck if it did not play out within speakLimit.
 func (sp *speech) finish() error {
 	close(sp.in)
-	<-sp.done
+	select {
+	case <-sp.done:
+	case <-sp.expired:
+		select {
+		case <-sp.done: // it did finish, just at the bound
+		default:
+			return errSpeakStuck
+		}
+	}
 	sp.cancel()
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
