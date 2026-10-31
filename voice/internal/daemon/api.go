@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"time"
 
+	"voice/internal/judge"
 	"voice/internal/kws"
 	"voice/internal/wav"
 )
@@ -232,8 +233,9 @@ func (d *Daemon) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Judge         *bool `json:"judge"`
-			AutoFalseUndo *bool `json:"auto_false_undo"`
+			Judge         *bool   `json:"judge"`
+			JudgeModel    *string `json:"judge_model"`
+			AutoFalseUndo *bool   `json:"auto_false_undo"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
@@ -243,6 +245,13 @@ func (d *Daemon) Handler() http.Handler {
 		defer d.mu.Unlock()
 		if req.Judge != nil {
 			d.settings.JudgeOff = !*req.Judge
+		}
+		if m := req.JudgeModel; m != nil {
+			if !judge.ValidModel(*m) {
+				httpErr(w, fmt.Errorf("неверное имя модели %q", *m))
+				return
+			}
+			d.settings.JudgeModel = *m
 		}
 		if req.AutoFalseUndo != nil {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo

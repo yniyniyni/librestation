@@ -112,3 +112,21 @@ func TestReadKey(t *testing.T) {
 		t.Fatalf("key %q %v", k, err)
 	}
 }
+
+func TestHitModelOverridesClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models/gemini-3.8-flash:generateContent" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		io.WriteString(w, answer(`{"probability":1,"heard":"","reason":""}`))
+	}))
+	defer srv.Close()
+	c := New("k")
+	c.URL = srv.URL
+	if _, err := c.Judge(context.Background(), Hit{Word: "стоп", Rate: 16000, Model: "gemini-3.8-flash"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Judge(context.Background(), Hit{Word: "стоп", Rate: 16000, Model: "../x"}); err == nil {
+		t.Fatal("bad model name sent")
+	}
+}

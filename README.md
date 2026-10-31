@@ -14,22 +14,24 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 Колонка **изначально должна быть рутована** и иметь:
 
 - ADB по сети;
-- команду `mysudo`, через которую доступен root-shell;
-- рабочий вызов `mysudo sh -c '...'`.
+- команду `mysudo`, через которую доступен root.
 
-Все команды, которые выполняются на колонке с правами root, в этом проекте
-проходят через `mysudo sh`. Если колонка рутована другим способом,
-пользователь должен самостоятельно адаптировать команды и установочные скрипты.
-Поддержка других root-обвязок этим README не обещается.
+У `mysudo` две особенности, которые учитывают все скрипты проекта: ему нужен
+терминал (`adb shell -tt`), и он режет команду по пробелам, так что
+`mysudo sh -c "a b"` выполнит только `sh -c a`. Простая команда с аргументами
+проходит (`mysudo -n pm uninstall …`), а составную нужно положить в скрипт на
+колонке и запустить `mysudo -n sh /path/script.sh`. Код возврата `mysudo` всегда 0.
+Если колонка рутована другим способом, установщик придётся адаптировать.
 
 ## Что внутри
 
 | Часть | Где | Что делает |
 |---|---|---|
-| Spotify Connect | `soloist/` | Официальный Spotify Soloist в Debian-chroot → PulseAudio (float) → FIFO → `aaudio_pipe` → audioserver. Сервис поднимает и перезапускает всё сам. |
+| Spotify Connect | `soloist/` | Официальный Spotify Soloist в Debian-chroot → PulseAudio (float) → FIFO → `aaudio_pipe` → audioserver. Сервис поднимает и перезапускает всё сам и держит кэш Soloist в пределах 300 МБ. |
 | `aaudio_pipe` | `aaudio-pipe/` | Мост FIFO → AAudio (NDK, C). Компенсирует программную громкость Soloist, чтобы громкостью управлял усилитель. |
 | `voiced` | `voice/cmd/voiced` | Локальные голосовые команды, обучение на голосе пользователя, эхоподавление, единая громкость и веб-панель. |
 | `ledd` | `voice/cmd/ledd` | Часы, спектр музыки, громкость и реакция на команды для кольца и экрана. |
+| `setup` | `setup`, `voice/cmd/setup` | Установка по шагам и проверка работающей колонки (`./setup doctor`). |
 
 Дизайн и решения — в `docs/`: голосовые команды
 ([docs/2026-10-29-voice-commands-design.md](docs/2026-10-29-voice-commands-design.md)),
@@ -41,13 +43,14 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 ### Колонка
 
 - Яндекс Станция Макс (`yandexstation_2`) на Android 9.
-- Root через `mysudo sh` и ADB по сети.
-- Свободное место под Debian arm64 rootfs, модели и логи.
+- Root через `mysudo` и ADB по сети.
+- Около 1,7 ГБ свободного места на `/data`: rootfs занимает ~1,5 ГБ, остальное —
+  кэш Soloist (до 300 МБ), модели, записи и логи.
 - Подготовленный Debian rootfs для `linux/aarch64` с PulseAudio.
 - Сборка Spotify Soloist для `linux/aarch64` и **свой** developer API key Soloist.
   Soloist и ключ в репозитории не распространяются.
-- `xray` внутри rootfs — только если сеть требует прокси; конфигурация
-  `xray.json` загружается отдельно и в репозитории отсутствует.
+- Прокси, если Spotify без него недоступен: на роутере или Xray прямо на колонке
+  (его ставит `./setup`).
 
 ### Компьютер для сборки
 
@@ -63,163 +66,68 @@ with on-device voice commands and its own LED ring/screen UI. Docs are in Russia
 На Linux задайте `ANDROID_SDK` явно. Пути можно переопределить переменными
 окружения; сами скрипты больше не требуют фиксированного расположения NDK.
 
-## Полная установка с нуля
+## Установка
 
-Ниже описан стандартный путь для root-обвязки `mysudo sh`.
-Начинайте из корня репозитория.
-
-### 1. Подключить ADB и проверить root
+Из корня репозитория:
 
 ```sh
-export ADB_DEVICE=<ip-колонки>:5555
-adb connect "$ADB_DEVICE"
-adb -s "$ADB_DEVICE" shell 'mysudo sh -c "id"'
+./setup
 ```
 
-В выводе должен быть root (`uid=0`). Если `adb connect` или `mysudo sh`
-не работают, сначала исправьте root/ADB на самой колонке.
+Установщик проходит по шагам и каждый сначала проверяет, поэтому его можно
+запускать сколько угодно раз: на новой колонке он ставит всё, на работающей —
+только предлагает обновиться. Колонку он возьмёт из `-device <ip>` или
+`ADB_DEVICE`, а если их нет — спросит IP или найдёт её в сети по adb-порту.
 
-### 2. Подготовить host-инструменты
+Шаги:
 
-На macOS установите Android SDK/NDK и Java любым удобным способом. Если SDK
-находится не в стандартном macOS-пути:
+1. инструменты на компьютере (adb, Go, javac, python3, Android SDK и NDK);
+2. root на колонке и свободное место;
+3. сборка и заливка `voiced`, `ledd`, `aaudio_pipe` и скриптов (`voice/deploy.sh`);
+4. Debian rootfs с PulseAudio — спросит путь к `rootfs.tar.xz`;
+5. Spotify Soloist — спросит путь к бинарнику `linux/aarch64`;
+6. ключ Soloist и, по желанию, ключ Gemini — ввод скрытый, ключи хранятся
+   только на колонке;
+7. прокси — на роутере (на колонке ничего не ставится) или Xray на колонке;
+8. автозапуск в `/data/local/tmp/myscript-max.sh` (загрузочный скрипт рута);
+9. отвязка от Яндекса (см. ниже) и уборка файлов старых версий;
+10. кэш Soloist, запуск сервисов, веб-панель и микрофон;
+11. модель Gemini, если есть ключ.
+
+Проверить работающую колонку, ничего не меняя:
 
 ```sh
-export ANDROID_SDK=/path/to/Android/sdk
-export NDK="$ANDROID_SDK/ndk/<версия>"
+./setup doctor
 ```
 
-На Linux задайте оба пути явно, например:
+Без терминала (`./setup < /dev/null`, CI) установщик тоже только проверяет.
+Rootfs, Soloist и ключи в репозиторий не входят, их нужно получить отдельно.
+
+**Прокси.** Если Spotify (или Gemini) без прокси недоступен, есть два варианта:
+
+- **на роутере** — на колонке ничего не ставится, `./setup` только запоминает выбор;
+- **Xray на колонке** — `./setup` скачивает последний релиз
+  [Xray-core](https://github.com/XTLS/Xray-core) для arm64, сверяет его SHA-256 с
+  `.dgst` релиза и кладёт в rootfs (`/opt/xray`). Настройки — VLESS-ссылка
+  (`vless://…`, ввод скрыт; поддерживаются tcp/ws/grpc/xhttp/httpupgrade с tls или
+  reality), из которой собирается `xray.json`, или ваш готовый `xray.json`. Он
+  хранится только на колонке (`/data/local/tmp/soloist/xray.json`, права 600) и
+  должен слушать socks на `127.0.0.1:1080` и http на `127.0.0.1:1081`: через них
+  ходят Soloist и `voiced`. Частные адреса идут напрямую.
+
+Обновить только программы после изменений в коде:
 
 ```sh
-export ANDROID_SDK=$HOME/Android/Sdk
-export NDK="$ANDROID_SDK/ndk/<версия>"
+ADB_DEVICE=<ip>:5555 sh voice/deploy.sh
 ```
 
-Если версия build-tools отличается от `34.0.0`, задайте:
+Управлять сервисами вручную:
 
 ```sh
-export ANDROID_BUILD_TOOLS_VERSION=<версия>
+adb -s "$ADB_DEVICE" shell -tt 'mysudo -n sh /data/local/tmp/soloist/start.sh'
+adb -s "$ADB_DEVICE" shell -tt 'mysudo -n sh /data/local/tmp/soloist/stop.sh'
+adb -s "$ADB_DEVICE" shell -tt 'mysudo -n tail -50 /data/local/tmp/soloist/soloist.log'
 ```
-
-Если Android platform отличается от `android-28`, это можно переопределить через
-`ANDROID_PLATFORM`, но совместимость с Android 9 отдельно не гарантируется.
-
-### 3. Собрать и загрузить проект
-
-```sh
-ADB_DEVICE="$ADB_DEVICE" sh voice/deploy.sh
-```
-
-Скрипт собирает `voiced`, `ledd`, `mic.dex`, `aaudio_pipe`, при необходимости
-скачивает набор негативов для обучения и загружает бинарники и device-side
-скрипты в:
-
-```text
-/data/local/tmp/voice
-/data/local/tmp/soloist
-```
-
-Эти каталоги можно изменить:
-
-```sh
-export REMOTE_BASE=/data/local/tmp
-export REMOTE_VOICE_DIR="$REMOTE_BASE/voice"
-export REMOTE_SOLOIST_DIR="$REMOTE_BASE/soloist"
-```
-
-Для нестандартных путей нужно передавать те же `SOLOIST_BASE` и `VOICE_DIR`
-при запуске device-side скриптов.
-
-### 4. Загрузить и распаковать Debian rootfs
-
-Архив rootfs не входит в репозиторий. После `deploy.sh` загрузите его:
-
-```sh
-adb -s "$ADB_DEVICE" push /path/to/rootfs.tar.xz \
-  /data/local/tmp/soloist/rootfs.tar.xz
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "sh /data/local/tmp/soloist/setup-rootfs.sh"'
-```
-
-`setup-rootfs.sh` остановит старый librespot-пайплайн, распакует архив и удалит
-архив после успешной распаковки.
-
-Для нестандартного пути:
-
-```sh
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "SOLOIST_BASE=/custom/soloist sh /custom/soloist/setup-rootfs.sh"'
-```
-
-### 5. Установить Soloist в rootfs
-
-Получите бинарник Soloist отдельно у его поставщика, затем положите его в
-rootfs:
-
-```sh
-adb -s "$ADB_DEVICE" push /path/to/soloist \
-  /data/local/tmp/soloist/rootfs/opt/soloist/soloist
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "chmod 755 /data/local/tmp/soloist/rootfs/opt/soloist/soloist"'
-```
-
-Если используется Xray, отдельно положите бинарник в
-`/data/local/tmp/soloist/rootfs/opt/xray/xray` и конфигурацию на колонку:
-
-```sh
-adb -s "$ADB_DEVICE" push /path/to/xray \
-  /data/local/tmp/soloist/rootfs/opt/xray/xray
-adb -s "$ADB_DEVICE" push /path/to/xray.json \
-  /data/local/tmp/soloist/xray.json
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "chmod 755 /data/local/tmp/soloist/rootfs/opt/xray/xray && chmod 600 /data/local/tmp/soloist/xray.json"'
-```
-
-`xray.json` содержит сетевую конфигурацию и может содержать секреты. Не
-коммитьте его в репозиторий.
-
-### 6. Сохранить Soloist API key
-
-Ключ вводится скрыто и передаётся на колонку через stdin. Он не записывается в
-репозиторий:
-
-```sh
-ADB_DEVICE="$ADB_DEVICE" sh soloist/put-key.zsh
-```
-
-Скрипт сразу создаёт файл с правами `600`. Если используется нестандартный
-каталог:
-
-```sh
-REMOTE_SOLOIST_DIR=/custom/soloist \
-ADB_DEVICE="$ADB_DEVICE" sh soloist/put-key.zsh
-```
-
-### 7. Запустить
-
-```sh
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "sh /data/local/tmp/soloist/start.sh"'
-```
-
-Проверить лог:
-
-```sh
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "tail -f /data/local/tmp/soloist/soloist.log"'
-```
-
-Остановить всё:
-
-```sh
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "sh /data/local/tmp/soloist/stop.sh"'
-```
-
-Для автозапуска добавьте вызов `start.sh` в загрузочный скрипт именно вашего
-root-решения, также через `mysudo sh`. Процесс автозапуска зависит от
-способа root и в проекте намеренно не привязан к конкретному менеджеру.
 
 ## После запуска
 
@@ -237,43 +145,54 @@ http://<ip-колонки>:8780
 
 - **Проверка через Gemini.** Команда выполняется сразу, а через 10 с запись
   срабатывания (3 с микрофона после эхоподавления) уходит в Gemini
-  (`gemini-3.5-flash-lite`). Модель решает, сказал ли человек команду или это была
-  песня, ТВ или посторонняя речь, и возвращает вероятность команды. От 70% запись
-  помечается «верное», до 30% — «ложное», между ними остаётся без вердикта; ложные
-  идут в обучение слова, и после 10 новых ложных слово переобучается само. Разметку, которую вы
-  поставили сами, модель не меняет. Ключ хранится только на колонке:
-  `ADB_DEVICE=<ip>:5555 zsh voice/tools/put-gemini-key.zsh`, затем перезапустите
-  `voiced`. Без ключа проверки нет. На бесплатном тарифе Google может использовать
-  эти записи для улучшения своих моделей.
+  (по умолчанию `gemini-3.5-flash-lite`, модель выбирается в панели и в `./setup`).
+  Модель оценивает вероятность того, что человек сказал
+  команду, а не прозвучала песня, ТВ или посторонняя речь. От 70% запись
+  помечается «верное», до 30% — «ложное», между ними остаётся без вердикта.
+  Разметку, которую вы поставили сами, модель не меняет. Ключ спрашивает
+  `./setup` и хранит только на колонке; без ключа проверки нет. На бесплатном
+  тарифе Google может использовать эти записи для улучшения своих моделей.
 - **Отменённые команды.** Если команду отменили в течение 10 с (пауза → продолжить
   голосом или в приложении, следующий → назад, громче → вернули колёсиком), запись
   подсвечивается. Её достаточно подтвердить, или включить авторазметку таких записей.
 
-Переобучение слова по-прежнему запускается кнопкой «Переобучить».
+Записи, помеченные ложными (вами, после отмены или Gemini), сохраняются как
+сложные негативы слова. Когда их набирается 10 с последнего обучения, слово
+переобучается само (около минуты); в панели видно «новых N из 10». Кнопка
+«Переобучить» запускает обучение сразу.
 
 > В панели сейчас нет аутентификации. Порт `8780` слушает на всех интерфейсах,
 > поэтому не выставляйте его в недоверенную сеть и ограничьте доступ firewall'ом
 > или локальной сетью.
 
-Если голосовой стек Яндекса мешает, его можно удалить обратимо:
+## Отвязка от Яндекса
+
+Установщик удаляет компоненты Яндекса для пользователя 0 с сохранением данных
+(`pm uninstall -k --user 0`), так что всё обратимо:
 
 ```sh
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "pm uninstall -k --user 0 com.yandex.io.sdk"'
+adb -s "$ADB_DEVICE" shell -tt 'mysudo -n cmd package install-existing <пакет>'
 ```
 
-Вернуть компонент:
+- `com.yandex.io.sdk` — голосовой стек Алисы. Держит микрофон и рисует на кольце
+  и экране, поэтому без его удаления проект не работает как задумано. Перед
+  удалением установщик копирует из его данных стоковые анимации экрана, которые
+  использует `ledd`; в репозиторий они не входят.
+- Приложения, которыми колонка с проектом не пользуется: рекламный ID,
+  обновлятор, отправка отчётов, скринсейвер, Алиса, Яндекс Музыка, ТВ и видео,
+  клавиатуры, магазин, оплата, проверка пульта. Список — `yandexApps` в
+  [voice/cmd/setup/steps.go](voice/cmd/setup/steps.go); каждое удалено на Станции
+  Макс без потери звука, сети и команд.
+- Системные сервисы Яндекса (`tv.services*`, `SystemExtensionService`), лаунчер,
+  настройки и мастер первичной настройки остаются: на них опирается система.
 
-```sh
-adb -s "$ADB_DEVICE" shell -tt \
-  'mysudo sh -c "cmd package install-existing com.yandex.io.sdk"'
-```
-
-Стоковые анимации экрана Яндекса в репозиторий не входят. `deploy.sh` пытается
-скопировать их из данных `io.sdk`; отсутствие этих файлов не должно ломать
-остановку и запуск, но часть анимаций будет недоступна.
+Облачный бэкенд Яндекса и серверы обновлений (OTA и их CDN) блокируются на
+роутере, а не на колонке; установщик этого не делает.
 
 ## Если установка не проходит
+
+Сначала `./setup doctor`: он покажет, какой шаг не в порядке, и подскажет, что
+сделать.
 
 - `missing host command` — установите указанную host-зависимость.
 - `ANDROID_SDK is required` — задайте `ANDROID_SDK`; на macOS проверьте
@@ -282,8 +201,10 @@ adb -s "$ADB_DEVICE" shell -tt \
   Android SDK platform/build-tools.
 - `NDK is required` или `aarch64-linux-android28-clang not found` — задайте
   корректный `NDK`.
-- `no API key ... not starting` — повторите шаг с `put-key.zsh`.
+- `no API key ... not starting` — запустите `./setup`, он спросит ключ.
 - `soloist ... not found` — проверьте путь к бинарнику внутри rootfs.
+- Мало места на `/data` — кэш Soloist подрезается до 300 МБ раз в 5 минут; если
+  место всё равно кончается, `./setup` предложит очистить кэш.
 - Нет звука — смотрите `soloist.log`, проверьте PulseAudio rootfs и наличие
   `/dev`/`/dev/pts`, которые монтирует `chroot.sh`.
 - Нет веб-панели — проверьте, что `voiced` запущен, и что порт `8780` доступен
@@ -293,7 +214,7 @@ adb -s "$ADB_DEVICE" shell -tt \
 
 | Переменная | Назначение | Значение по умолчанию |
 |---|---|---|
-| `ADB_DEVICE` | ADB-адрес колонки | нет, обязательна |
+| `ADB_DEVICE` | ADB-адрес колонки | нет; `./setup` спросит или найдёт |
 | `ANDROID_SDK` | Android SDK на host | `$HOME/Library/Android/sdk` на macOS |
 | `NDK` | Android NDK на host | последняя найденная версия внутри `ANDROID_SDK/ndk` |
 | `ANDROID_PLATFORM` | Android SDK platform | `android-28` |
@@ -306,30 +227,7 @@ adb -s "$ADB_DEVICE" shell -tt \
 | `VOICE_DIR` | База device-side voice | `/data/local/tmp/voice` |
 | `XRAY_BIN` | Путь xray внутри rootfs | `/opt/xray/xray` |
 
-## Идеи для дальнейшего улучшения установщика
-
-Сейчас скрипты уже разделяют host-пути и device-пути, умеют работать с
-`ANDROID_SDK`/`NDK` на macOS и Linux и используют единый root-вызов
-`mysudo sh`. Дальше установку можно сделать ещё удобнее:
-
-- добавить `tools/install.sh`, который проверяет ОС, версии Go/Java/SDK/NDK,
-  подключение ADB и root-доступ до начала сборки;
-- добавить интерактивный режим с вопросами про `ADB_DEVICE`, rootfs, Soloist и
-  Xray, а также non-interactive режим для CI через `.env.example` или аргументы;
-- автоматически находить `adb`, `javac`, `d8` и NDK в стандартных путях macOS/Linux,
-  оставляя явные переменные окружения приоритетными;
-- сделать отдельный `tools/push-rootfs.sh`, который загрузит архив, распакует его
-  через `mysudo sh` и проверит наличие `opt/soloist/soloist`;
-- добавить проверку архитектуры и контрольные суммы для rootfs, Soloist и Xray;
-- добавить безопасный `xray.json.example` без секретов и отдельную команду для
-  загрузки настоящей конфигурации;
-- для macOS предложить launchd-инструкцию только для host-части, а для Linux —
-  systemd user/service-инструкцию; автозапуск на колонке всё равно должен
-  подключаться к конкретному root-решению пользователя;
-- добавить smoke-test после deploy: наличие файлов, права, доступность `8780`,
-  запуск/остановка и понятный вывод последних строк `soloist.log`;
-- в будущем ограничить веб-панель `voiced` на localhost или добавить пароль/токен,
-  чтобы установка не открывала управление колонкой всей локальной сети.
+`./setup` работает с путями по умолчанию; `REMOTE_*` понимает только `voice/deploy.sh`.
 
 ## Благодарности и лицензии сторонних частей
 

@@ -132,6 +132,9 @@
   <div class="card">
     <h2>Последние срабатывания</h2>
     <label class="switch stats"><input type="checkbox" id="judge"> проверять срабатывания через Gemini</label>
+    <div class="row stats" id="judgerow" style="margin:2px 0 4px 24px">
+      <span>модель</span> <select id="judgemodel"></select>
+    </div>
     <div class="stats" id="judgestat" style="margin:2px 0 4px 24px"></div>
     <label class="switch stats"><input type="checkbox" id="autoundo"> отменённую вами команду сразу считать ложной</label>
     <div class="muted" id="nohits" style="margin-top:10px">Пока не было. Скажите слово — здесь появится запись.</div>
@@ -228,8 +231,15 @@ function renderHits(s) {
   if (document.activeElement !== $("autoundo")) $("autoundo").checked = s.settings.auto_false_undo;
   const j = s.judge;
   $("judge").disabled = !j.available;
-  $("judgestat").textContent = !j.available ? "нет ключа: положите его командой zsh voice/tools/put-gemini-key.zsh" :
-    !j.on ? "выключено" : `модель ${j.model}${j.pending ? ` · в очереди ${j.pending}` : ""}`;
+  $("judgerow").hidden = !j.available;
+  const sel = $("judgemodel");
+  const ids = j.models.map(m => m.id);
+  if (!ids.includes(j.model)) ids.push(j.model);
+  const opts = ids.map(id => { const m = j.models.find(x => x.id === id); return `<option value="${esc(id)}">${esc(id)}${m ? " — " + esc(m.note) : ""}</option>`; }).join("");
+  if (document.activeElement !== sel && sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  if (document.activeElement !== sel) sel.value = j.model;
+  $("judgestat").textContent = !j.available ? "нет ключа: запустите ./setup, он спросит ключ Gemini" :
+    !j.on ? "выключено" : (j.pending ? `в очереди ${j.pending}` : "");
   $("hits").innerHTML = s.hits.map(h => `<tr${h.undone && !h.verdict ? ' class="suspect"' : ""}>
     <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»</td>
     <td title="уверенность">${h.score.toFixed(2)}${h.playback ? ' <span class="stats" title="играла музыка">♪</span>' : ""}</td>
@@ -389,6 +399,7 @@ $("enrollaction").innerHTML = actionOptions("");
 document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (t.id === "judge") run(null, async () => { await api("POST", "/api/settings", { judge: t.checked }); t.blur(); });
+  if (t.id === "judgemodel") run(null, async () => { await api("POST", "/api/settings", { judge_model: t.value }); t.blur(); });
   if (t.id === "autoundo") run(null, async () => { await api("POST", "/api/settings", { auto_false_undo: t.checked }); t.blur(); });
   if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
   if (t.dataset.action !== undefined) run(null, async () => { await api("POST", "/api/words/" + t.dataset.action, { action: t.value || "none" }); t.blur(); });

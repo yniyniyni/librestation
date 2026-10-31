@@ -30,6 +30,28 @@ const (
 	timeout    = 30 * time.Second
 )
 
+// Models are the Gemini models offered in the panel and in setup; any other
+// model name works too.
+var Models = []struct{ ID, Note string }{
+	{"gemini-3.5-flash-lite", "быстрая и самая дешёвая, по умолчанию"},
+	{"gemini-3.1-flash-lite", "прошлая Flash-Lite"},
+	{"gemini-3.6-flash", "Flash прошлого поколения"},
+	{"gemini-3.8-flash", "самая умная Flash, дороже и медленнее"},
+}
+
+// ValidModel says whether name looks like a Gemini model id.
+func ValidModel(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 // Verdict is the model's call on one hit.
 type Verdict struct {
 	// Probability that a person said the word to the speaker as a command:
@@ -54,6 +76,7 @@ type Hit struct {
 	Rate     int     // sample rate of Audio
 	Undone   float64 // seconds until the user took the action back; 0 = not
 	Playback bool    // music was playing when the word was heard
+	Model    string  // model to ask; "" = the client's
 }
 
 // Client calls the Gemini API. The zero value is not usable; see New.
@@ -129,7 +152,14 @@ func (c *Client) Judge(ctx context.Context, h Hit) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, err
 	}
-	url := fmt.Sprintf("%s/models/%s:generateContent", strings.TrimRight(c.URL, "/"), c.Model)
+	model := c.Model
+	if h.Model != "" {
+		model = h.Model
+	}
+	if !ValidModel(model) {
+		return Verdict{}, fmt.Errorf("gemini: bad model name %q", model)
+	}
+	url := fmt.Sprintf("%s/models/%s:generateContent", strings.TrimRight(c.URL, "/"), model)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(b))
 	if err != nil {
 		return Verdict{}, err
