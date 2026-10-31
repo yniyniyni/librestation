@@ -44,6 +44,7 @@ func cmdRun(args []string) error {
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	opt.MicCmd = strings.Fields(micCmd)
+	useAndroidNet()
 	if key, err := judge.ReadKey(judgeKey); err != nil {
 		log.Printf("judge: %v; hits are not judged", err)
 	} else if key != "" {
