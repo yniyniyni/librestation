@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +42,9 @@ const (
 	maxBuffered = 12 * sampleRate
 	// maxQueued bounds the sentences waiting for synthesis.
 	maxQueued = 64
+	// keepTurns is how many past turns the conversation keeps; each carries
+	// its audio.
+	keepTurns = 3
 
 	notReady = "Режим разговора пока не готов"
 )
@@ -221,6 +225,7 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 			sp.stop()
 		} else {
 			// The turn is complete: a barge-in during the reply keeps it.
+			h = trimHistory(h)
 			hist = h
 			s.mu.Lock()
 			if gen == s.gen {
@@ -298,6 +303,25 @@ func (s *Session) listen(ctx context.Context, gen int, state string, limit time.
 			return ep.utterance(), r
 		}
 	}
+}
+
+// trimHistory keeps the last keepTurns turns. It cuts only where a turn
+// starts, at the user's audio, so no call is left without its result.
+func trimHistory(h []agent.Content) []agent.Content {
+	turns := 0
+	for i := len(h) - 1; i >= 0; i-- {
+		if !isUserAudio(h[i]) {
+			continue
+		}
+		if turns++; turns == keepTurns {
+			return slices.Clone(h[i:]) // let go of the older audio
+		}
+	}
+	return h
+}
+
+func isUserAudio(c agent.Content) bool {
+	return c.Role == "user" && len(c.Parts) > 0 && c.Parts[0].Audio != nil
 }
 
 // fail tells the user something went wrong and goes idle.

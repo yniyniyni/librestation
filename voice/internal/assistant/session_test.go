@@ -679,3 +679,38 @@ func TestFollowUpIsNotSeeded(t *testing.T) {
 		t.Errorf("follow-up audio %v: audio from before it opened leaked in", audioLen(reqs[1]))
 	}
 }
+
+func TestHistoryKeepsLastThreeTurns(t *testing.T) {
+	audio := func(v int16) agent.Content {
+		return agent.Content{Role: "user", Parts: []agent.Part{{Audio: []int16{v}}}}
+	}
+	text := agent.Content{Role: "model", Parts: []agent.Part{{Text: "Ок."}}}
+	callC := agent.Content{Role: "model", Parts: []agent.Part{{Call: &agent.Call{Name: "like"}}}}
+	result := agent.Content{Role: "user", Parts: []agent.Part{{Result: &agent.Result{Name: "like"}}}}
+	var h []agent.Content
+	for i := int16(1); i <= 5; i++ {
+		h = append(h, audio(i), callC, result, text)
+	}
+	got := trimHistory(h)
+	if len(got) != 12 || got[0].Parts[0].Audio[0] != 3 {
+		t.Fatalf("kept %d contents starting %+v, want the last 3 turns from audio 3", len(got), got[0])
+	}
+	if short := h[:8]; len(trimHistory(short)) != 8 {
+		t.Errorf("two turns were cut")
+	}
+}
+
+func TestHistoryCappedAcrossFollowUps(t *testing.T) {
+	g := newRig(t, reply("1."), reply("2."), reply("3."), reply("4."), reply("5."))
+	g.wake(nil)
+	for i := 0; i < 4; i++ {
+		g.toFollowUp()
+	}
+	g.say(g.utterance())
+	g.until("fifth reply", func() bool { return len(g.tts.said()) == 5 })
+	reqs := g.llm.requests()
+	// Three earlier turns (audio + reply each) and the new audio.
+	if n := len(reqs[4].Contents); n != 7 {
+		t.Errorf("fifth turn has %d contents, want 7", n)
+	}
+}
