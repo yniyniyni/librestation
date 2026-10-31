@@ -80,7 +80,7 @@ func run(fix bool, u *ui, device string) error {
 			return fmt.Errorf("%s: нет связи с колонкой", s.name)
 		}
 		switch {
-		case ok && fix && s.update != "" && u.interactive && (s.canUpdate == nil || s.canUpdate(e)):
+		case ok && fix && s.update != "" && u.interactive:
 			mark("✓", s.name, detail)
 			if u.yes("  "+s.update, false) {
 				ok, detail = apply(e, s)
