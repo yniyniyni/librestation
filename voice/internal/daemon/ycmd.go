@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"voice/internal/kws"
+	"voice/internal/ycmd"
 )
 
 // Yandex's quick commands: its stock spotter listens on channel 0 of the raw
@@ -43,6 +44,11 @@ var quickGroups = []struct{ id, words string }{
 	{"play", "продолжи"},
 }
 
+// spotter is the Yandex recogniser as the daemon uses it (*ycmd.Spotter).
+type spotter interface {
+	Push(pcm []float32, fire func(cmd string, conf float64))
+}
+
 // spotCommands runs the spotter over one raw capture block. It runs on the
 // audio goroutine without d.mu.
 func (d *Daemon) spotCommands(block []int16) {
@@ -50,9 +56,11 @@ func (d *Daemon) spotCommands(block []int16) {
 		return
 	}
 	pcm := d.yin.Process(block)
+	// The clip keeps channel 0 at its own level, like our words' clips; the
+	// spotter gets it at InputGain.
 	clip := make([]int16, len(pcm))
 	for i, v := range pcm {
-		clip[i] = int16(max(min(math.Round(float64(v)), math.MaxInt16), math.MinInt16))
+		clip[i] = int16(max(min(math.Round(float64(v)/ycmd.InputGain), math.MaxInt16), math.MinInt16))
 	}
 	d.mu.Lock()
 	d.yring.write(clip)

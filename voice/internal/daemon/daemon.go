@@ -232,11 +232,11 @@ type Daemon struct {
 	bands   *dsp.Bands // playback reference spectrum; nil without OnLED
 	lastLED time.Time  // last audio event sent (audio goroutine only)
 
-	spot        *ycmd.Spotter // nil without Options.Commands (audio goroutine only)
-	yin         *ycmd.Input   // the spotter's input (audio goroutine only)
-	yring       *ring         // the spotter's 16 kHz input, for hit clips
-	started     time.Time     // when New ran
-	lastPlaying time.Time     // when music was last seen playing
+	spot        spotter     // nil without Options.Commands (audio goroutine only)
+	yin         *ycmd.Input // the spotter's input (audio goroutine only)
+	yring       *ring       // channel 0 at 16 kHz (x1), for hit clips
+	started     time.Time   // when New ran
+	lastPlaying time.Time   // when music was last seen playing
 }
 
 // actionDebounce is how long the same action is ignored after it ran: several

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -276,3 +277,35 @@ func TestDebounceShared(t *testing.T) {
 		t.Fatalf("hit %+v", h)
 	}
 }
+
+// TestYandexClipLevel: the clip ring keeps channel 0 at its own level (the
+// spotter gets it x1/64), so panel playback and the judge hear it.
+func TestYandexClipLevel(t *testing.T) {
+	d := stockDaemon(t, t.TempDir(), true)
+	d.spot = nopSpotter{}
+	const blocks = 10
+	for b := 0; b < blocks; b++ {
+		blk := make([]int16, miccap.BlockFrames*miccap.Channels)
+		for i := 0; i < miccap.BlockFrames; i++ {
+			n := b*miccap.BlockFrames + i
+			blk[i*miccap.Channels] = int16(8000 * math.Sin(2*math.Pi*300*float64(n)/miccap.Rate))
+		}
+		d.spotCommands(blk)
+	}
+	d.mu.Lock()
+	clip := d.yring.last(blocks * miccap.BlockFrames / 3 / 2) // second half: past filter warm-up
+	d.mu.Unlock()
+	var ss float64
+	for _, v := range clip {
+		ss += float64(v) * float64(v)
+	}
+	// A sine of amplitude 8000 has RMS 5657.
+	if rms := math.Sqrt(ss / float64(len(clip))); rms < 5000 || rms > 6300 {
+		t.Fatalf("clip RMS %.0f, want ~5657 (channel 0 at x1)", rms)
+	}
+}
+
+// nopSpotter hears nothing.
+type nopSpotter struct{}
+
+func (nopSpotter) Push([]float32, func(string, float64)) {}
