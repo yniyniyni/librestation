@@ -15,12 +15,13 @@ import (
 	"time"
 
 	"voice/internal/judge"
+	"voice/internal/wav"
 )
 
 const (
-	// DefaultTTSModel is the Flash model that returns speech.
-	// TODO(verify): current Flash TTS model id
-	DefaultTTSModel = "gemini-2.5-flash-preview-tts"
+	// DefaultTTSModel is the fastest GA speech model; it answers with a WAV
+	// file (the 2.5 preview models answered with raw L16).
+	DefaultTTSModel = "gemini-3.8-flash-lite-tts"
 	DefaultVoice    = "Kore"
 	defaultRate     = 24000
 	geminiTimeout   = 20 * time.Second
@@ -115,14 +116,22 @@ func (g *GeminiTTS) Synth(ctx context.Context, text string) ([]int16, int, error
 		if err != nil {
 			return nil, 0, fmt.Errorf("gemini: bad audio data: %v", err)
 		}
-		pcm := make([]int16, len(b)/2)
-		for i := range pcm {
-			pcm[i] = int16(binary.LittleEndian.Uint16(b[2*i:]))
+		var pcm []int16
+		rate := mimeRate(part.InlineData.MimeType)
+		if strings.HasPrefix(part.InlineData.MimeType, "audio/wav") || bytes.HasPrefix(b, []byte("RIFF")) {
+			if pcm, rate, err = wav.Decode(b); err != nil {
+				return nil, 0, fmt.Errorf("gemini: bad audio data: %v", err)
+			}
+		} else {
+			pcm = make([]int16, len(b)/2)
+			for i := range pcm {
+				pcm[i] = int16(binary.LittleEndian.Uint16(b[2*i:]))
+			}
 		}
 		if len(pcm) == 0 {
 			break
 		}
-		return pcm, mimeRate(part.InlineData.MimeType), nil
+		return pcm, rate, nil
 	}
 	return nil, 0, fmt.Errorf("gemini: no audio in answer (%s)", r.Candidates[0].FinishReason)
 }

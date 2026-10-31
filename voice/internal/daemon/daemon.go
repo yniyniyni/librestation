@@ -89,7 +89,7 @@ type Settings struct {
 // AssistantSettings are the assistant's choices in the panel.
 type AssistantSettings struct {
 	Model string `json:"model,omitempty"` // "" = the judge's current model
-	TTS   string `json:"tts"`             // "piper" (default) or "gemini"
+	TTS   string `json:"tts"`             // "gemini" (default) or "piper"
 	Voice string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
 	City  string `json:"city,omitempty"`  // weather's default city
 }
@@ -103,7 +103,7 @@ func (d *Daemon) AssistantSettings() AssistantSettings {
 	defer d.mu.Unlock()
 	s := d.settings.Assistant
 	if s.TTS == "" {
-		s.TTS = "piper"
+		s.TTS = "gemini"
 	}
 	return s
 }

@@ -121,7 +121,7 @@ func chrootPath(host string) string {
 }
 
 // ttsChooser picks the engine for a turn from the panel: Gemini with Piper
-// behind it, or Piper with Gemini behind it (Piper may not be installed).
+// (offline) behind it, the default, or Piper with Gemini behind it.
 func ttsChooser(settings func() daemon.AssistantSettings, key string, piper tts.Engine) func() tts.Engine {
 	return func() tts.Engine {
 		s := settings()
@@ -129,7 +129,7 @@ func ttsChooser(settings func() daemon.AssistantSettings, key string, piper tts.
 		if s.Voice != "" {
 			g.Voice = s.Voice
 		}
-		if s.TTS != "gemini" {
+		if s.TTS == "piper" {
 			return tts.Fallback{Primary: piper, Backup: g}
 		}
 		return tts.Fallback{Primary: g, Backup: piper}

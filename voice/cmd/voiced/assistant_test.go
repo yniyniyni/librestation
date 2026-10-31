@@ -51,22 +51,23 @@ func TestTTSChoice(t *testing.T) {
 	piper := &tts.Piper{}
 	var set daemon.AssistantSettings
 	choose := ttsChooser(func() daemon.AssistantSettings { return set }, "key", piper)
-	// Piper, with Gemini behind it should Piper be missing.
+	// Gemini by default, with Piper behind it.
 	def, ok := choose().(tts.Fallback)
-	if !ok || def.Primary != tts.Engine(piper) {
+	if !ok || def.Backup != tts.Engine(piper) {
 		t.Fatalf("default %#v", choose())
 	}
-	if g := def.Backup.(*tts.GeminiTTS); g.Voice != tts.DefaultVoice || g.Key != "key" {
-		t.Fatalf("default backup %+v", g)
+	if g := def.Primary.(*tts.GeminiTTS); g.Voice != tts.DefaultVoice || g.Key != "key" {
+		t.Fatalf("default primary %+v", g)
+	}
+	set = daemon.AssistantSettings{TTS: "piper"}
+	fb, ok := choose().(tts.Fallback)
+	if !ok || fb.Primary != tts.Engine(piper) {
+		t.Fatalf("piper %#v", choose())
+	}
+	if g := fb.Backup.(*tts.GeminiTTS); g.Voice != tts.DefaultVoice || g.Key != "key" {
+		t.Fatalf("backup %+v", g)
 	}
 	set = daemon.AssistantSettings{TTS: "gemini"}
-	fb, ok := choose().(tts.Fallback)
-	if !ok || fb.Backup != tts.Engine(piper) {
-		t.Fatalf("gemini %#v", choose())
-	}
-	if g := fb.Primary.(*tts.GeminiTTS); g.Voice != tts.DefaultVoice || g.Key != "key" {
-		t.Fatalf("primary %+v", g)
-	}
 	set.Voice = "Puck"
 	if g := choose().(tts.Fallback).Primary.(*tts.GeminiTTS); g.Voice != "Puck" {
 		t.Fatalf("voice %q", g.Voice)

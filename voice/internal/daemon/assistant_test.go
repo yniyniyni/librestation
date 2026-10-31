@@ -165,19 +165,19 @@ func TestAssistantSettingsSaved(t *testing.T) {
 	if err := json.Unmarshal(b, &saved); err != nil || saved.Assistant != want {
 		t.Fatalf("settings.json %+v %v", saved.Assistant, err)
 	}
-	// A partial update keeps the rest; "" is Piper and the judge's model.
+	// A partial update keeps the rest; "" is Gemini and the judge's model.
 	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"tts":"","model":""}}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
-	want = AssistantSettings{TTS: "piper", Voice: "Puck", City: "Санкт-Петербург"}
+	want = AssistantSettings{TTS: "gemini", Voice: "Puck", City: "Санкт-Петербург"}
 	if got := d.AssistantSettings(); got != want {
 		t.Fatalf("after partial %+v", got)
 	}
 }
 
-func TestAssistantSettingsDefaultPiper(t *testing.T) {
+func TestAssistantSettingsDefaultGemini(t *testing.T) {
 	d, _ := newAsst(t, &fakeAct{}, "")
-	if got := d.AssistantSettings(); got.TTS != "piper" {
+	if got := d.AssistantSettings(); got.TTS != "gemini" {
 		t.Fatalf("default %+v", got)
 	}
 }
@@ -197,7 +197,7 @@ func TestAssistantSettingsRejectBadModel(t *testing.T) {
 			t.Fatalf("%s: status %d", body, r.StatusCode)
 		}
 	}
-	if got := d.AssistantSettings(); got != (AssistantSettings{TTS: "piper"}) {
+	if got := d.AssistantSettings(); got != (AssistantSettings{TTS: "gemini"}) {
 		t.Fatalf("changed: %+v", got)
 	}
 	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"city":"`+strings.Repeat("я", 64)+`"}}`); r.StatusCode != 200 {

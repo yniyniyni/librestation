@@ -129,7 +129,7 @@ func (d *Daemon) assistantViewLocked() assistantView {
 	v := assistantView{Available: d.opt.Assistant != nil, Settings: d.settings.Assistant,
 		DefaultModel: d.assistantDefaultModelLocked()}
 	if v.Settings.TTS == "" {
-		v.Settings.TTS = "piper"
+		v.Settings.TTS = "gemini"
 	}
 	if f := d.opt.AssistantStatus; f != nil {
 		v.Status = f()
@@ -164,9 +164,9 @@ func (p *assistantPatch) apply(s *AssistantSettings) error {
 	}
 	if t := p.TTS; t != nil {
 		switch *t {
-		case "", "piper":
+		case "piper":
 			n.TTS = "piper"
-		case "gemini":
+		case "", "gemini":
 			n.TTS = "gemini"
 		default:
 			return fmt.Errorf("неизвестный голосовой движок %q", *t)

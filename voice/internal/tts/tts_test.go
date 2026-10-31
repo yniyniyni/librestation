@@ -12,7 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 	"voice/internal/wav"
 )
 
@@ -268,5 +267,23 @@ func TestFallbackUsesBackup(t *testing.T) {
 	f.Primary = stub{pcm: []int16{1}}
 	if pcm, _, _ := f.Synth(context.Background(), "x"); pcm[0] != 1 {
 		t.Error("primary not preferred")
+	}
+}
+
+func TestGeminiTTSDecodesWAV(t *testing.T) {
+	want := []int16{0, 5, -5, 32767, -32768}
+	file := base64.StdEncoding.EncodeToString(wav.Encode(want, 22050))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"candidates":[{"content":{"parts":[{"inlineData":{"mimeType":"audio/wav","data":"` + file + `"}}]}}]}`))
+	}))
+	defer srv.Close()
+	pcm, rate, err := (&GeminiTTS{Key: "k", URL: srv.URL}).Synth(context.Background(), "привет")
+	if err != nil || rate != 22050 || len(pcm) != len(want) {
+		t.Fatalf("rate %d pcm %v err %v", rate, pcm, err)
+	}
+	for i := range want {
+		if pcm[i] != want[i] {
+			t.Errorf("sample %d: %d != %d", i, pcm[i], want[i])
+		}
 	}
 }
