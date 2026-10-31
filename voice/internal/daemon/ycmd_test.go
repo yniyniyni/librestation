@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	miccap "voice/internal/capture"
+	"voice/internal/wav"
 	"voice/internal/ycmd"
 )
 
@@ -321,5 +323,66 @@ func TestMissingStockCommands(t *testing.T) {
 	m.Commands = append(m.Commands, ycmd.Command{Name: "алиса"})
 	if g := MissingStockCommands(m); !slices.Equal(g, []string{"назад", "тише"}) {
 		t.Fatalf("missing %v", g)
+	}
+}
+
+// TestRealSpotCommands drives the real model through the daemon: raw
+// capture blocks of the recordings, playback "playing", the clock advanced
+// with the audio so debounce sees real time.
+func TestRealSpotCommands(t *testing.T) {
+	dir, clips := os.Getenv("YCMD_DIR"), os.Getenv("YCMD_CLIPS")
+	if dir == "" || clips == "" {
+		t.Skip("YCMD_DIR or YCMD_CLIPS not set")
+	}
+	m, err := ycmd.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		clip string
+		want []string
+	}{
+		// стоп пауза продолжи дальше назад громче тише хватит следующий;
+		// "продолжи" while playing does nothing.
+		{"music", []string{"pause", "pause", "next", "prev", "louder", "quieter", "pause", "next"}},
+		{"talk", nil},
+	} {
+		t.Run(c.clip, func(t *testing.T) {
+			ch0, err := wav.ReadFile(filepath.Join(clips, c.clip+".wav"), miccap.Rate) // channel 0
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &fakeAct{}
+			d, err := New(Options{DataDir: t.TempDir(), Actuator: f, Commands: m})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.waitIO)
+			var ms atomic.Int64 // audio time
+			base := time.Unix(100000, 0)
+			d.now = func() time.Time { return base.Add(time.Duration(ms.Load()) * time.Millisecond) }
+			d.started = base.Add(-time.Hour)
+			d.ObservePlayback("playing")
+			blk := make([]int16, miccap.BlockFrames*miccap.Channels)
+			for p := 0; p+miccap.BlockFrames <= len(ch0); p += miccap.BlockFrames {
+				for i, v := range ch0[p : p+miccap.BlockFrames] {
+					blk[i*miccap.Channels] = v
+				}
+				d.spotCommands(blk)
+				ms.Add(1000 * miccap.BlockFrames / miccap.Rate)
+			}
+			for deadline := time.Now().Add(2 * time.Second); len(f.got()) < len(c.want) && time.Now().Before(deadline); {
+				time.Sleep(10 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+			if g := f.got(); !slices.Equal(g, c.want) {
+				t.Fatalf("actuator %v, want %v", g, c.want)
+			}
+			for _, h := range d.state().Hits {
+				if h.Source != "yandex" {
+					t.Fatalf("hit %+v", h)
+				}
+			}
+		})
 	}
 }
