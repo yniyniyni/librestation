@@ -30,6 +30,9 @@ const (
 // spotifyPoll is how often the panel is asked whether the link was noticed.
 var spotifyPoll = time.Second
 
+// spotifyPolls is how many times: 45 s, longer than voiced's 30 s re-check.
+const spotifyPolls = 45
+
 type assistantState struct {
 	Assistant struct {
 		Status        json.RawMessage `json:"status"`
@@ -38,22 +41,26 @@ type assistantState struct {
 }
 
 // checkSpotify wants the token file on the speaker and voiced saying it
-// works with it. voiced re-reads the file by mtime; null means it has not
-// looked yet, so wait a little.
+// works with it. voiced re-reads the file by mtime but re-checks the link
+// only every 30 s, so null (not looked yet) or a stale false is polled for
+// up to 45 s.
 func checkSpotify(e *env) (bool, string, error) {
 	ok, err := e.d.RootOK("test -s " + spotifyTokenFile)
 	if err != nil || !ok {
 		return false, "", err
 	}
 	var s assistantState
-	for i := 0; i < 15; i++ {
+	for i := 0; i < spotifyPolls; i++ {
 		if i > 0 {
+			if i == 1 {
+				e.u.say("жду, пока колонка проверит токен…")
+			}
 			time.Sleep(spotifyPoll)
 		}
 		if err := panelState(e, &s); err != nil {
 			return false, "панель не отвечает", nil
 		}
-		if s.Assistant.SpotifyLinked != nil {
+		if s.Assistant.SpotifyLinked != nil && *s.Assistant.SpotifyLinked {
 			break
 		}
 	}

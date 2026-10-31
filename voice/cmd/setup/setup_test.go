@@ -295,11 +295,12 @@ func TestCheckSpotify(t *testing.T) {
 	defer func() { panelPort, spotifyPoll = oldPort, oldPoll }()
 	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=0\n"), host: host}
 
-	if ok, detail, err := checkSpotify(e); err != nil || ok || !strings.Contains(detail, "проверяет") || calls != 15 {
+	if ok, detail, err := checkSpotify(e); err != nil || ok || !strings.Contains(detail, "проверяет") || calls != spotifyPolls {
 		t.Fatalf("null: ok=%v %q %v after %d polls", ok, detail, err, calls)
 	}
 	linked = "false"
-	if ok, detail, err := checkSpotify(e); err != nil || ok || !strings.Contains(detail, "не принял") {
+	calls = 0
+	if ok, detail, err := checkSpotify(e); err != nil || ok || !strings.Contains(detail, "не принял") || calls != spotifyPolls {
 		t.Fatalf("false: ok=%v %q %v", ok, detail, err)
 	}
 	linked = "true"
