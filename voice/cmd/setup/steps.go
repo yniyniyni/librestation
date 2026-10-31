@@ -363,6 +363,8 @@ func fixYcmd(e *env) error {
 	// The speaker has no unzip of its own; busybox does, without -j. The temp
 	// dir is cleared before and after, whether or not unpacking worked.
 	// A failed step must not skip the cleanup, so the chain feeds rc (the script runs under set -e).
+	// This busybox extracts the matches, then dies on the APK's later records
+	// ("invalid zip magic", exit 1): unzip's status says nothing, the files do.
 	var mvs strings.Builder
 	for _, f := range ycmdFiles {
 		fmt.Fprintf(&mvs, " && mv %s/assets/quark/spotter_models/command/%s %s/", ycmdTmp, f, ycmdDir)
@@ -370,7 +372,8 @@ func fixYcmd(e *env) error {
 	script := fmt.Sprintf(`rm -rf %[1]s
 mkdir -p %[1]s %[2]s
 rc=0
-{ /vendor/xbin/busybox unzip -o %[3]s 'assets/quark/spotter_models/command/*' -d %[1]s%[4]s; } || rc=1
+{ /vendor/xbin/busybox unzip -o %[3]s 'assets/quark/spotter_models/command/*' -d %[1]s || true; }
+{ true%[4]s; } || rc=1
 rm -rf %[1]s
 chmod -R a+rX %[5]s/yandex
 [ $rc -eq 0 ]`, ycmdTmp, ycmdDir, ycmdAPK, mvs.String(), voiceDir)

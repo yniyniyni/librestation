@@ -459,7 +459,7 @@ func TestFixYcmdExtractsFromAPK(t *testing.T) {
 	for _, want := range []string{
 		"/vendor/xbin/busybox unzip -o " + ycmdAPK,
 		"'assets/quark/spotter_models/command/*'",
-		"-d " + ycmdTmp,
+		"-d " + ycmdTmp + " || true",
 		"mv " + ycmdTmp + "/assets/quark/spotter_models/command/words.txt " + ycmdDir + "/",
 		"rm -rf " + ycmdTmp,
 	} {
