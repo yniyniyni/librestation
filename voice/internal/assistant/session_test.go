@@ -661,9 +661,10 @@ func TestRequestStartedBeforeWakeIsKept(t *testing.T) {
 	g.say(speech[samples(400*time.Millisecond):])
 	g.say(noise(g.r, time.Second, quietDB))
 	g.until("reply", func() bool { return len(g.tts.said()) == 1 })
-	// 100 ms of the seed before the speech (less than the pre-roll), the
-	// whole second of speech, the hangover.
-	if reqs := g.llm.requests(); len(reqs) != 1 || !near(audioLen(reqs[0]), 1250*time.Millisecond, 60*time.Millisecond) {
+	// Speech runs across the wake, so the whole seed (480 ms, whole frames:
+	// 80 ms noise and 400 ms speech) leads, then the rest of the speech and
+	// the hangover.
+	if reqs := g.llm.requests(); len(reqs) != 1 || !near(audioLen(reqs[0]), 1230*time.Millisecond, 60*time.Millisecond) {
 		t.Errorf("audio %v, want the whole request", audioLen(reqs[0]))
 	}
 }
@@ -740,5 +741,50 @@ func TestWedgedPlaybackGoesIdleAfterTheBound(t *testing.T) {
 	}
 	if len(g.stockLog()) != 0 {
 		t.Errorf("stock %q played into a stuck player", g.stockLog())
+	}
+}
+
+func TestTriggerPauseThenRequest(t *testing.T) {
+	g := newRig(t, reply("Ставлю."))
+	g.say(noise(g.r, 2*time.Second, quietDB))
+	g.say(tone(500*time.Millisecond, speechDB)) // the trigger word
+	g.say(noise(g.r, 200*time.Millisecond, quietDB))
+	g.wake(func() { t.Error("onNoRequest called") })
+	g.untilListening()
+	g.say(noise(g.r, time.Second, quietDB)) // the user pauses
+	req := tone(time.Second, speechDB)
+	req[0] = 12345 // marks the request's first sample
+	g.say(req)
+	g.say(noise(g.r, time.Second, quietDB))
+	g.until("reply", func() bool { return len(g.tts.said()) == 1 })
+	r := g.llm.requests()[0]
+	audio := r.Contents[len(r.Contents)-1].Parts[0].Audio
+	// The start came from the live audio: the normal pre-roll of the pause,
+	// the whole request, the hangover; nothing of the trigger.
+	if d := audioLen(r); !near(d, 1450*time.Millisecond, 60*time.Millisecond) {
+		t.Errorf("audio %v, want 1.45 s of the request", d)
+	}
+	if !slices.Contains(audio, 12345) {
+		t.Error("the request's start is missing")
+	}
+}
+
+func TestBargeInIsNotSeeded(t *testing.T) {
+	g := newRig(t, reply("Ставлю."), reply("Хорошо."))
+	g.player.hold = make(chan struct{})
+	g.wake(nil)
+	g.untilListening()
+	g.say(g.utterance())
+	g.untilState("speaking")
+	g.say(tone(400*time.Millisecond, speechDB)) // the reply's echo and the trigger
+	g.wake(nil)
+	g.untilListening()
+	close(g.player.hold)
+	g.say(tone(600*time.Millisecond, speechDB))
+	g.say(noise(g.r, time.Second, quietDB))
+	g.until("second reply", func() bool { return len(g.tts.said()) == 2 })
+	// Only the live 600 ms and the hangover; a seed would add 480 ms.
+	if d := audioLen(g.llm.requests()[1]); !near(d, 750*time.Millisecond, 60*time.Millisecond) {
+		t.Errorf("barge-in audio %v: the seed leaked in", d)
 	}
 }

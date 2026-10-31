@@ -24,6 +24,9 @@ const (
 
 	// hangover is kept after the last speech frame for trailing consonants.
 	hangover = 150 * time.Millisecond
+	// acrossWake: a start this soon after the listen opens means the speech
+	// ran across the wake, so the utterance takes the whole seed.
+	acrossWake = 100 * time.Millisecond
 
 	// The noise floor comes from the audio before the listen starts: a low
 	// percentile of the frames in the last floorWindow, leaving out the most
@@ -59,7 +62,8 @@ type endpointer struct {
 
 	buf    []int16 // all audio taken in, whole frames only
 	part   []int16 // the unfinished frame
-	frames int
+	frames int     // live frames, after the seed
+	seeded int     // seed samples at the front of buf; pre-roll only
 
 	run     int // speech frames in a row before the start
 	started bool
@@ -70,8 +74,13 @@ type endpointer struct {
 	res     epResult
 }
 
-func newEndpointer(startLimit time.Duration, floor float64) *endpointer {
-	return &endpointer{startLimit: int(startLimit / frameDur), floor: floor}
+// newEndpointer starts a listen. seed is audio from before it opened: it
+// never starts the utterance or counts towards its end, it only gives
+// pre-roll (whole frames are kept, the newest).
+func newEndpointer(startLimit time.Duration, floor float64, seed []int16) *endpointer {
+	seed = seed[len(seed)%frameLen:]
+	return &endpointer{startLimit: int(startLimit / frameDur), floor: floor,
+		buf: append([]int16(nil), seed...), seeded: len(seed)}
 }
 
 // push takes in pcm and says whether the utterance is over.
@@ -101,8 +110,11 @@ func (e *endpointer) frame(db float64) {
 			e.run = 0
 		} else if e.run++; e.run >= startFrames {
 			e.started = true
-			first := (i - startFrames + 1) * frameLen
+			first := e.seeded + (i-startFrames+1)*frameLen
 			e.from = max(0, first-samplesIn(preRoll))
+			if time.Duration(e.frames)*frameDur <= acrossWake {
+				e.from = 0
+			}
 			e.lastEnd = len(e.buf)
 		}
 		if !e.started && e.frames >= e.startLimit {

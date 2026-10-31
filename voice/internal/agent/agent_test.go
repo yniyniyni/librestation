@@ -262,12 +262,15 @@ func TestEmptyAnswerAfterSpokenToolRoundSaysNothingMore(t *testing.T) {
 	}
 }
 
-func TestEmptyAnswerAfterFailedToolIsSilent(t *testing.T) {
+func TestEmptyAnswerAfterFailedToolSaysFailed(t *testing.T) {
 	tool := &fakeTool{name: "like", err: errors.New("не играет")}
 	llm := &script{answers: []Content{call("like", nil)}, errs: map[int]error{1: &EmptyAnswerError{Reason: "STOP"}}}
-	_, _, said, err := turn(t, newAgent(llm, tool), nil)
-	if err != nil || len(said) != 0 {
+	h, _, said, err := turn(t, newAgent(llm, tool), nil)
+	if err != nil || len(said) != 1 || said[0] != failedReply {
 		t.Fatalf("err %v said %q", err, said)
+	}
+	if last := h[len(h)-1]; last.Role != "model" || last.Parts[0].Text != failedReply {
+		t.Errorf("history ends with %+v", last)
 	}
 }
 

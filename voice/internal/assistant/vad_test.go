@@ -62,7 +62,7 @@ func near(got, want, tol time.Duration) bool { return got >= want-tol && got <= 
 func TestVADStartEndAndLimits(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
 
-	e := newEndpointer(startLimit, floorDefault)
+	e := newEndpointer(startLimit, floorDefault, nil)
 	if res, at := feed(e, noise(r, 3900*time.Millisecond, quietDB)); res != epPending {
 		t.Fatalf("silence: %v after %v, want pending before 4 s", res, at)
 	}
@@ -70,7 +70,7 @@ func TestVADStartEndAndLimits(t *testing.T) {
 		t.Fatalf("silence 4.1 s: %v, want noSpeech", res)
 	}
 
-	e = newEndpointer(startLimit, floorDefault)
+	e = newEndpointer(startLimit, floorDefault, nil)
 	pcm := concat(noise(r, 500*time.Millisecond, quietDB), tone(time.Second, speechDB), noise(r, 2*time.Second, quietDB))
 	res, at := feed(e, pcm)
 	if res != epDone {
@@ -83,7 +83,7 @@ func TestVADStartEndAndLimits(t *testing.T) {
 		t.Errorf("utterance %v, want about 1.45 s with pre-roll and hangover", d)
 	}
 
-	e = newEndpointer(startLimit, floorDefault)
+	e = newEndpointer(startLimit, floorDefault, nil)
 	res, _ = feed(e, concat(noise(r, 500*time.Millisecond, quietDB), tone(12*time.Second, speechDB)))
 	if res != epDone {
 		t.Fatalf("long speech: %v, want done", res)
@@ -95,7 +95,7 @@ func TestVADStartEndAndLimits(t *testing.T) {
 
 func TestVADSpeechRightAway(t *testing.T) {
 	// The command often follows the wake word without a pause.
-	e := newEndpointer(startLimit, floorDefault)
+	e := newEndpointer(startLimit, floorDefault, nil)
 	r := rand.New(rand.NewSource(2))
 	res, _ := feed(e, concat(tone(time.Second, speechDB), noise(r, time.Second, quietDB)))
 	if res != epDone {
@@ -129,7 +129,7 @@ func TestVADFloorDefault(t *testing.T) {
 
 func TestVADQuietRequestRightAfterWake(t *testing.T) {
 	r := rand.New(rand.NewSource(5))
-	e := newEndpointer(startLimit, seeded(noise(r, 3*time.Second, quietDB)))
+	e := newEndpointer(startLimit, seeded(noise(r, 3*time.Second, quietDB)), nil)
 	res, _ := feed(e, concat(tone(time.Second, -40), noise(r, time.Second, quietDB)))
 	if res != epDone {
 		t.Fatalf("quiet request: %v, want done", res)
@@ -138,7 +138,7 @@ func TestVADQuietRequestRightAfterWake(t *testing.T) {
 
 func TestVADSteadyBackgroundNoStart(t *testing.T) {
 	r := rand.New(rand.NewSource(6))
-	e := newEndpointer(startLimit, seeded(noise(r, 3*time.Second, -35)))
+	e := newEndpointer(startLimit, seeded(noise(r, 3*time.Second, -35)), nil)
 	if res, at := feed(e, noise(r, startLimit+100*time.Millisecond, -35)); res != epNoSpeech {
 		t.Fatalf("steady background: %v after %v, want noSpeech", res, at)
 	}
@@ -154,7 +154,7 @@ func TestVADFloorIgnoresTriggerWord(t *testing.T) {
 
 func TestVADHangover(t *testing.T) {
 	r := rand.New(rand.NewSource(8))
-	e := newEndpointer(startLimit, floorDefault)
+	e := newEndpointer(startLimit, floorDefault, nil)
 	speech := concat(noise(r, 500*time.Millisecond, quietDB), tone(time.Second, speechDB))
 	if res, _ := feed(e, concat(speech, noise(r, time.Second, quietDB))); res != epDone {
 		t.Fatalf("got %v, want done", res)

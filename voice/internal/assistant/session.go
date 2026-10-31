@@ -98,6 +98,7 @@ type Session struct {
 	open   bool       // audio is wanted
 	lv     levels     // fed always, for the noise floor
 	raw    recent     // fed always, to seed the listen after a wake
+	seed   []int16    // raw, copied out when a listen opens
 	buf    []int16
 	spare  []int16
 	notify chan struct{}
@@ -112,6 +113,7 @@ func New(d Deps) *Session {
 		after:  time.After,
 		buf:    make([]int16, 0, maxBuffered),
 		spare:  make([]int16, 0, maxBuffered),
+		seed:   make([]int16, 0, seedLen),
 		notify: make(chan struct{}, 1),
 	}
 	s.st = Status{State: "idle", At: d.Now()}
@@ -151,7 +153,10 @@ func (s *Session) Wake(ctx context.Context, onNoRequest func()) {
 	gen := s.gen
 	prevCancel, prevDone := s.cancel, s.done
 	hist := s.hist
-	if s.st.State == "idle" {
+	// A barge-in's seed would be the reply's echo: only a wake from idle
+	// gets one.
+	fromIdle := s.st.State == "idle"
+	if fromIdle {
 		hist = nil
 	}
 	s.cancel, s.done = cancel, done
@@ -166,7 +171,7 @@ func (s *Session) Wake(ctx context.Context, onNoRequest func()) {
 		if prevDone != nil {
 			<-prevDone
 		}
-		s.run(ctx, gen, hist, onNoRequest)
+		s.run(ctx, gen, hist, fromIdle, onNoRequest)
 	}()
 }
 
@@ -196,7 +201,7 @@ func (s *Session) listening() bool {
 	return s.open
 }
 
-func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRequest func()) {
+func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
 	noRequest := func(first bool) {
 		if first && onNoRequest != nil {
@@ -208,9 +213,10 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 		if !first {
 			limit, state = followLimit, "followup"
 		}
-		// The first listen takes the audio from just before it opened; a
-		// follow-up's would be the reply's tail.
-		audio, res := s.listen(ctx, gen, state, limit, first)
+		// The first listen after a wake from idle takes the audio from just
+		// before it opened as pre-roll; a follow-up's would be the reply's
+		// tail.
+		audio, res := s.listen(ctx, gen, state, limit, first && seed)
 		if ctx.Err() != nil || res == epStalled {
 			s.idle(gen)
 			return
@@ -278,12 +284,13 @@ func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, onNoRe
 
 // listen takes audio until the endpointer has an utterance (epDone), finds
 // none (epNoSpeech) or audio stops (epStalled). A cancel gives epPending.
-// seed starts it with the last seedLen samples from before it opened.
+// seed gives it the last seedLen samples from before it opened, as pre-roll.
 func (s *Session) listen(ctx context.Context, gen int, state string, limit time.Duration, seed bool) ([]int16, epResult) {
 	s.amu.Lock()
 	s.buf, s.open = s.buf[:0], true
+	s.seed = s.seed[:0]
 	if seed {
-		s.buf = s.raw.appendTo(s.buf)
+		s.seed = s.raw.appendTo(s.seed)
 	}
 	floor := s.lv.floor()
 	s.amu.Unlock()
@@ -293,7 +300,7 @@ func (s *Session) listen(ctx context.Context, gen int, state string, limit time.
 		s.amu.Unlock()
 	}()
 	s.set(gen, state, "listening")
-	ep := newEndpointer(limit, floor)
+	ep := newEndpointer(limit, floor, s.seed)
 	guard := s.after(limit + maxUtterance + listenSlack)
 	for {
 		select {
