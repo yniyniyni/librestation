@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +67,8 @@ func steps() []step {
 		{name: "Ключ Gemini (разметка срабатываний)", optional: true, check: fileCheck(voiceDir + "/gemini.key"),
 			fix: fixKey("Gemini API key (https://aistudio.google.com/apikey)", voiceDir+"/gemini.key"),
 			ask: "Ввести ключ Gemini? Без него срабатывания не проверяются"},
+		{name: "Прокси для Spotify и Gemini", optional: true, check: checkProxy, fix: fixProxy,
+			ask: "Выбрать, где работает прокси?", update: "Сменить, где работает прокси?"},
 		{name: "Автозапуск", check: checkAutostart, fix: fixAutostart,
 			ask:  "Добавить запуск в " + bootHook + "?",
 			hint: "добавьте `" + startLine + "` в загрузочный скрипт вашего рута (от root)"},
@@ -79,6 +84,8 @@ func steps() []step {
 			ask: "Перезапустить сервисы?"},
 		{name: "Веб-панель и микрофон", check: checkPanel,
 			hint: "смотрите лог: adb shell -tt 'mysudo -n tail -50 " + soloistDir + "/soloist.log'"},
+		{name: "Модель Gemini", optional: true, check: checkModel, fix: fixModel,
+			ask: "Выбрать модель?", update: "Выбрать другую модель Gemini?"},
 	}
 }
 
@@ -227,7 +234,15 @@ func fixKey(prompt, path string) func(*env) error {
 		if k == "" {
 			return fmt.Errorf("пустой ключ, ничего не записано")
 		}
-		return e.d.WriteSecret(path, []byte(k))
+		if err := e.d.WriteSecret(path, []byte(k)); err != nil {
+			return err
+		}
+		// Keys are read at start; on a fresh speaker nothing runs yet.
+		if up, _, _ := checkServices(e); up {
+			e.u.say("  Перезапускаю сервисы, чтобы подхватить ключ…")
+			return fixServices(e)
+		}
+		return nil
 	}
 }
 
@@ -427,6 +442,77 @@ func fixServices(e *env) error {
 		}
 	}
 	return nil // checked again by the caller
+}
+
+// panelState reads the web panel's state into v.
+func panelState(e *env, v any) error {
+	c := http.Client{Timeout: 5 * time.Second}
+	r, err := c.Get("http://" + e.host + ":8780/api/state")
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+type judgeState struct {
+	Judge struct {
+		Available bool   `json:"available"`
+		Model     string `json:"model"`
+		Models    []struct {
+			ID   string `json:"id"`
+			Note string `json:"note"`
+		} `json:"models"`
+	} `json:"judge"`
+}
+
+func checkModel(e *env) (bool, string, error) {
+	var s judgeState
+	if err := panelState(e, &s); err != nil {
+		return false, "панель не отвечает", nil
+	}
+	if !s.Judge.Available {
+		return false, "нет ключа Gemini", nil
+	}
+	return true, s.Judge.Model, nil
+}
+
+func fixModel(e *env) error {
+	var s judgeState
+	if err := panelState(e, &s); err != nil {
+		return err
+	}
+	if !s.Judge.Available {
+		return fmt.Errorf("сначала ключ Gemini")
+	}
+	def := ""
+	for i, m := range s.Judge.Models {
+		cur := ""
+		if m.ID == s.Judge.Model {
+			cur, def = " (сейчас)", strconv.Itoa(i+1)
+		}
+		e.u.say("    %d — %s: %s%s", i+1, m.ID, m.Note, cur)
+	}
+	ans := e.u.ask("  Номер или имя модели", def)
+	model := ans
+	if n, err := strconv.Atoi(ans); err == nil {
+		if n < 1 || n > len(s.Judge.Models) {
+			return fmt.Errorf("нет модели с номером %d", n)
+		}
+		model = s.Judge.Models[n-1].ID
+	}
+	body, _ := json.Marshal(map[string]string{"judge_model": model})
+	c := http.Client{Timeout: 5 * time.Second}
+	r, err := c.Post("http://"+e.host+":8780/api/settings", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+	if r.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(r.Body)
+		return fmt.Errorf("панель: %s %s", r.Status, strings.TrimSpace(string(b)))
+	}
+	return nil
 }
 
 func checkPanel(e *env) (bool, string, error) {

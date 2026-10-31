@@ -74,7 +74,8 @@ supervise pulseaudio sh $S/chroot.sh pulseaudio -n -F /etc/pulse/soloist.pa \
     --exit-idle-time=-1 --daemonize=no --log-target=stderr --log-level=error &
 
 # Spotify's login hosts are blocked from this network, so Soloist goes through a local
-# Xray proxy when $S/xray.json exists (socks on 127.0.0.1:1080, http on 127.0.0.1:1081)
+# Xray proxy when $S/xray.json exists (socks on 127.0.0.1:1080, http on 127.0.0.1:1081);
+# ./setup installs it or records that the proxy lives on the router
 PROXY_ENV=
 if [ -s $S/xray.json ]; then
     cp $S/xray.json $R/etc/xray.json
@@ -94,6 +95,7 @@ supervise soloist sh $S/chroot.sh /bin/sh -c \
 
 # LED daemon: clock, volume ring and carousel on the front panel
 supervise ledd $V/ledd -assets $V/assets -data $V/data -sock $V/ledd.sock &
-supervise voiced $V/voiced run -data $V/data -mic-cmd "sh $V/mic.sh" -gain-file $S/gain -led-sock $V/ledd.sock -ledd http://127.0.0.1:8781 &
+# voiced reaches Gemini through the same proxy (env runs it as is without one)
+supervise voiced env $PROXY_ENV $V/voiced run -data $V/data -mic-cmd "sh $V/mic.sh" -gain-file $S/gain -led-sock $V/ledd.sock -ledd http://127.0.0.1:8781 &
 
 wait

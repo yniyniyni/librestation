@@ -30,15 +30,33 @@ const (
 )
 
 type judgeView struct {
-	Available bool   `json:"available"` // a model is configured (key present)
-	On        bool   `json:"on"`
-	Model     string `json:"model,omitempty"`
-	Pending   int    `json:"pending"`
+	Available bool          `json:"available"` // a model is configured (key present)
+	On        bool          `json:"on"`
+	Model     string        `json:"model,omitempty"`
+	Models    []judgeChoice `json:"models"`
+	Pending   int           `json:"pending"`
+}
+
+type judgeChoice struct {
+	ID   string `json:"id"`
+	Note string `json:"note"`
 }
 
 func (d *Daemon) judgeViewLocked() judgeView {
-	return judgeView{Available: d.opt.Judge != nil, On: d.opt.Judge != nil && !d.settings.JudgeOff,
-		Model: d.opt.JudgeModel, Pending: len(d.judgeQ)}
+	v := judgeView{Available: d.opt.Judge != nil, On: d.opt.Judge != nil && !d.settings.JudgeOff,
+		Model: d.judgeModelLocked(), Pending: len(d.judgeQ)}
+	for _, m := range judge.Models {
+		v.Models = append(v.Models, judgeChoice{m.ID, m.Note})
+	}
+	return v
+}
+
+// judgeModelLocked is the model hits go to; caller holds d.mu.
+func (d *Daemon) judgeModelLocked() string {
+	if d.settings.JudgeModel != "" {
+		return d.settings.JudgeModel
+	}
+	return d.opt.JudgeModel
 }
 
 // judgeLaterLocked queues h for the model once its take-back window is over;
@@ -79,7 +97,8 @@ func (d *Daemon) judgeHit(ctx context.Context, h *Hit) {
 		d.mu.Unlock()
 		return
 	}
-	in := judge.Hit{Word: h.Name, Action: h.Action, Rate: kws.SampleRate, Undone: h.Undone, Playback: h.Playback}
+	in := judge.Hit{Word: h.Name, Action: h.Action, Rate: kws.SampleRate, Undone: h.Undone, Playback: h.Playback,
+		Model: d.judgeModelLocked()}
 	if in.Word == "" {
 		in.Word = h.Word
 	}

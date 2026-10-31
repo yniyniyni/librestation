@@ -1,6 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -45,5 +48,76 @@ func TestYandexAppsKeepPlatform(t *testing.T) {
 			"com.yandex.server.SystemExtensionService", "com.yandex.tv.home", "com.yandex.tv.settings", "com.yandex.tv.setupwizard":
 			t.Errorf("%s is something the system leans on", p)
 		}
+	}
+}
+
+func TestVLESSRealityConfig(t *testing.T) {
+	b, err := vlessConfig("vless://11111111-2222-3333-4444-555555555555@example.org:443?type=tcp&security=reality&pbk=PUBKEY&fp=chrome&sni=www.example.com&sid=ab12&flow=xtls-rprx-vision&encryption=none#name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Inbounds []struct {
+			Port     int    `json:"port"`
+			Listen   string `json:"listen"`
+			Protocol string `json:"protocol"`
+		} `json:"inbounds"`
+		Outbounds []struct {
+			Protocol string `json:"protocol"`
+			Settings struct {
+				Vnext []struct {
+					Address string `json:"address"`
+					Port    int    `json:"port"`
+					Users   []struct {
+						ID, Flow string
+					} `json:"users"`
+				} `json:"vnext"`
+			} `json:"settings"`
+			Stream struct {
+				Network  string            `json:"network"`
+				Security string            `json:"security"`
+				Reality  map[string]string `json:"realitySettings"`
+			} `json:"streamSettings"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Inbounds) != 2 || cfg.Inbounds[0].Port != 1080 || cfg.Inbounds[1].Port != 1081 || cfg.Inbounds[0].Listen != "127.0.0.1" {
+		t.Fatalf("inbounds %+v", cfg.Inbounds)
+	}
+	o := cfg.Outbounds[0]
+	v := o.Settings.Vnext[0]
+	if o.Protocol != "vless" || v.Address != "example.org" || v.Port != 443 || v.Users[0].ID != "11111111-2222-3333-4444-555555555555" || v.Users[0].Flow != "xtls-rprx-vision" {
+		t.Fatalf("outbound %+v", o)
+	}
+	if o.Stream.Network != "tcp" || o.Stream.Security != "reality" || o.Stream.Reality["publicKey"] != "PUBKEY" || o.Stream.Reality["serverName"] != "www.example.com" || o.Stream.Reality["shortId"] != "ab12" {
+		t.Fatalf("stream %+v", o.Stream)
+	}
+}
+
+func TestVLESSRejects(t *testing.T) {
+	for _, l := range []string{
+		"vmess://abc", "vless://id@host?type=tcp", "vless://id@host:443?security=reality",
+		"vless://id@host:443?type=kcp",
+	} {
+		if _, err := vlessConfig(l); err == nil {
+			t.Errorf("%s accepted", l)
+		}
+	}
+}
+
+func TestCheckDigest(t *testing.T) {
+	data := []byte("xray")
+	good := "MD5= x\nSHA2-256= 0a6b3c3f6d5b4e43dfc4b2d8fd6a3b1bd4e2a1b2e4b6e0c3d7a1f1f6b0c9e2a1\n"
+	if err := checkDigest(data, good); err == nil {
+		t.Fatal("wrong digest accepted")
+	}
+	sum := sha256.Sum256(data)
+	if err := checkDigest(data, "SHA2-256= "+hex.EncodeToString(sum[:])); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkDigest(data, "MD5= x"); err == nil {
+		t.Fatal("no sha256 accepted")
 	}
 }

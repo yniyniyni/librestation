@@ -54,6 +54,8 @@ type Settings struct {
 	Words  map[string]*WordSettings `json:"words"`
 	// JudgeOff stops sending hits to the audio model even with a key.
 	JudgeOff bool `json:"judge_off"`
+	// JudgeModel is the model that judges hits; "" = Options.JudgeModel.
+	JudgeModel string `json:"judge_model,omitempty"`
 	// AutoFalseUndo marks hits whose action the user took back as false
 	// alarms without asking.
 	AutoFalseUndo bool `json:"auto_false_undo"`

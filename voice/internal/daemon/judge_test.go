@@ -191,3 +191,33 @@ func TestJudgedHitSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestJudgeModelSetting(t *testing.T) {
+	j := &fakeJudge{v: judge.Verdict{Probability: 0.9}}
+	d, done := judgeTest(t, j, "pause")
+	d.opt.JudgeModel = "gemini-3.5-flash-lite"
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	if v := d.state().Judge; v.Model != "gemini-3.5-flash-lite" || len(v.Models) == 0 {
+		t.Fatalf("default: %+v", v)
+	}
+	if r := post(t, srv.URL+"/api/settings", `{"judge_model":"gemini-3.8-flash"}`); r.StatusCode != 200 {
+		t.Fatalf("set model: %d", r.StatusCode)
+	}
+	if r := post(t, srv.URL+"/api/settings", `{"judge_model":"bad model; rm"}`); r.StatusCode == 200 {
+		t.Fatal("bad model name accepted")
+	}
+	hit(d)
+	<-done
+	waitJudged(t, d)
+	if c := j.calls(); len(c) != 1 || c[0].Model != "gemini-3.8-flash" {
+		t.Fatalf("judge got %+v", c)
+	}
+	d2, err := New(Options{DataDir: d.opt.DataDir, JudgeModel: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := d2.state().Judge.Model; m != "gemini-3.8-flash" {
+		t.Fatalf("model after restart %q", m)
+	}
+}
