@@ -37,6 +37,10 @@ type Options struct {
 	// Assistant runs the "assistant" word action and gets every audio block;
 	// nil = that action is only logged.
 	Assistant Assistant
+	// AssistantStatus is the session's state for the panel; SpotifyLinked
+	// says whether Spotify is linked. Both must return at once; nil = none.
+	AssistantStatus func() any
+	SpotifyLinked   func() bool
 	// OnLED receives events for the LED daemon (nil = off). It must not block.
 	OnLED func(proto.Event)
 	// Judge labels hits with an audio model (nil = off); JudgeModel names it
@@ -74,6 +78,30 @@ type Settings struct {
 	// AutoFalseUndo marks hits whose action the user took back as false
 	// alarms without asking.
 	AutoFalseUndo bool `json:"auto_false_undo"`
+	// Assistant is read by the session on every turn.
+	Assistant AssistantSettings `json:"assistant"`
+}
+
+// AssistantSettings are the assistant's choices in the panel.
+type AssistantSettings struct {
+	Model string `json:"model,omitempty"` // "" = the judge's model
+	TTS   string `json:"tts"`             // "piper" (default) or "gemini"
+	Voice string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
+	City  string `json:"city,omitempty"`  // weather's default city
+}
+
+// maxAssistantText bounds the voice and city, in characters.
+const maxAssistantText = 64
+
+// AssistantSettings returns a copy of the assistant's settings.
+func (d *Daemon) AssistantSettings() AssistantSettings {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s := d.settings.Assistant
+	if s.TTS == "" {
+		s.TTS = "piper"
+	}
+	return s
 }
 
 type WordSettings struct {

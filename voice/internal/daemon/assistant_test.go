@@ -2,11 +2,20 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"voice/internal/assistant"
+	"voice/internal/judge"
+	"voice/internal/spotifyapi"
 )
 
 type fakeAssistant struct {
@@ -129,5 +138,107 @@ func TestAssistantActionValid(t *testing.T) {
 	defer srv.Close()
 	if r := post(t, srv.URL+"/api/words/x", `{"action":"assistant"}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
+	}
+}
+
+func TestAssistantSettingsSaved(t *testing.T) {
+	d, _ := newAsst(t, &fakeAct{}, "")
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	r := post(t, srv.URL+"/api/settings",
+		`{"assistant":{"model":"gemini-3.6-flash","tts":"gemini","voice":" Puck ","city":"  Санкт-Петербург "}}`)
+	if r.StatusCode != 200 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	want := AssistantSettings{Model: "gemini-3.6-flash", TTS: "gemini", Voice: "Puck", City: "Санкт-Петербург"}
+	if got := d.state().Assistant.Settings; got != want {
+		t.Fatalf("state %+v", got)
+	}
+	if got := d.AssistantSettings(); got != want {
+		t.Fatalf("AssistantSettings %+v", got)
+	}
+	b, err := os.ReadFile(d.settingsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved Settings
+	if err := json.Unmarshal(b, &saved); err != nil || saved.Assistant != want {
+		t.Fatalf("settings.json %+v %v", saved.Assistant, err)
+	}
+	// A partial update keeps the rest; "" is Piper and the judge's model.
+	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"tts":"","model":""}}`); r.StatusCode != 200 {
+		t.Fatalf("status %d", r.StatusCode)
+	}
+	want = AssistantSettings{TTS: "piper", Voice: "Puck", City: "Санкт-Петербург"}
+	if got := d.AssistantSettings(); got != want {
+		t.Fatalf("after partial %+v", got)
+	}
+}
+
+func TestAssistantSettingsDefaultPiper(t *testing.T) {
+	d, _ := newAsst(t, &fakeAct{}, "")
+	if got := d.AssistantSettings(); got.TTS != "piper" {
+		t.Fatalf("default %+v", got)
+	}
+}
+
+func TestAssistantSettingsRejectBadModel(t *testing.T) {
+	d, _ := newAsst(t, &fakeAct{}, "")
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	for _, body := range []string{
+		`{"assistant":{"model":"Gemini Pro!"}}`,
+		`{"assistant":{"tts":"espeak"}}`,
+		`{"assistant":{"voice":"` + strings.Repeat("я", 65) + `"}}`,
+		`{"assistant":{"city":"` + strings.Repeat("я", 65) + `"}}`,
+		`{"assistant":{"model":"gemini-3.6-flash","tts":"espeak"}}`,
+	} {
+		if r := post(t, srv.URL+"/api/settings", body); r.StatusCode != 400 {
+			t.Fatalf("%s: status %d", body, r.StatusCode)
+		}
+	}
+	if got := d.AssistantSettings(); got != (AssistantSettings{TTS: "piper"}) {
+		t.Fatalf("changed: %+v", got)
+	}
+	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"city":"`+strings.Repeat("я", 64)+`"}}`); r.StatusCode != 200 {
+		t.Fatalf("64 runes: status %d", r.StatusCode)
+	}
+}
+
+func TestStateHidesSecrets(t *testing.T) {
+	const key, token = "AIzaFAKE-gemini-key-123", "FAKE-refresh-token-456"
+	d, _ := newAsst(t, &fakeAct{}, "")
+	tokFile := filepath.Join(t.TempDir(), "spotify.json")
+	os.WriteFile(tokFile, []byte(`{"client_id":"cid","refresh_token":"`+token+`"}`), 0o600)
+	sp := spotifyapi.New(tokFile, "")
+	d.opt.Judge, d.opt.JudgeModel = judge.New(key), judge.DefaultModel
+	d.opt.SpotifyLinked = sp.Linked
+	d.opt.AssistantStatus = func() any {
+		return assistant.Status{State: "speaking", LastReply: "Сейчас 12:00", At: time.Unix(0, 0)}
+	}
+	srv := httptest.NewServer(d.Handler())
+	defer srv.Close()
+	r, err := http.Get(srv.URL + "/api/state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(r.Body)
+	r.Body.Close()
+	s := string(b)
+	if strings.Contains(s, key) || strings.Contains(s, token) {
+		t.Fatalf("secret in state: %s", s)
+	}
+	for _, want := range []string{`"spotify_linked":true`, `"state":"speaking"`, `"last_reply":"Сейчас 12:00"`, `"available":true`} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %s in %s", want, s)
+		}
+	}
+}
+
+func TestStateWithoutAssistant(t *testing.T) {
+	d, _ := newTest(t, &fakeAct{}, "", false)
+	a := d.state().Assistant
+	if a.Available || a.Status != nil || a.SpotifyLinked {
+		t.Fatalf("view %+v", a)
 	}
 }

@@ -64,9 +64,11 @@ type Deps struct {
 
 // Status is the session's state for the panel.
 type Status struct {
-	State                           string // idle|listening|thinking|speaking|followup
-	LastHeard, LastReply, LastError string // LastHeard: the tools run; there is no transcript
-	At                              time.Time
+	State     string    `json:"state"`      // idle|listening|thinking|speaking|followup
+	LastHeard string    `json:"last_heard"` // the tools run; there is no transcript
+	LastReply string    `json:"last_reply"`
+	LastError string    `json:"last_error"`
+	At        time.Time `json:"at"`
 }
 
 // Session is the assistant's state machine. Each Wake starts a run on its

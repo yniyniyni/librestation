@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"voice/internal/judge"
 	"voice/internal/kws"
@@ -53,12 +55,22 @@ type stateView struct {
 		Error string  `json:"error,omitempty"`
 		Level float64 `json:"level"`
 	} `json:"audio"`
-	Words    []wordView   `json:"words"`
-	Hits     []Hit        `json:"hits"`
-	Enroll   *enrollView  `json:"enroll"`
-	Train    trainState   `json:"train"`
-	Judge    judgeView    `json:"judge"`
-	Settings settingsView `json:"settings"`
+	Words     []wordView    `json:"words"`
+	Hits      []Hit         `json:"hits"`
+	Enroll    *enrollView   `json:"enroll"`
+	Train     trainState    `json:"train"`
+	Judge     judgeView     `json:"judge"`
+	Settings  settingsView  `json:"settings"`
+	Assistant assistantView `json:"assistant"`
+}
+
+// assistantView is the assistant card: no keys or tokens, only state.
+type assistantView struct {
+	Available     bool              `json:"available"` // the session is built (a Gemini key is present)
+	Status        any               `json:"status"`
+	SpotifyLinked bool              `json:"spotify_linked"`
+	Settings      AssistantSettings `json:"settings"`
+	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's -judge-model
 }
 
 // settingsView is the part of Settings the hits card edits.
@@ -106,7 +118,73 @@ func (d *Daemon) state() stateView {
 		v.Enroll = ev
 	}
 	v.Train = d.train
+	v.Assistant = d.assistantViewLocked()
 	return v
+}
+
+// assistantViewLocked fills the assistant card; caller holds d.mu. The
+// callbacks return at once (they read cached values).
+func (d *Daemon) assistantViewLocked() assistantView {
+	v := assistantView{Available: d.opt.Assistant != nil, Settings: d.settings.Assistant,
+		DefaultModel: d.opt.JudgeModel}
+	if v.Settings.TTS == "" {
+		v.Settings.TTS = "piper"
+	}
+	if v.DefaultModel == "" {
+		v.DefaultModel = judge.DefaultModel
+	}
+	if f := d.opt.AssistantStatus; f != nil {
+		v.Status = f()
+	}
+	if f := d.opt.SpotifyLinked; f != nil {
+		v.SpotifyLinked = f()
+	}
+	return v
+}
+
+// assistantPatch is a partial update of AssistantSettings from the panel.
+type assistantPatch struct {
+	Model *string `json:"model"`
+	TTS   *string `json:"tts"`
+	Voice *string `json:"voice"`
+	City  *string `json:"city"`
+}
+
+// apply validates the patch and applies it to s; s is unchanged on error.
+func (p *assistantPatch) apply(s *AssistantSettings) error {
+	n := *s
+	if m := p.Model; m != nil {
+		if *m != "" && !judge.ValidModel(*m) {
+			return fmt.Errorf("неверное имя модели %q", *m)
+		}
+		n.Model = *m
+	}
+	if t := p.TTS; t != nil {
+		switch *t {
+		case "", "piper":
+			n.TTS = "piper"
+		case "gemini":
+			n.TTS = "gemini"
+		default:
+			return fmt.Errorf("неизвестный голосовой движок %q", *t)
+		}
+	}
+	for _, f := range []struct {
+		in   *string
+		out  *string
+		what string
+	}{{p.Voice, &n.Voice, "голос"}, {p.City, &n.City, "город"}} {
+		if f.in == nil {
+			continue
+		}
+		v := strings.TrimSpace(*f.in)
+		if utf8.RuneCountInString(v) > maxAssistantText {
+			return fmt.Errorf("%s длиннее %d символов", f.what, maxAssistantText)
+		}
+		*f.out = v
+	}
+	*s = n
+	return nil
 }
 
 // Handler serves the UI and the JSON API.
@@ -233,9 +311,10 @@ func (d *Daemon) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Judge         *bool   `json:"judge"`
-			JudgeModel    *string `json:"judge_model"`
-			AutoFalseUndo *bool   `json:"auto_false_undo"`
+			Judge         *bool           `json:"judge"`
+			JudgeModel    *string         `json:"judge_model"`
+			AutoFalseUndo *bool           `json:"auto_false_undo"`
+			Assistant     *assistantPatch `json:"assistant"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
@@ -243,6 +322,13 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
+		asst := d.settings.Assistant
+		if a := req.Assistant; a != nil {
+			if err := a.apply(&asst); err != nil {
+				httpErr(w, err)
+				return
+			}
+		}
 		if req.Judge != nil {
 			d.settings.JudgeOff = !*req.Judge
 		}
@@ -256,6 +342,7 @@ func (d *Daemon) Handler() http.Handler {
 		if req.AutoFalseUndo != nil {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo
 		}
+		d.settings.Assistant = asst
 		if err := d.saveSettings(); err != nil {
 			httpErr(w, err)
 			return

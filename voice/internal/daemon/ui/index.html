@@ -8,6 +8,7 @@
   :root { --bg:#f4f2fb; --card:#fff; --fg:#1d1b26; --muted:#6c6880; --accent:#7a55ff; --ok:#1f9d55; --bad:#d64545; --line:#e4e0f2; }
   @media (prefers-color-scheme: dark) { :root { --bg:#14131a; --card:#1e1c27; --fg:#ece9f6; --muted:#9a95ad; --line:#2f2c3b; } }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg); }
   main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
@@ -129,6 +130,23 @@
     <div class="row" style="margin-top:10px"><button id="ledai">Показать режим ИИ</button></div>
   </div>
 
+  <div class="card" id="asstcard">
+    <div class="row">
+      <div class="grow"><h2>Ассистент</h2><div class="muted">Слово с действием «ассистент» — и спросите что угодно: погоду, время, музыку.</div></div>
+      <span class="pill" id="asstpill"><span id="asstdot" class="dot"></span><span id="asststate"></span></span>
+    </div>
+    <div class="stats" id="asstoff" hidden>нет ключа Gemini — ассистент выключен</div>
+    <div id="asston">
+      <div class="stats" style="margin:2px 0 6px">Spotify: <span id="asstspotify"></span></div>
+      <div class="row stats" style="margin:4px 0"><span>модель</span> <select id="asstmodel"></select></div>
+      <div class="row stats" style="margin:4px 0"><span>озвучка</span>
+        <select id="assttts"><option value="piper">Piper — на колонке</option><option value="gemini">Gemini — живее, через интернет</option></select></div>
+      <div class="row stats" id="asstvoicerow" style="margin:4px 0"><span>голос Gemini</span> <input type="text" id="asstvoice" maxlength="64" placeholder="Kore"></div>
+      <div class="row stats" style="margin:4px 0"><span>город для погоды</span> <input type="text" id="asstcity" maxlength="64" placeholder="Москва"></div>
+      <div class="stats" id="asstlast" style="margin-top:8px"></div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Последние срабатывания</h2>
     <label class="switch stats"><input type="checkbox" id="judge"> проверять срабатывания через Gemini</label>
@@ -247,6 +265,39 @@ function renderHits(s) {
     <td>${hitVerdict(h)}</td></tr>`).join("");
 }
 
+const ASST_STATES = { idle: "ждёт", listening: "слушает", thinking: "думает", speaking: "говорит", followup: "ждёт продолжения" };
+function renderAssistant(s) {
+  const a = s.assistant;
+  $("asstoff").hidden = a.available;
+  $("asston").hidden = !a.available;
+  $("asstpill").hidden = !a.available;
+  if (!a.available) return;
+  const st = a.status || {};
+  $("asstdot").className = "dot" + (st.state && st.state !== "idle" ? " on" : "");
+  $("asststate").textContent = ASST_STATES[st.state] || st.state || "";
+  $("asstspotify").textContent = a.spotify_linked ? "привязан" : "не привязан — запустите ./setup";
+  const sel = $("asstmodel");
+  const ids = s.judge.models.map(m => m.id);
+  if (a.settings.model && !ids.includes(a.settings.model)) ids.push(a.settings.model);
+  const opts = `<option value="">по умолчанию (${esc(a.default_model)})</option>` + ids.map(id => {
+    const m = s.judge.models.find(x => x.id === id);
+    return `<option value="${esc(id)}">${esc(id)}${m ? " — " + esc(m.note) : ""}</option>`;
+  }).join("");
+  if (document.activeElement !== sel && sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  if (document.activeElement !== sel) sel.value = a.settings.model || "";
+  if (document.activeElement !== $("assttts")) $("assttts").value = a.settings.tts;
+  $("asstvoicerow").hidden = a.settings.tts !== "gemini";
+  if (document.activeElement !== $("asstvoice")) $("asstvoice").value = a.settings.voice || "";
+  if (document.activeElement !== $("asstcity")) $("asstcity").value = a.settings.city || "";
+  const last = [];
+  if (st.last_heard) last.push(`<div>инструменты: ${esc(st.last_heard)}</div>`);
+  if (st.last_reply) last.push(`<div>ответ: «${esc(st.last_reply)}»</div>`);
+  if (st.last_error) last.push(`<div class="msg bad">ошибка: ${esc(st.last_error)}</div>`);
+  if (last.length && st.at) last.unshift(`<div>${new Date(st.at).toLocaleTimeString()}</div>`);
+  const html = last.join("") || "запросов пока не было";
+  if ($("asstlast").innerHTML !== html) $("asstlast").innerHTML = html;
+}
+
 function renderEnroll(s) {
   const e = s.enroll;
   $("wizard").hidden = !e;
@@ -340,7 +391,7 @@ async function refresh() {
     $("adot").className = "dot" + (s.audio.ok ? " on" : "");
     $("atext").textContent = s.audio.ok ? "звук есть" : "нет звука";
     $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
-    renderWords(s); renderHits(s); renderEnroll(s); renderTrain(s);
+    renderWords(s); renderHits(s); renderAssistant(s); renderEnroll(s); renderTrain(s);
     const v = await api("GET", "/api/volume");
     $("volnow").textContent = v.volume + "%";
     if (document.activeElement !== $("knobstep")) $("knobstep").value = String(v.knob_step);
@@ -400,6 +451,10 @@ document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (t.id === "judge") run(null, async () => { await api("POST", "/api/settings", { judge: t.checked }); t.blur(); });
   if (t.id === "judgemodel") run(null, async () => { await api("POST", "/api/settings", { judge_model: t.value }); t.blur(); });
+  if (t.id === "asstmodel") run(null, async () => { await api("POST", "/api/settings", { assistant: { model: t.value } }); t.blur(); });
+  if (t.id === "assttts") run(null, async () => { await api("POST", "/api/settings", { assistant: { tts: t.value } }); t.blur(); });
+  if (t.id === "asstvoice") run(null, async () => { await api("POST", "/api/settings", { assistant: { voice: t.value } }); t.blur(); });
+  if (t.id === "asstcity") run(null, async () => { await api("POST", "/api/settings", { assistant: { city: t.value } }); t.blur(); });
   if (t.id === "autoundo") run(null, async () => { await api("POST", "/api/settings", { auto_false_undo: t.checked }); t.blur(); });
   if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
   if (t.dataset.action !== undefined) run(null, async () => { await api("POST", "/api/words/" + t.dataset.action, { action: t.value || "none" }); t.blur(); });
