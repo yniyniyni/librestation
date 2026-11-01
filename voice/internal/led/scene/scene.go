@@ -3,6 +3,7 @@ package scene
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -68,6 +69,8 @@ type Assets struct {
 const (
 	volumeHold  = 1500 * time.Millisecond
 	commandHold = time.Second
+	// AIErrorHold is how long the AI error state shows before it ends.
+	AIErrorHold = 1500 * time.Millisecond
 	defaultDT   = 40 * time.Millisecond
 )
 
@@ -88,6 +91,7 @@ type Scene struct {
 	set    Settings
 
 	ai        bool
+	aiState   string // listening, thinking, speaking, error
 	aiStart   time.Time
 	playing   bool
 	playStart time.Time
@@ -139,14 +143,18 @@ func (s *Scene) Audio(level float64, bands [12]float64) {
 	s.mu.Unlock()
 }
 
-// AI switches the assistant layer. The scene never times it out.
-func (s *Scene) AI(on bool) {
+// AI switches the assistant layer and its state: "listening" (also ""),
+// "thinking", "speaking" or "error". Only the error state times itself out.
+func (s *Scene) AI(on bool, state string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if on && !s.ai {
+	if state == "" {
+		state = "listening"
+	}
+	if on && (!s.ai || state != s.aiState) {
 		s.aiStart = s.now()
 	}
-	s.ai = on
+	s.ai, s.aiState = on, state
 }
 
 // Playing switches the music layer.
@@ -202,17 +210,50 @@ func (s *Scene) Frame() (anim.Screen, anim.Ring) {
 	switch {
 	case s.ai:
 		t := now.Sub(s.aiStart)
+		if s.aiState == "error" && t >= AIErrorHold {
+			s.ai = false
+			break
+		}
 		var scr anim.Screen
 		if s.set.AIScreen == "eq" {
 			scr = anim.AIEq(s.level, t)
 		} else {
 			scr = anim.AIDots(s.level, t)
 		}
-		return scr, anim.AIRing(s.set.AIRing, t)
-	case s.playing:
+		return scr, s.aiRing(t)
+	}
+	if s.playing {
 		return s.musicScreen(now, dt), anim.Ring{}
 	}
 	return anim.Clock(s.font, now, 3), anim.Ring{}
+}
+
+// aiRing draws the ring for the current assistant state; t is the time
+// since the state began.
+func (s *Scene) aiRing(t time.Duration) anim.Ring {
+	ring := anim.AIRing(s.set.AIRing, t)
+	switch s.aiState {
+	case "thinking": // the listening ring, one revolution per second
+		var r anim.Ring
+		k := int(t.Seconds()*float64(len(r))) % len(r)
+		for i := range r {
+			r[(i+k)%len(r)] = ring[i]
+		}
+		return r
+	case "speaking": // brightness follows the level
+		g := 0.25 + 0.75*math.Max(0, math.Min(1, s.level))
+		for i, c := range ring {
+			ring[i] = asset.RGB{R: uint8(float64(c.R) * g), G: uint8(float64(c.G) * g), B: uint8(float64(c.B) * g)}
+		}
+	case "error": // red blink, 4 Hz
+		ring = anim.Ring{}
+		if int(t/(125*time.Millisecond))%2 == 0 {
+			for i := range ring {
+				ring[i] = asset.RGB{R: 255}
+			}
+		}
+	}
+	return ring
 }
 
 func (s *Scene) volumeFrame(t time.Duration) (anim.Screen, anim.Ring) {

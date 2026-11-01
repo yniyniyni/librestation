@@ -1,0 +1,152 @@
+package daemon
+
+import (
+	"log"
+	"math"
+	"slices"
+	"time"
+
+	"voice/internal/kws"
+	"voice/internal/ycmd"
+)
+
+// Yandex's quick commands: its stock spotter listens on channel 0 of the raw
+// capture and its hits run playback commands, but only while that cannot be
+// a request to the assistant or a stray word in a quiet room.
+
+// playWindow: "продолжи" resumes the music only this soon after it last
+// played or after voiced started.
+const playWindow = 15 * time.Minute
+
+// hushGrace: a stop word this soon after the reply stopped still hushes. The
+// barge-in cuts the reply 150 ms into the word, before the model has heard it.
+const hushGrace = 1500 * time.Millisecond
+
+// quickCommand is what one of the model's commands does; group is the
+// panel's switch for it.
+type quickCommand struct{ action, group string }
+
+// quickCommands are the commands used; the model's others are ignored.
+var quickCommands = map[string]quickCommand{
+	"стоп":      {"pause", "pause"},
+	"хватит":    {"pause", "pause"},
+	"пауза":     {"pause", "pause"},
+	"дальше":    {"next", "next"},
+	"следующий": {"next", "next"},
+	"назад":     {"prev", "prev"},
+	"громче":    {"louder", "volume"},
+	"тише":      {"quieter", "volume"},
+	"продолжи":  {"play", "play"},
+}
+
+// quickGroups are the panel's switches in display order, with the words
+// each one covers.
+var quickGroups = []struct{ id, words string }{
+	{"pause", "стоп, хватит, пауза"},
+	{"next", "дальше, следующий"},
+	{"prev", "назад"},
+	{"volume", "громче, тише"},
+	{"play", "продолжи"},
+}
+
+// spotter is the Yandex recogniser as the daemon uses it (*ycmd.Spotter).
+type spotter interface {
+	Push(pcm []float32, fire func(cmd string, conf float64))
+}
+
+// LiveGain scales channel 0 (at its own level) for the assistant's Live
+// session. On the device user speech peaks at p99 about -22...-24 dBFS at
+// x1, which is too quiet for the model's voice detection; x2 is enough.
+const LiveGain = 2
+
+// spotCommands takes one raw capture block's channel 0 at 16 kHz, once, and
+// shares it: the Yandex spotter (when the model is loaded) and the
+// assistant's Live session (when there is one). It runs on the audio
+// goroutine without d.mu.
+func (d *Daemon) spotCommands(block []int16) {
+	asst := d.opt.Assistant
+	if d.spot == nil && asst == nil {
+		return
+	}
+	if d.yin == nil {
+		d.yin = ycmd.NewInput()
+	}
+	pcm := d.yin.Process(block)
+	// Channel 0 at its own level (like our words' clips) is the spotter's
+	// input divided by InputGain.
+	level := func(gain float64) []int16 {
+		out := make([]int16, len(pcm))
+		for i, v := range pcm {
+			out[i] = int16(max(min(math.Round(float64(v)/ycmd.InputGain*gain), math.MaxInt16), math.MinInt16))
+		}
+		return out
+	}
+	if d.spot != nil {
+		clip := level(1)
+		d.mu.Lock()
+		d.yring.write(clip)
+		d.mu.Unlock()
+		d.spot.Push(pcm, func(cmd string, conf float64) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if d.paused == 0 {
+				d.onCommand(cmd, conf)
+			}
+		})
+	}
+	if asst != nil {
+		asst.LiveAudio(level(LiveGain))
+	}
+}
+
+// onCommand records a Yandex command and runs it when the situation allows;
+// caller holds d.mu.
+func (d *Daemon) onCommand(cmd string, conf float64) {
+	q, ok := quickCommands[cmd]
+	if !ok || d.settings.Quick.Off || d.settings.Quick.Disabled[q.group] {
+		return
+	}
+	now := d.now()
+	playing := d.playback == "playing"
+	h := &Hit{Word: cmd, Name: cmd, Score: float32(conf), At: now, Source: "yandex", Action: q.action,
+		volBefore: d.volume, Playback: playing}
+	h.audio = d.yring.last(hitSecs * kws.SampleRate)
+	state := "idle"
+	var spoke bool // the reply stopped just now, cut off by this very word
+	if a := d.opt.Assistant; a != nil {
+		state = a.State()
+		spoke = state != "idle" && now.Sub(a.SpokeAt()) <= hushGrace
+	}
+	var action string
+	switch {
+	case q.group == "pause" && (state == "speaking" || spoke):
+		h.Action, action = "hush", "hush"
+	case state != "idle":
+		h.Debounced = true // a request or the reply: not a command
+	case playing && q.action == "play":
+		h.Debounced = true // already playing
+	case playing:
+		action = q.action
+	case q.action == "play" && (now.Sub(d.lastPlaying) <= playWindow || now.Sub(d.started) <= playWindow):
+		action = "play" // Spotify resumes where it was
+	}
+	if action != "" && !d.settings.DryRun {
+		d.actLocked(h, action)
+	}
+	d.addHitLocked(h)
+	d.judgeLaterLocked(h)
+	log.Printf("yandex command %q conf %.3f state %s action %q fired %v debounced %v",
+		cmd, conf, state, action, h.Fired, h.Debounced)
+}
+
+// MissingStockCommands lists the stock command names m does not have; those
+// quick commands never fire.
+func MissingStockCommands(m *ycmd.Model) []string {
+	var out []string
+	for _, n := range stockCommandNames {
+		if !slices.ContainsFunc(m.Commands, func(c ycmd.Command) bool { return c.Name == n }) {
+			out = append(out, n)
+		}
+	}
+	return out
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	iofs "io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"voice/internal/led/proto"
 	"voice/internal/soloist"
 	"voice/internal/volume"
+	"voice/internal/ycmd"
 )
 
 func cmdRun(args []string) error {
@@ -29,6 +31,8 @@ func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var opt daemon.Options
 	var micCmd, hwCmd, gainFile, knob, ledSock, leddURL, judgeKey, judgeModel string
+	var ac assistantConfig
+	var ycmdDir string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
 	fs.StringVar(&micCmd, "mic-cmd", "sh /data/local/tmp/voice/mic.sh", "mic capture helper command")
 	fs.StringVar(&opt.Soloist, "soloist", "ws://127.0.0.1:9771", "Soloist WebSocket URL")
@@ -41,17 +45,45 @@ func cmdRun(args []string) error {
 	fs.StringVar(&leddURL, "ledd", "http://127.0.0.1:8781", "ledd HTTP API behind /api/led")
 	fs.StringVar(&judgeKey, "judge-key", "/data/local/tmp/voice/gemini.key", "Gemini API key file; missing = hits are not judged")
 	fs.StringVar(&judgeModel, "judge-model", judge.DefaultModel, "Gemini model that judges hits")
+	fs.StringVar(&ac.spotifyToken, "spotify-token", "/data/local/tmp/voice/spotify.json", "Spotify refresh token file written by setup")
+	fs.StringVar(&ac.spotifyDevice, "spotify-device", "", "this speaker's Spotify Connect name; empty = the active device")
+	fs.StringVar(&ac.speakerCmd, "speaker-cmd", "/data/local/tmp/soloist/aaudio_pipe 24000", "helper that plays replies (float32 stereo on stdin)")
+	fs.StringVar(&ac.liveModel, "live-model", "gemini-3.8-live", "Gemini Live audio model")
+	fs.StringVar(&ac.piperCmd, "piper-cmd", "sh /data/local/tmp/soloist/chroot.sh /opt/piper/piper --model /opt/piper/voice.onnx --json-input", "resident Piper command")
+	fs.StringVar(&ac.piperOut, "piper-out", "/data/local/tmp/soloist/rootfs/tmp/tts", "where Piper writes, as voiced sees it (inside the chroot's rootfs)")
+	fs.StringVar(&ac.sounds, "sounds", "/data/local/tmp/voice/sounds", "stock phrases <name>.wav")
+	fs.StringVar(&ycmdDir, "ycmd-dir", "/data/local/tmp/voice/yandex/command", "Yandex quick-command model extracted from the firmware by setup")
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	opt.MicCmd = strings.Fields(micCmd)
 	useAndroidNet()
-	if key, err := judge.ReadKey(judgeKey); err != nil {
-		log.Printf("judge: %v; hits are not judged", err)
+	key, err := judge.ReadKey(judgeKey)
+	if err != nil {
+		log.Printf("judge: %v; hits are not judged, no assistant", err)
+		key = ""
 	} else if key != "" {
 		jc := judge.New(key)
 		jc.Model = judgeModel
 		opt.Judge, opt.JudgeModel = jc, judgeModel
 		log.Printf("judge: hits are labelled by %s", judgeModel)
+	}
+
+	// A missing or broken model only turns quick commands off.
+	if m, err := ycmd.Load(ycmdDir); err != nil {
+		opt.CommandsErr = "не удалось загрузить модель: " + err.Error()
+		if errors.Is(err, iofs.ErrNotExist) {
+			opt.CommandsErr = "модель не найдена — запусти ./setup"
+		}
+		log.Printf("ycmd: %v; quick commands are off", err)
+	} else {
+		opt.Commands = m
+		log.Printf("ycmd: model %s", m.Version)
+		if m.Version != ycmd.TestedVersion {
+			log.Printf("ycmd: warning: model %q is not the tested %q", m.Version, ycmd.TestedVersion)
+		}
+		if miss := daemon.MissingStockCommands(m); len(miss) > 0 {
+			log.Printf("ycmd: в модели нет команд %s — они не сработают", strings.Join(miss, ", "))
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -60,8 +92,10 @@ func cmdRun(args []string) error {
 	// Soloist's volume is the master (see package volume); the amplifier
 	// follows it and aaudio_pipe undoes Soloist's own attenuation.
 	out := newOutput(strings.Fields(hwCmd), gainFile)
+	var ledSend func(proto.Event)
 	if ledSock != "" {
 		sender := proto.NewSender(ledSock)
+		ledSend = sender.Send
 		out.led = sender.Send
 		opt.OnLED = sender.Send
 	}
@@ -96,6 +130,30 @@ func cmdRun(args []string) error {
 		go readKnob(ctx, knob, vol.Key)
 	}
 	opt.Actuator = actuator{sol, vol}
+
+	// The session reads the panel's settings on every turn.
+	settings := func() daemon.AssistantSettings {
+		if d := dmn.Load(); d != nil {
+			return d.AssistantSettings()
+		}
+		return daemon.AssistantSettings{}
+	}
+	if key == "" {
+		log.Printf("assistant: no Gemini key, off")
+	} else {
+		model := func() string {
+			if d := dmn.Load(); d != nil {
+				return d.AssistantModel()
+			}
+			return judgeModel
+		}
+		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, opt.Actuator, vol, out, ledSend)
+		defer a.speaker.Close()
+		opt.Assistant = a.session
+		opt.AssistantStatus = func() any { return a.session.Status() }
+		opt.SpotifyLinked = a.link.Linked
+		opt.PiperMissing = a.piperDown.Load
+	}
 
 	d, err := daemon.New(opt)
 	if err != nil {

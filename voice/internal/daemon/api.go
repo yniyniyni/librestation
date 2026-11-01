@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"voice/internal/judge"
 	"voice/internal/kws"
@@ -53,12 +55,79 @@ type stateView struct {
 		Error string  `json:"error,omitempty"`
 		Level float64 `json:"level"`
 	} `json:"audio"`
-	Words    []wordView   `json:"words"`
-	Hits     []Hit        `json:"hits"`
-	Enroll   *enrollView  `json:"enroll"`
-	Train    trainState   `json:"train"`
-	Judge    judgeView    `json:"judge"`
-	Settings settingsView `json:"settings"`
+	Words     []wordView    `json:"words"`
+	Hits      []Hit         `json:"hits"`
+	Enroll    *enrollView   `json:"enroll"`
+	Train     trainState    `json:"train"`
+	Judge     judgeView     `json:"judge"`
+	Settings  settingsView  `json:"settings"`
+	Assistant assistantView `json:"assistant"`
+	Quick     quickView     `json:"quick"`
+}
+
+// quickView is the quick-commands card.
+type quickView struct {
+	Available bool         `json:"available"` // Yandex's model is loaded
+	Error     string       `json:"error,omitempty"`
+	Off       bool         `json:"off"`
+	Groups    []quickGroup `json:"groups"`
+}
+
+type quickGroup struct {
+	ID    string `json:"id"`
+	Words string `json:"words"`
+	On    bool   `json:"on"`
+}
+
+// quickPatch is a partial update of QuickSettings from the panel: Off, and/or
+// one group switched by Group and On.
+type quickPatch struct {
+	Off   *bool   `json:"off"`
+	Group *string `json:"group"`
+	On    *bool   `json:"on"`
+}
+
+func (p *quickPatch) apply(s *QuickSettings) error {
+	if p.Off != nil {
+		s.Off = *p.Off
+	}
+	if p.Group == nil && p.On == nil {
+		return nil
+	}
+	if p.Group == nil || p.On == nil {
+		return errors.New("для группы нужны group и on")
+	}
+	known := false
+	for _, g := range quickGroups {
+		known = known || g.id == *p.Group
+	}
+	if !known {
+		return fmt.Errorf("неизвестная группа %q", *p.Group)
+	}
+	disabled := maps.Clone(s.Disabled)
+	if *p.On {
+		delete(disabled, *p.Group)
+	} else {
+		if disabled == nil {
+			disabled = map[string]bool{}
+		}
+		disabled[*p.Group] = true
+	}
+	if len(disabled) == 0 {
+		disabled = nil
+	}
+	s.Disabled = disabled
+	return nil
+}
+
+// assistantView is the assistant card: no keys or tokens, only state.
+type assistantView struct {
+	Available     bool              `json:"available"` // the session is built (a Gemini key is present)
+	Status        any               `json:"status"`
+	SpotifyLinked *bool             `json:"spotify_linked"` // null until checked
+	PiperMissing  bool              `json:"piper_missing"`  // Piper did not start: replies use Gemini's voice
+	Settings      AssistantSettings `json:"settings"`
+	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's current model
 }
 
 // settingsView is the part of Settings the hits card edits.
@@ -106,7 +175,80 @@ func (d *Daemon) state() stateView {
 		v.Enroll = ev
 	}
 	v.Train = d.train
+	v.Assistant = d.assistantViewLocked()
+	v.Quick = quickView{Available: d.opt.Commands != nil, Error: d.opt.CommandsErr, Off: d.settings.Quick.Off,
+		Groups: make([]quickGroup, 0, len(quickGroups))}
+	for _, g := range quickGroups {
+		v.Quick.Groups = append(v.Quick.Groups, quickGroup{ID: g.id, Words: g.words, On: !d.settings.Quick.Disabled[g.id]})
+	}
 	return v
+}
+
+// assistantViewLocked fills the assistant card; caller holds d.mu. The
+// callbacks return at once (they read cached values).
+func (d *Daemon) assistantViewLocked() assistantView {
+	v := assistantView{Available: d.opt.Assistant != nil, Settings: d.settings.Assistant,
+		DefaultModel: d.assistantDefaultModelLocked()}
+	if v.Settings.TTS == "" {
+		v.Settings.TTS = "gemini"
+	}
+	if f := d.opt.AssistantStatus; f != nil {
+		v.Status = f()
+	}
+	if f := d.opt.SpotifyLinked; f != nil {
+		if linked, known := f(); known {
+			v.SpotifyLinked = &linked
+		}
+	}
+	if f := d.opt.PiperMissing; f != nil {
+		v.PiperMissing = f()
+	}
+	return v
+}
+
+// assistantPatch is a partial update of AssistantSettings from the panel.
+type assistantPatch struct {
+	Model *string `json:"model"`
+	TTS   *string `json:"tts"`
+	Voice *string `json:"voice"`
+	City  *string `json:"city"`
+}
+
+// apply validates the patch and applies it to s; s is unchanged on error.
+func (p *assistantPatch) apply(s *AssistantSettings) error {
+	n := *s
+	if m := p.Model; m != nil {
+		if *m != "" && !judge.ValidModel(*m) {
+			return fmt.Errorf("неверное имя модели %q", *m)
+		}
+		n.Model = *m
+	}
+	if t := p.TTS; t != nil {
+		switch *t {
+		case "piper":
+			n.TTS = "piper"
+		case "", "gemini":
+			n.TTS = "gemini"
+		default:
+			return fmt.Errorf("неизвестный голосовой движок %q", *t)
+		}
+	}
+	for _, f := range []struct {
+		in   *string
+		out  *string
+		what string
+	}{{p.Voice, &n.Voice, "голос"}, {p.City, &n.City, "город"}} {
+		if f.in == nil {
+			continue
+		}
+		v := strings.TrimSpace(*f.in)
+		if utf8.RuneCountInString(v) > maxAssistantText {
+			return fmt.Errorf("%s длиннее %d символов", f.what, maxAssistantText)
+		}
+		*f.out = v
+	}
+	*s = n
+	return nil
 }
 
 // Handler serves the UI and the JSON API.
@@ -170,15 +312,7 @@ func (d *Daemon) Handler() http.Handler {
 			httpErr(w, errors.New("bad id"))
 			return
 		}
-		d.mu.Lock()
-		delete(d.settings.Words, id)
-		d.saveSettings()
-		d.mu.Unlock()
-		if err := os.RemoveAll(d.wordDir(id)); err != nil {
-			httpErr(w, err)
-			return
-		}
-		if err := d.loadWords(); err != nil {
+		if err := d.removeWord(id); err != nil {
 			httpErr(w, err)
 			return
 		}
@@ -233,9 +367,11 @@ func (d *Daemon) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Judge         *bool   `json:"judge"`
-			JudgeModel    *string `json:"judge_model"`
-			AutoFalseUndo *bool   `json:"auto_false_undo"`
+			Judge         *bool           `json:"judge"`
+			JudgeModel    *string         `json:"judge_model"`
+			AutoFalseUndo *bool           `json:"auto_false_undo"`
+			Assistant     *assistantPatch `json:"assistant"`
+			Quick         *quickPatch     `json:"quick"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			httpErr(w, err)
@@ -243,6 +379,20 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		d.mu.Lock()
 		defer d.mu.Unlock()
+		asst := d.settings.Assistant
+		if a := req.Assistant; a != nil {
+			if err := a.apply(&asst); err != nil {
+				httpErr(w, err)
+				return
+			}
+		}
+		quick := d.settings.Quick
+		if q := req.Quick; q != nil {
+			if err := q.apply(&quick); err != nil {
+				httpErr(w, err)
+				return
+			}
+		}
 		if req.Judge != nil {
 			d.settings.JudgeOff = !*req.Judge
 		}
@@ -256,6 +406,8 @@ func (d *Daemon) Handler() http.Handler {
 		if req.AutoFalseUndo != nil {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo
 		}
+		d.settings.Assistant = asst
+		d.settings.Quick = quick
 		if err := d.saveSettings(); err != nil {
 			httpErr(w, err)
 			return

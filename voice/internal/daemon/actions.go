@@ -20,7 +20,7 @@ type Actuator interface {
 const VolumeStep = 5
 
 // actionNames is the fixed list of per-word actions; "" means none.
-var actionNames = []string{"pause", "play", "next", "prev", "louder", "quieter"}
+var actionNames = []string{"pause", "play", "next", "prev", "louder", "quieter", "assistant"}
 
 // normalizeAction maps "none" to "" and rejects unknown names.
 func normalizeAction(a string) (string, error) {

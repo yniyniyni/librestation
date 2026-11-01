@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"voice/internal/adb"
+	"voice/internal/ycmd"
 )
 
 // Paths on the speaker; the device-side scripts use the same defaults.
@@ -83,6 +84,8 @@ func steps() []step {
 			hint: "добавьте `" + startLine + "` в загрузочный скрипт вашего рута (от root)"},
 		{name: "Яндекс: голосовой стек io.sdk удалён", check: checkIOSDK, fix: fixIOSDK,
 			ask: "Удалить com.yandex.io.sdk? Он держит микрофон и рисует на кольце; обратимо: " + restoreIOSDK},
+		{name: "Быстрые команды Яндекса", optional: true, check: checkYcmd, fix: fixYcmd,
+			ask: "Достать модель быстрых команд из прошивки колонки?"},
 		{name: "Яндекс: лишние приложения удалены", optional: true, check: checkYandexApps, fix: fixYandexApps,
 			ask: "Удалить их? Проверено на Станции Макс: звук, сеть и команды работают; обратимо: " + restoreApp},
 		{name: "Старые файлы прежних версий", optional: true, check: checkLeftovers, fix: fixLeftovers,
@@ -95,6 +98,12 @@ func steps() []step {
 			hint: "смотрите лог: adb shell -tt 'mysudo -n tail -50 " + soloistDir + "/soloist.log'"},
 		{name: "Модель Gemini", optional: true, check: checkModel, fix: fixModel,
 			ask: "Выбрать модель?", update: "Выбрать другую модель Gemini?"},
+		{name: "Запасной голос Piper", optional: true, check: checkPiper, fix: fixPiper,
+			ask:  "Скачать Piper (запасной голос без интернета, около 90 МБ) и поставить в rootfs?",
+			hint: "нужны Piper и голос ru_RU-irina-medium в rootfs: /opt/piper/piper, voice.onnx, voice.onnx.json"},
+		{name: "Spotify Web API", optional: true, check: checkSpotify, fix: fixSpotify,
+			ask: "Привязать Spotify для ассистента?", update: "Привязать Spotify заново?"},
+		{name: "Ассистент", optional: true, check: checkAssistant},
 	}
 }
 
@@ -168,6 +177,9 @@ func checkSpace(e *env) (bool, string, error) {
 	need := int64(100)
 	if ok, _ := e.d.RootOK("test -d " + rootfs + "/usr"); !ok {
 		need = 1700
+	}
+	if ok, _ := e.d.RootOK("test -x " + rootfs + piperDir + "/piper"); !ok {
+		need += 100 // Piper and its voice
 	}
 	if mb < need {
 		return false, fmt.Sprintf("свободно %d МБ, нужно хотя бы %d", mb, need), nil
@@ -410,6 +422,94 @@ func fixIOSDK(e *env) error {
 	return err
 }
 
+// The stock quick-command model ships in the firmware; it is taken from the
+// user's own speaker and is not kept in the repository.
+const (
+	ycmdAPK = "/system/priv-app/ServicesIosdk/ServicesIosdk.apk"
+	ycmdDir = voiceDir + "/yandex/command"
+	// ycmdTmp is where the APK is unpacked: this busybox unzip has no -j, so
+	// the files come out under their paths in the archive.
+	ycmdTmp = voiceDir + "/yandex/.ycmd-tmp"
+)
+
+var ycmdFiles = []string{"acoustic_model.nnet", "flags.txt", "words.txt"}
+
+// loadYcmd checks on the host that the model in dir reads; tests replace it.
+var loadYcmd = func(dir string) error {
+	_, err := ycmd.Load(dir)
+	return err
+}
+
+// checkYcmd: the three files are on the speaker and the model reads (they
+// are pulled, about 700 KB, and loaded here as voiced would).
+func checkYcmd(e *env) (bool, string, error) {
+	var tests []string
+	for _, f := range ycmdFiles {
+		tests = append(tests, "test -s "+ycmdDir+"/"+f)
+	}
+	if ok, err := e.d.RootOK(strings.Join(tests, "\n")); !ok || err != nil {
+		return ok, "", err
+	}
+	tmp, err := os.MkdirTemp("", "ycmd")
+	if err != nil {
+		return false, "", err
+	}
+	defer os.RemoveAll(tmp)
+	for _, f := range ycmdFiles {
+		if err := e.d.Pull(ycmdDir+"/"+f, filepath.Join(tmp, f)); err != nil {
+			return false, "не удалось скачать модель с колонки: " + err.Error(), nil
+		}
+	}
+	if err := loadYcmd(tmp); err != nil {
+		return false, "модель не читается: " + err.Error(), nil
+	}
+	return true, "", nil
+}
+
+func fixYcmd(e *env) error {
+	have, err := e.d.RootOK("test -f " + ycmdAPK)
+	if err != nil {
+		return err
+	}
+	if !have {
+		return fmt.Errorf("в прошивке нет ServicesIosdk.apk — быстрые команды Яндекса недоступны")
+	}
+	// The speaker has no unzip of its own; busybox does, without -j. The temp
+	// dir is cleared before and after, whether or not unpacking worked.
+	// A failed step must not skip the cleanup, so the chain feeds rc (the script runs under set -e).
+	// This busybox extracts the matches, then dies on the APK's later records
+	// ("invalid zip magic", exit 1): unzip's status says nothing, the files do.
+	var mvs strings.Builder
+	for _, f := range ycmdFiles {
+		fmt.Fprintf(&mvs, " && mv %s/assets/quark/spotter_models/command/%s %s/", ycmdTmp, f, ycmdDir)
+	}
+	script := fmt.Sprintf(`rm -rf %[1]s
+mkdir -p %[1]s %[2]s
+rc=0
+{ /vendor/xbin/busybox unzip -o %[3]s 'assets/quark/spotter_models/command/*' -d %[1]s || true; }
+{ true%[4]s; } || rc=1
+rm -rf %[1]s
+chmod -R a+rX %[5]s/yandex
+[ $rc -eq 0 ]`, ycmdTmp, ycmdDir, ycmdAPK, mvs.String(), voiceDir)
+	if _, err := e.d.Root(script); err != nil {
+		return err
+	}
+	// An APK of another layout matches nothing and unzip still succeeds.
+	if ok, detail, err := checkYcmd(e); err != nil {
+		return err
+	} else if !ok && detail != "" {
+		return fmt.Errorf("%s — другая версия прошивки?", detail)
+	} else if !ok {
+		return fmt.Errorf("в APK нет модели быстрых команд (%s) — другая версия прошивки?", strings.Join(ycmdFiles, ", "))
+	}
+	// voiced reads the model at start, like the keys.
+	if up, _, _ := checkServices(e); up {
+		e.u.say("  Перезапускаю сервисы, чтобы подхватить модель…")
+		return fixServices(e)
+	}
+	return nil
+}
+
 // cacheLimitMB matches soloist-service.sh, which clears a bigger cache at
 // start; Soloist itself does not keep to its --cache-size.
 const cacheLimitMB = 400
@@ -564,10 +664,13 @@ func fixServices(e *env) error {
 	return nil // checked again by the caller
 }
 
+// panelPort is the web panel's port; tests point it at a fake.
+var panelPort = "8780"
+
 // panelState reads the web panel's state into v.
 func panelState(e *env, v any) error {
 	c := http.Client{Timeout: 5 * time.Second}
-	r, err := c.Get("http://" + e.host + ":8780/api/state")
+	r, err := c.Get("http://" + e.host + ":" + panelPort + "/api/state")
 	if err != nil {
 		return err
 	}

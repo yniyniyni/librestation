@@ -100,9 +100,19 @@ func handleEvent(sc *scene.Scene, a *api, e proto.Event) {
 	case "audio":
 		sc.Audio(e.Level, bands12(e.Bands))
 	case "ai":
-		a.setAI(e.On, 0)
+		// The error state ends itself in the scene; the timer keeps the API's
+		// state in step. Other states get a safety timeout in case voiced
+		// never sends the off.
+		timeout := aiSafetyTimeout
+		if e.A == "error" {
+			timeout = scene.AIErrorHold
+		}
+		a.setAI(e.On, e.A, timeout)
 	}
 }
+
+// aiSafetyTimeout turns an assistant state off that voiced left on.
+const aiSafetyTimeout = 60 * time.Second
 
 // loadAssets reads the optional stock animations; missing files are skipped.
 func loadAssets(dir string) scene.Assets {

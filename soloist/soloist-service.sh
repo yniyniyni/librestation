@@ -96,6 +96,6 @@ supervise soloist sh $S/chroot.sh /bin/sh -c \
 # LED daemon: clock, volume ring and carousel on the front panel
 supervise ledd $V/ledd -assets $V/assets -data $V/data -sock $V/ledd.sock &
 # voiced reaches Gemini through the same proxy (env runs it as is without one)
-supervise voiced env $PROXY_ENV $V/voiced run -data $V/data -mic-cmd "sh $V/mic.sh" -gain-file $S/gain -led-sock $V/ledd.sock -ledd http://127.0.0.1:8781 &
+supervise voiced env $PROXY_ENV $V/voiced run -data $V/data -mic-cmd "sh $V/mic.sh" -gain-file $S/gain -led-sock $V/ledd.sock -ledd http://127.0.0.1:8781 -spotify-device "$NAME" &
 
 wait
