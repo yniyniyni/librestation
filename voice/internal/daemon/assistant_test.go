@@ -29,8 +29,11 @@ type fakeAssistant struct {
 	live   [][]int16 // LiveAudio blocks
 	hushes int
 	state  string // "" = from busy
+	spoke  time.Time
 	noReq  func()
 }
+
+func (f *fakeAssistant) SpokeAt() time.Time { f.mu.Lock(); defer f.mu.Unlock(); return f.spoke }
 
 func (f *fakeAssistant) LiveAudio(p []int16) {
 	f.mu.Lock()

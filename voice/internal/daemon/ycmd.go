@@ -18,6 +18,10 @@ import (
 // played or after voiced started.
 const playWindow = 15 * time.Minute
 
+// hushGrace: a stop word this soon after the reply stopped still hushes. The
+// barge-in cuts the reply 150 ms into the word, before the model has heard it.
+const hushGrace = 1500 * time.Millisecond
+
 // quickCommand is what one of the model's commands does; group is the
 // panel's switch for it.
 type quickCommand struct{ action, group string }
@@ -108,12 +112,14 @@ func (d *Daemon) onCommand(cmd string, conf float64) {
 		volBefore: d.volume, Playback: playing}
 	h.audio = d.yring.last(hitSecs * kws.SampleRate)
 	state := "idle"
+	var spoke bool // the reply stopped just now, cut off by this very word
 	if a := d.opt.Assistant; a != nil {
 		state = a.State()
+		spoke = state != "idle" && now.Sub(a.SpokeAt()) <= hushGrace
 	}
 	var action string
 	switch {
-	case state == "speaking" && q.group == "pause":
+	case q.group == "pause" && (state == "speaking" || spoke):
 		h.Action, action = "hush", "hush"
 	case state != "idle":
 		h.Debounced = true // a request or the reply: not a command

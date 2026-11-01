@@ -90,6 +90,35 @@ func TestStopWhileSpeakingHushes(t *testing.T) {
 	}
 }
 
+// The barge-in cuts the reply 150 ms into «стоп», before the model hears it:
+// the word still hushes, and a later one is a request again.
+func TestStopRightAfterBargeInHushes(t *testing.T) {
+	d, f, a, clock, done := cmdTest(t)
+	a.setState("listening")
+	a.mu.Lock()
+	a.spoke = clock.Add(-hushGrace)
+	a.mu.Unlock()
+	say(d, "стоп")
+	<-done
+	if a.hushed() != 1 || len(f.got()) != 0 {
+		t.Fatalf("hushes %d, actuator %v", a.hushed(), f.got())
+	}
+	if h := lastHit(t, d); !h.Fired || h.Action != "hush" {
+		t.Fatalf("hit %+v", h)
+	}
+
+	d, f, a, clock, _ = cmdTest(t)
+	a.setState("listening")
+	a.mu.Lock()
+	a.spoke = clock.Add(-hushGrace - time.Millisecond)
+	a.mu.Unlock()
+	say(d, "стоп")
+	idle(t, f, a)
+	if h := lastHit(t, d); h.Fired || !h.Debounced {
+		t.Fatalf("late stop: hit %+v", h)
+	}
+}
+
 func TestNextWhileSpeakingIgnored(t *testing.T) {
 	d, f, a, _, _ := cmdTest(t)
 	a.setState("speaking")

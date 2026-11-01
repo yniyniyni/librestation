@@ -806,9 +806,15 @@ func TestHushWhileSpeaking(t *testing.T) {
 	g.untilListening()
 	g.say(g.utterance())
 	g.untilState("speaking")
+	if !g.s.SpokeAt().IsZero() {
+		t.Errorf("SpokeAt %v while speaking", g.s.SpokeAt())
+	}
 	g.s.Hush()
 	if st := g.s.State(); st != "idle" {
 		t.Errorf("state %s right after Hush, want idle", st)
+	}
+	if g.s.SpokeAt().IsZero() {
+		t.Error("SpokeAt not set when the reply stopped")
 	}
 	if g.s.Busy() {
 		t.Error("busy after Hush")

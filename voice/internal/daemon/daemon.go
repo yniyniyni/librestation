@@ -77,6 +77,8 @@ type Assistant interface {
 	Hush()
 	// State is idle|listening|thinking|speaking|followup.
 	State() string
+	// SpokeAt is when the reply last stopped playing.
+	SpokeAt() time.Time
 	// LiveAudio takes 16 kHz channel 0 of the raw capture (x LiveGain) for
 	// the Live session.
 	LiveAudio([]int16)

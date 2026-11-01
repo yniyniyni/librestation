@@ -85,6 +85,7 @@ type Status struct {
 	LastReply string    `json:"last_reply"`
 	LastError string    `json:"last_error"`
 	At        time.Time `json:"at"`
+	SpokeAt   time.Time `json:"-"` // when the reply last stopped playing
 }
 
 // Session is the assistant's state machine. Each Wake starts a run on its
@@ -263,6 +264,10 @@ func (s *Session) Hush() {
 
 // State is Status().State: idle|listening|thinking|speaking|followup.
 func (s *Session) State() string { return s.Status().State }
+
+// SpokeAt is when the reply last stopped playing: a barge-in, the end of the
+// reply or Hush.
+func (s *Session) SpokeAt() time.Time { return s.Status().SpokeAt }
 
 // Busy is true from Wake until the session is idle again.
 func (s *Session) Busy() bool { return s.State() != "idle" }
@@ -541,7 +546,11 @@ func (s *Session) set(gen int, state, led string) {
 }
 
 func (s *Session) setLocked(state string) {
-	s.st.State, s.st.At = state, s.d.Now()
+	now := s.d.Now()
+	if s.st.State == "speaking" && state != "speaking" {
+		s.st.SpokeAt = now
+	}
+	s.st.State, s.st.At = state, now
 }
 
 // idle ends the current run: the music comes back, the ring goes off and the
