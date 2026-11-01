@@ -78,6 +78,21 @@ echo "pushing to $dev"
 stage=$base/.librestation-stage
 root_shell "rm -rf $stage"
 adb_cmd shell "mkdir -p $stage/voice $stage/soloist $stage/sounds"
+
+# Generate javaenv.sh from the normal shell environment.
+# mysudo launches mic.sh/hwvol.sh with almost no env; app_process needs these.
+printf '%s\n' \
+  'echo "export BOOTCLASSPATH=\"$BOOTCLASSPATH\""' \
+  'echo "export ANDROID_ROOT=\"$ANDROID_ROOT\""' \
+  'echo "export ANDROID_DATA=\"$ANDROID_DATA\""' \
+  | adb_cmd shell "cat > $base/.gen-javaenv.sh"
+adb_cmd shell "sh $base/.gen-javaenv.sh > $stage/soloist/javaenv.sh"
+adb_cmd shell "rm -f $base/.gen-javaenv.sh"
+if ! adb_cmd shell "test -s $stage/soloist/javaenv.sh"; then
+    echo "error: javaenv.sh is empty (BOOTCLASSPATH not set in the shell?)" >&2
+    exit 1
+fi
+
 for f in voice/dist/voiced voice/dist/ledd voice/dist/mic.dex voice/dist/negatives.bin \
     voice/mic/mic.sh voice/mic/hwvol.sh; do
     adb_cmd push "$here/../$f" "$stage/voice/"
@@ -116,7 +131,8 @@ for f in $stage/voice/*; do mv -f \"\$f\" $voice_dir/; done
 for f in $stage/sounds/*; do if [ -f \"\$f\" ]; then mv -f \"\$f\" $voice_dir/sounds/; fi; done
 for f in $stage/soloist/*; do mv -f \"\$f\" $soloist_dir/; done
 rm -rf $stage"
-root_shell "chmod 755 $voice_dir/voiced $voice_dir/ledd $voice_dir/mic.sh $voice_dir/hwvol.sh $soloist_dir/soloist-service.sh $soloist_dir/setup-rootfs.sh $soloist_dir/chroot.sh $soloist_dir/start.sh $soloist_dir/stop.sh $soloist_dir/aaudio_pipe"
+root_shell "chmod 755 $voice_dir/voiced $voice_dir/ledd $voice_dir/mic.sh $voice_dir/hwvol.sh $soloist_dir/soloist-service.sh $soloist_dir/setup-rootfs.sh $soloist_dir/chroot.sh $soloist_dir/start.sh $soloist_dir/stop.sh $soloist_dir/aaudio_pipe
+chmod 644 $soloist_dir/javaenv.sh"
 
 # Stock LED assets (25x16 frames, fonts) are readable only as root.
 cat > "$here/dist/ledd-assets.sh" <<EOF2

@@ -66,6 +66,9 @@ func steps() []step {
 			hint: "освободите место на /data: rootfs занимает около 1,5 ГБ"},
 		{name: "Программы проекта на колонке", check: checkDeployed, fix: fixDeploy,
 			ask: "Собрать и залить voiced, ledd, aaudio_pipe и скрипты?", update: "Пересобрать и залить текущую версию?"},
+		{name: "Java-окружение для микрофона", check: checkJavaEnv, fix: fixJavaEnv,
+			ask:  "Сгенерировать javaenv.sh из окружения колонки?",
+			hint: "запустите voice/deploy.sh или создайте " + soloistDir + "/javaenv.sh с BOOTCLASSPATH, ANDROID_ROOT, ANDROID_DATA"},
 		{name: "Debian rootfs с PulseAudio", check: checkRootfs, fix: fixRootfs,
 			ask:  "Залить и распаковать rootfs (архив rootfs.tar.xz)?",
 			hint: "нужен архив Debian arm64 с PulseAudio: на работающей колонке его делает ./setup export-rootfs, см. README"},
@@ -191,7 +194,7 @@ func checkDeployed(e *env) (bool, string, error) {
 	ok, err := e.d.RootOK(strings.Join([]string{
 		"test -x " + voiceDir + "/voiced", "test -x " + voiceDir + "/ledd", "test -s " + voiceDir + "/mic.dex",
 		"test -x " + soloistDir + "/aaudio_pipe", "test -s " + soloistDir + "/soloist-service.sh",
-		"test -s " + soloistDir + "/setup-rootfs.sh"}, "\n"))
+		"test -s " + soloistDir + "/setup-rootfs.sh", "test -s " + soloistDir + "/javaenv.sh"}, "\n"))
 	return ok, "", err
 }
 
@@ -200,6 +203,59 @@ func fixDeploy(e *env) error {
 	cmd.Env = append(os.Environ(), "ADB_DEVICE="+e.d.Serial)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+func checkJavaEnv(e *env) (bool, string, error) {
+	ok, err := e.d.RootOK("test -s " + soloistDir + "/javaenv.sh")
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "нет " + soloistDir + "/javaenv.sh", nil
+	}
+	ok, err = e.d.RootOK(". " + soloistDir + "/javaenv.sh\n" +
+		`test -n "$BOOTCLASSPATH" && test -n "$ANDROID_ROOT" && test -n "$ANDROID_DATA"`)
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "javaenv.sh не задаёт BOOTCLASSPATH, ANDROID_ROOT или ANDROID_DATA", nil
+	}
+	ok, err = e.d.RootOK("test -s " + voiceDir + "/mic.dex")
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "нет mic.dex", nil
+	}
+	ok, err = e.d.RootOK("test -x /system/bin/app_process")
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "нет /system/bin/app_process", nil
+	}
+	return true, "", nil
+}
+
+func fixJavaEnv(e *env) error {
+	out, err := e.d.Shell(`printf 'export BOOTCLASSPATH="%s"\nexport ANDROID_ROOT="%s"\nexport ANDROID_DATA="%s"\n' "$BOOTCLASSPATH" "$ANDROID_ROOT" "$ANDROID_DATA"`)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать окружение: %w", err)
+	}
+	out = strings.TrimSpace(out)
+	if !strings.Contains(out, "BOOTCLASSPATH=") || strings.Contains(out, `BOOTCLASSPATH=""`) {
+		return fmt.Errorf("BOOTCLASSPATH не задан в окружении колонки")
+	}
+	tmp := adb.Tmp + "/.javaenv.sh"
+	if err := e.d.Write(tmp, []byte(out+"\n")); err != nil {
+		return err
+	}
+	_, err = e.d.Root(fmt.Sprintf("mv -f %s %s/javaenv.sh\nchmod 644 %s/javaenv.sh", tmp, soloistDir, soloistDir))
+	if err != nil {
+		e.d.Shell("rm -f " + tmp)
+	}
+	return err
 }
 
 func checkRootfs(e *env) (bool, string, error) {
