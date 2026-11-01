@@ -79,18 +79,38 @@ stage=$base/.librestation-stage
 root_shell "rm -rf $stage"
 adb_cmd shell "mkdir -p $stage/voice $stage/soloist $stage/sounds"
 
-# Generate javaenv.sh from the normal shell environment.
-# mysudo launches mic.sh/hwvol.sh with almost no env; app_process needs these.
-printf '%s\n' \
-  'echo "export BOOTCLASSPATH=\"$BOOTCLASSPATH\""' \
-  'echo "export ANDROID_ROOT=\"$ANDROID_ROOT\""' \
-  'echo "export ANDROID_DATA=\"$ANDROID_DATA\""' \
-  | adb_cmd shell "cat > $base/.gen-javaenv.sh"
-adb_cmd shell "sh $base/.gen-javaenv.sh > $stage/soloist/javaenv.sh"
-adb_cmd shell "rm -f $base/.gen-javaenv.sh"
-if ! adb_cmd shell "test -s $stage/soloist/javaenv.sh"; then
-    echo "error: javaenv.sh is empty (BOOTCLASSPATH not set in the shell?)" >&2
-    exit 1
+# javaenv.sh: mysudo starts mic.sh/hwvol.sh with almost no environment, but
+# app_process needs these from the normal adb shell. A valid file already on
+# the speaker is kept (it may be hand-made with more variables); set
+# REGEN_JAVAENV=1 to rebuild it anyway.
+javaenv_vars="BOOTCLASSPATH ANDROID_ROOT ANDROID_DATA"
+javaenv_ok=1
+if [ "${REGEN_JAVAENV:-0}" != 1 ]; then
+    root_shell "f=$soloist_dir/javaenv.sh
+[ -s \$f ]
+unset $javaenv_vars
+. \$f
+[ -n \"\$BOOTCLASSPATH\" ] && [ -n \"\$ANDROID_ROOT\" ] && [ -n \"\$ANDROID_DATA\" ]" >/dev/null && javaenv_ok=0
+fi
+if [ "$javaenv_ok" = 0 ]; then
+    echo "keeping $soloist_dir/javaenv.sh (REGEN_JAVAENV=1 rebuilds it)"
+else
+    echo "generating javaenv.sh"
+    javaenv=$here/dist/javaenv.sh
+    adb_cmd shell 'printf "%s\n" "$BOOTCLASSPATH" "$ANDROID_ROOT" "$ANDROID_DATA"' | tr -d '\r' > "$javaenv.raw"
+    [ "$(wc -l < "$javaenv.raw")" -eq 3 ] || { echo "error: unexpected adb shell output:" >&2; cat "$javaenv.raw" >&2; exit 1; }
+    : > "$javaenv"
+    n=0
+    for v in $javaenv_vars; do
+        n=$((n + 1))
+        val=$(sed -n "${n}p" "$javaenv.raw")
+        case "$val" in
+        ''|*[!A-Za-z0-9_./:+-]*) echo "error: bad $v in the speaker's adb shell: '$val'" >&2; exit 1 ;;
+        esac
+        printf 'export %s="%s"\n' "$v" "$val" >> "$javaenv"
+    done
+    rm -f "$javaenv.raw"
+    adb_cmd push "$javaenv" "$stage/soloist/"
 fi
 
 for f in voice/dist/voiced voice/dist/ledd voice/dist/mic.dex voice/dist/negatives.bin \
