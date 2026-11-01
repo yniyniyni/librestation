@@ -483,3 +483,64 @@ func TestFixYcmdEmptyExtraction(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestDownloadRootfsVerifiesHash(t *testing.T) {
+	body := []byte("rootfs bytes")
+	sum := sha256.Sum256(body)
+	good := hex.EncodeToString(sum[:])
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write(body)
+	}))
+	defer srv.Close()
+	u := &ui{}
+
+	dest := filepath.Join(t.TempDir(), "rootfs.tar.xz")
+	if err := downloadRootfs(u, srv.URL, dest, good); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dest); !bytes.Equal(b, body) {
+		t.Fatalf("downloaded %q", b)
+	}
+
+	// a matching file is reused without touching the network
+	if err := downloadRootfs(u, srv.URL, dest, good); err != nil || hits != 1 {
+		t.Fatalf("err %v, %d requests", err, hits)
+	}
+
+	// a wrong hash fails and leaves nothing behind
+	bad := filepath.Join(t.TempDir(), "rootfs.tar.xz")
+	if err := downloadRootfs(u, srv.URL, bad, "00"+good[2:]); err == nil {
+		t.Fatal("hash mismatch accepted")
+	}
+	if _, err := os.Stat(bad); err == nil {
+		t.Fatal("bad download not deleted")
+	}
+
+	// a stale file with another hash is replaced
+	if err := os.WriteFile(bad, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := downloadRootfs(u, srv.URL, bad, good); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(bad); !bytes.Equal(b, body) {
+		t.Fatalf("stale file kept: %q", b)
+	}
+}
+
+func TestSoloistBinaryFromFolder(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := soloistBinary(dir); err == nil {
+		t.Fatal("empty folder accepted")
+	}
+	bin := filepath.Join(dir, "soloist")
+	os.WriteFile(bin, []byte("ELF"), 0o755)
+	if got, err := soloistBinary(dir); err != nil || got != bin {
+		t.Fatalf("folder: %q, %v", got, err)
+	}
+	if got, err := soloistBinary(bin); err != nil || got != bin {
+		t.Fatalf("file: %q, %v", got, err)
+	}
+}

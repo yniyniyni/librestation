@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +27,13 @@ const (
 	rootfs     = soloistDir + "/rootfs"
 	bootHook   = adb.Tmp + "/myscript-max.sh" // run as root at boot by the root kit
 	startLine  = "sh " + soloistDir + "/start.sh"
+)
+
+// The prepared Debian rootfs, published as a GitHub Release asset; make your
+// own with ./setup export-rootfs.
+const (
+	rootfsURL    = "https://github.com/yniyniyni/librestation/releases/download/rootfs-2026-10-31/rootfs.tar.xz"
+	rootfsSHA256 = "522d856fc3d165aba1ccc4c1f5ad93cdbf84d7f97a1e94463846e4bd6b4d5dad"
 )
 
 type env struct {
@@ -200,8 +209,14 @@ func checkRootfs(e *env) (bool, string, error) {
 
 func fixRootfs(e *env) error {
 	def := ""
-	if _, err := os.Stat(filepath.Join(e.repo, "rootfs.tar.xz")); err == nil {
-		def = filepath.Join(e.repo, "rootfs.tar.xz")
+	local := filepath.Join(e.repo, "rootfs.tar.xz")
+	if _, err := os.Stat(local); err == nil {
+		def = local
+	} else if e.u.yes("Скачать готовый rootfs из релиза на GitHub (около 124 МБ)?", true) {
+		if err := downloadRootfs(e.u, rootfsURL, local, rootfsSHA256); err != nil {
+			return err
+		}
+		def = local
 	}
 	p := hostPath(e.u.ask("Путь к rootfs.tar.xz на этом компьютере", def))
 	if p == "" {
@@ -221,22 +236,121 @@ func fixRootfs(e *env) error {
 	return err
 }
 
+// downloadRootfs fetches url into dest and checks its sha256, deleting the
+// file on a mismatch. A file already at dest with the right hash is reused.
+func downloadRootfs(u *ui, url, dest, want string) error {
+	if got, err := fileSHA256(dest); err == nil && got == want {
+		u.say("Архив %s уже скачан, хеш совпал.", dest)
+		return nil
+	}
+	u.say("Скачиваю %s", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("скачивание: %s", resp.Status)
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(f, h, &progress{u: u, total: resp.ContentLength}), resp.Body)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	fmt.Println()
+	if err != nil {
+		os.Remove(dest)
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		os.Remove(dest)
+		return fmt.Errorf("sha256 скачанного архива %s, а должен быть %s: файл удалён", got, want)
+	}
+	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// progress prints a one-line download counter as bytes are written to it.
+type progress struct {
+	u           *ui
+	total, done int64
+	shown       int64
+}
+
+func (p *progress) Write(b []byte) (int, error) {
+	p.done += int64(len(b))
+	if p.done-p.shown >= 1<<20 || p.done == p.total {
+		p.shown = p.done
+		if p.total > 0 {
+			fmt.Printf("\r  %d / %d МБ", p.done>>20, p.total>>20)
+		} else {
+			fmt.Printf("\r  %d МБ", p.done>>20)
+		}
+	}
+	return len(b), nil
+}
+
 func checkSoloist(e *env) (bool, string, error) {
-	ok, err := e.d.RootOK("test -x " + rootfs + "/opt/soloist/soloist")
+	// -f too: test -x passes for a directory, and a dir pushed by mistake
+	// ends in "exec: /opt/soloist/soloist: Permission denied"
+	bin := rootfs + "/opt/soloist/soloist"
+	ok, err := e.d.RootOK("test -f " + bin + "\ntest -x " + bin)
 	return ok, "", err
 }
 
 func fixSoloist(e *env) error {
-	p := hostPath(e.u.ask("Путь к бинарнику soloist (linux/aarch64)", ""))
+	p := hostPath(e.u.ask("Путь к бинарнику soloist (linux/aarch64) или к папке с ним", ""))
 	if p == "" {
 		return fmt.Errorf("путь не указан")
 	}
-	tmp := adb.Tmp + "/.librestation-soloist"
-	if err := e.d.Push(p, tmp); err != nil {
+	bin, err := soloistBinary(p)
+	if err != nil {
 		return err
 	}
-	_, err := e.d.Root(fmt.Sprintf("mkdir -p %s/opt/soloist\nmv -f %s %s/opt/soloist/soloist\nchmod 755 %s/opt/soloist/soloist", rootfs, tmp, rootfs, rootfs))
+	tmp := adb.Tmp + "/.librestation-soloist"
+	// a leftover dir at tmp would swallow the push
+	if _, err := e.d.Root("rm -rf " + tmp); err != nil {
+		return err
+	}
+	if err := e.d.Push(bin, tmp); err != nil {
+		return err
+	}
+	dst := rootfs + "/opt/soloist/soloist"
+	_, err = e.d.Root(fmt.Sprintf("mkdir -p %s/opt/soloist\nrm -rf %s\nmv -f %s %s\nchmod 755 %s", rootfs, dst, tmp, dst, dst))
 	return err
+}
+
+// soloistBinary is p itself, or the soloist file inside p when p is the
+// unpacked Soloist folder (binary, CHANGELOG.md, licenses).
+func soloistBinary(p string) (string, error) {
+	st, err := os.Stat(p)
+	if err != nil {
+		return "", err
+	}
+	if !st.IsDir() {
+		return p, nil
+	}
+	bin := filepath.Join(p, "soloist")
+	if st, err := os.Stat(bin); err != nil || st.IsDir() {
+		return "", fmt.Errorf("%s — папка, и в ней нет файла soloist; укажите сам бинарник", p)
+	}
+	return bin, nil
 }
 
 func fileCheck(path string) func(*env) (bool, string, error) {

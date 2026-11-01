@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,20 +132,20 @@ func fetchFile(url, path string, u *ui) error {
 		return err
 	}
 	defer f.Close()
-	p := &progress{total: r.ContentLength, show: u.interactive}
+	p := &fileProgress{total: r.ContentLength, show: u.interactive}
 	_, err = io.Copy(f, io.TeeReader(r.Body, p))
 	p.done()
 	return err
 }
 
-// progress prints "  N / M МБ" on one line, about twice a second.
-type progress struct {
+// fileProgress prints "  N / M МБ" on one line, about twice a second.
+type fileProgress struct {
 	total, n int64
 	last     time.Time
 	show     bool
 }
 
-func (p *progress) Write(b []byte) (int, error) {
+func (p *fileProgress) Write(b []byte) (int, error) {
 	p.n += int64(len(b))
 	if p.show && time.Since(p.last) > 500*time.Millisecond {
 		p.last = time.Now()
@@ -156,7 +154,7 @@ func (p *progress) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (p *progress) print() {
+func (p *fileProgress) print() {
 	if p.total > 0 {
 		fmt.Printf("\r  %d / %d МБ", p.n>>20, p.total>>20)
 	} else {
@@ -164,22 +162,9 @@ func (p *progress) print() {
 	}
 }
 
-func (p *progress) done() {
+func (p *fileProgress) done() {
 	if p.show {
 		p.print()
 		fmt.Println()
 	}
-}
-
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
