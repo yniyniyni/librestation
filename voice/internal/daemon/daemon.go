@@ -248,6 +248,12 @@ type Daemon struct {
 // models may map to one action and one utterance can trigger more than one.
 const actionDebounce = 1500 * time.Millisecond
 
+// wakeEchoGrace: the assistant's reply playing through the speaker reaches the
+// mic and triggers false KWS wakes. Hits with the "assistant" action are
+// suppressed while the reply plays and for this long after it stops. The
+// Live session has its own barge-in via the voice-activity detector.
+const wakeEchoGrace = 800 * time.Millisecond
+
 // enrollIdleTimeout is how long an abandoned enrollment keeps detection paused.
 const enrollIdleTimeout = 10 * time.Minute
 
@@ -528,6 +534,17 @@ func (d *Daemon) onHit(id string, score float32) {
 	if action == "assistant" {
 		// The session drives the LEDs; the hit is neither judged nor debounced.
 		if asst != nil && !d.settings.DryRun {
+			// While the reply plays, the speaker's audio reaches the mic and
+			// triggers false wakes. The Live session handles real barge-in
+			// through its own voice-activity detector; suppress KWS hits here.
+			state := asst.State()
+			spokeAt := asst.SpokeAt()
+			echoTail := !spokeAt.IsZero() && d.now().Sub(spokeAt) <= wakeEchoGrace
+			if state == "speaking" || echoTail {
+				d.addHitLocked(h)
+				log.Printf("hit %s score %.3f action %q suppressed (echo)", id, score, action)
+				return
+			}
 			h.Fired = true
 			ctx := d.ctx
 			if ctx == nil {
