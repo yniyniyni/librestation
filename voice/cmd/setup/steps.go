@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -66,6 +68,9 @@ func steps() []step {
 			hint: "освободите место на /data: rootfs занимает около 1,5 ГБ"},
 		{name: "Программы проекта на колонке", check: checkDeployed, fix: fixDeploy,
 			ask: "Собрать и залить voiced, ledd, aaudio_pipe и скрипты?", update: "Пересобрать и залить текущую версию?"},
+		{name: "Java-окружение для микрофона", check: checkJavaEnv, fix: fixJavaEnv,
+			ask:  "Сгенерировать javaenv.sh из окружения колонки?",
+			hint: "запустите voice/deploy.sh или создайте " + javaEnv + " с export BOOTCLASSPATH, ANDROID_ROOT, ANDROID_DATA из adb shell"},
 		{name: "Debian rootfs с PulseAudio", check: checkRootfs, fix: fixRootfs,
 			ask:  "Залить и распаковать rootfs (архив rootfs.tar.xz)?",
 			hint: "нужен архив Debian arm64 с PulseAudio: на работающей колонке его делает ./setup export-rootfs, см. README"},
@@ -200,6 +205,75 @@ func fixDeploy(e *env) error {
 	cmd.Env = append(os.Environ(), "ADB_DEVICE="+e.d.Serial)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// javaEnvVars are what app_process needs to start Java (mic.sh, hwvol.sh);
+// mysudo strips them, so javaenv.sh keeps them from the adb shell environment.
+var javaEnvVars = []string{"BOOTCLASSPATH", "ANDROID_ROOT", "ANDROID_DATA"}
+
+const javaEnv = soloistDir + "/javaenv.sh"
+
+// javaEnvCheck prints why javaenv.sh is unusable and exits non-zero.
+var javaEnvCheck = `f=` + javaEnv + `
+[ -s "$f" ] || { echo "нет $f"; exit 1; }
+unset ` + strings.Join(javaEnvVars, " ") + `
+. "$f"
+for v in ` + strings.Join(javaEnvVars, " ") + `; do
+	eval "x=\${$v:-}"
+	[ -n "$x" ] || { echo "javaenv.sh не задаёт $v"; exit 1; }
+done`
+
+func checkJavaEnv(e *env) (bool, string, error) {
+	_, err := e.d.Root(javaEnvCheck)
+	var re *adb.RootError
+	if errors.As(err, &re) {
+		return false, strings.TrimSpace(re.Output), nil
+	}
+	return err == nil, "", err
+}
+
+// javaEnvValue is what a sane value looks like: colon-separated paths. It also
+// keeps stray adb/shell output and shell metacharacters out of a root script.
+var javaEnvValue = regexp.MustCompile(`^[A-Za-z0-9_./:+-]+$`)
+
+// javaEnvFile builds javaenv.sh from the output of printing javaEnvVars one
+// per line in the adb shell.
+func javaEnvFile(out string) ([]byte, error) {
+	lines := strings.Split(strings.TrimSuffix(strings.ReplaceAll(out, "\r", ""), "\n"), "\n")
+	if len(lines) != len(javaEnvVars) {
+		return nil, fmt.Errorf("неожиданный ответ adb shell: %q", out)
+	}
+	var b strings.Builder
+	for i, v := range javaEnvVars {
+		if lines[i] == "" {
+			return nil, fmt.Errorf("%s не задан в окружении колонки", v)
+		}
+		if !javaEnvValue.MatchString(lines[i]) {
+			return nil, fmt.Errorf("странное значение %s: %q", v, lines[i])
+		}
+		fmt.Fprintf(&b, "export %s=\"%s\"\n", v, lines[i])
+	}
+	return []byte(b.String()), nil
+}
+
+func fixJavaEnv(e *env) error {
+	out, err := e.d.Shell(`printf '%s\n'` + ` "$` + strings.Join(javaEnvVars, `" "$`) + `"`)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать окружение: %w", err)
+	}
+	data, err := javaEnvFile(out)
+	if err != nil {
+		return err
+	}
+	tmp := adb.Tmp + "/.javaenv.sh"
+	if err := e.d.Write(tmp, data); err != nil {
+		return err
+	}
+	_, err = e.d.Root(fmt.Sprintf("mv -f %s %s\nchmod 644 %s", tmp, javaEnv, javaEnv))
+	if err != nil {
+		e.d.Shell("rm -f " + tmp)
+	}
+	return err
 }
 
 func checkRootfs(e *env) (bool, string, error) {
