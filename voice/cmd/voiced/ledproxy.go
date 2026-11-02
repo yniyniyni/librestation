@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// ledProxy forwards /api/led and /api/led/* to ledd's HTTP API. When ledd
+// ledProxy forwards /api/v1/led and /api/v1/led/* to ledd's HTTP API. When ledd
 // does not answer, the caller gets 502 with a JSON error and the rest of the
 // page keeps working.
 func ledProxy(target string) (http.Handler, error) {
@@ -25,7 +25,7 @@ func ledProxy(target string) (http.Handler, error) {
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"error": "ledd: " + err.Error()})
+		json.NewEncoder(w).Encode(map[string]map[string]string{"error": {"code": "led_unavailable", "message": "ledd не отвечает: " + err.Error()}})
 	}
 	return p, nil
 }

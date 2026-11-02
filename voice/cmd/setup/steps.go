@@ -744,7 +744,7 @@ var panelPort = "8780"
 // panelState reads the web panel's state into v.
 func panelState(e *env, v any) error {
 	c := http.Client{Timeout: 5 * time.Second}
-	r, err := c.Get("http://" + e.host + ":" + panelPort + "/api/state")
+	r, err := c.Get("http://" + e.host + ":" + panelPort + "/api/v1/state")
 	if err != nil {
 		return err
 	}
@@ -800,7 +800,12 @@ func fixModel(e *env) error {
 	}
 	body, _ := json.Marshal(map[string]string{"judge_model": model})
 	c := http.Client{Timeout: 5 * time.Second}
-	r, err := c.Post("http://"+e.host+":8780/api/settings", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPatch, "http://"+e.host+":8780/api/v1/settings", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	r, err := c.Do(req)
 	if err != nil {
 		return err
 	}
@@ -820,7 +825,7 @@ func checkPanel(e *env) (bool, string, error) {
 		if try > 0 {
 			time.Sleep(2 * time.Second)
 		}
-		if r, err = c.Get("http://" + e.host + ":8780/api/state"); err == nil {
+		if r, err = c.Get("http://" + e.host + ":8780/api/v1/state"); err == nil {
 			break
 		}
 	}

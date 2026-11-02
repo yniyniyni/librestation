@@ -78,7 +78,7 @@ func (d *Daemon) startEnroll(name string) (*enrollment, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.train.Active {
-		return nil, errors.New("идёт обучение, подождите")
+		return nil, conflict("идёт обучение, подождите")
 	}
 	if d.enroll == nil {
 		d.paused++
@@ -129,7 +129,7 @@ func (d *Daemon) currentEnroll() (*enrollment, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.enroll == nil {
-		return nil, errors.New("запись не начата")
+		return nil, conflict("запись не начата")
 	}
 	d.touchEnrollLocked()
 	return d.enroll, nil
@@ -215,7 +215,7 @@ func (d *Daemon) deleteTake(i int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.enroll == nil || i < 0 || i >= len(d.enroll.Takes) {
-		return errors.New("нет такой записи")
+		return notFound("нет такой записи")
 	}
 	d.touchEnrollLocked()
 	d.enroll.Takes = append(d.enroll.Takes[:i], d.enroll.Takes[i+1:]...)
@@ -265,9 +265,9 @@ func (d *Daemon) finishEnroll(action *string) error {
 	}
 	switch {
 	case len(e.Takes) < minTakes:
-		return fmt.Errorf("нужно минимум %d удачных записей слова, сейчас %d", minTakes, len(e.Takes))
+		return conflict(fmt.Sprintf("нужно минимум %d удачных записей слова, сейчас %d", minTakes, len(e.Takes)))
 	case len(e.Ambient) == 0:
-		return errors.New("сначала запишите тишину в комнате")
+		return conflict("сначала запишите тишину в комнате")
 	}
 	if err := d.saveEnrollment(e); err != nil {
 		return err
@@ -283,7 +283,7 @@ func (d *Daemon) startTraining(id string, action *string) error {
 	dir := d.wordDir(id)
 	name, err := os.ReadFile(filepath.Join(dir, "name.txt"))
 	if err != nil {
-		return fmt.Errorf("слово %s не найдено", id)
+		return notFound(fmt.Sprintf("слово %s не найдено", id))
 	}
 	var en kws.Enrollment
 	takes, _ := filepath.Glob(filepath.Join(dir, "take-*.wav"))
@@ -303,7 +303,7 @@ func (d *Daemon) startTraining(id string, action *string) error {
 	d.mu.Lock()
 	if d.train.Active {
 		d.mu.Unlock()
-		return errors.New("уже идёт обучение")
+		return conflict("уже идёт обучение")
 	}
 	d.train = trainState{Active: true, Word: id, Name: string(name), Stage: "load"}
 	d.mu.Unlock()
@@ -361,12 +361,12 @@ func (d *Daemon) trainWord(name string, en kws.Enrollment, action *string) (*kws
 // given, stores it; nil keeps the word's existing action.
 func (d *Daemon) applyTrained(id string, action *string) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	if d.settings.Words[id] == nil {
 		d.settings.Words[id] = &WordSettings{Enabled: true}
 	}
 	if action != nil {
 		d.settings.Words[id].Action = *action
 	}
-	d.saveSettings()
+	d.mu.Unlock()
+	d.persistSettings()
 }

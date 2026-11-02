@@ -13,7 +13,7 @@ func TestRecordWritesWAV(t *testing.T) {
 	d, _ := newTest(t, nil, "", false)
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/record", `{"seconds":1}`); r.StatusCode != 200 {
+	if r := post(t, srv.URL+"/api/v1/record", `{"seconds":1}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	blk := make([]int16, 960*16)
@@ -51,7 +51,7 @@ func TestRecordRejectsBadSeconds(t *testing.T) {
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
 	for _, body := range []string{`{"seconds":0}`, `{"seconds":31}`, `{"seconds":-3}`, `{}`, `nope`} {
-		if r := post(t, srv.URL+"/api/record", body); r.StatusCode != 400 {
+		if r := post(t, srv.URL+"/api/v1/record", body); r.StatusCode != 400 {
 			t.Fatalf("%s: status %d", body, r.StatusCode)
 		}
 	}

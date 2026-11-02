@@ -206,7 +206,7 @@ func TestAssistantActionValid(t *testing.T) {
 	d, _ := newAsst(t, &fakeAct{}, "")
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/words/x", `{"action":"assistant"}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/words/x", `{"action":"assistant"}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 }
@@ -215,7 +215,7 @@ func TestAssistantSettingsSaved(t *testing.T) {
 	d, _ := newAsst(t, &fakeAct{}, "")
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	r := post(t, srv.URL+"/api/settings",
+	r := patch(t, srv.URL+"/api/v1/settings",
 		`{"assistant":{"model":"gemini-3.6-flash","tts":"gemini","voice":" Puck ","city":"  Санкт-Петербург "}}`)
 	if r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
@@ -236,7 +236,7 @@ func TestAssistantSettingsSaved(t *testing.T) {
 		t.Fatalf("settings.json %+v %v", saved.Assistant, err)
 	}
 	// A partial update keeps the rest; "" is Gemini and the judge's model.
-	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"tts":"","model":""}}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"assistant":{"tts":"","model":""}}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	want = AssistantSettings{TTS: "gemini", Voice: "Puck", City: "Санкт-Петербург"}
@@ -263,14 +263,14 @@ func TestAssistantSettingsRejectBadModel(t *testing.T) {
 		`{"assistant":{"city":"` + strings.Repeat("я", 65) + `"}}`,
 		`{"assistant":{"model":"gemini-3.6-flash","tts":"espeak"}}`,
 	} {
-		if r := post(t, srv.URL+"/api/settings", body); r.StatusCode != 400 {
+		if r := patch(t, srv.URL+"/api/v1/settings", body); r.StatusCode != 400 {
 			t.Fatalf("%s: status %d", body, r.StatusCode)
 		}
 	}
 	if got := d.AssistantSettings(); got != (AssistantSettings{TTS: "gemini"}) {
 		t.Fatalf("changed: %+v", got)
 	}
-	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"city":"`+strings.Repeat("я", 64)+`"}}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"assistant":{"city":"`+strings.Repeat("я", 64)+`"}}`); r.StatusCode != 200 {
 		t.Fatalf("64 runes: status %d", r.StatusCode)
 	}
 }
@@ -288,7 +288,7 @@ func TestStateHidesSecrets(t *testing.T) {
 	}
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	r, err := http.Get(srv.URL + "/api/state")
+	r, err := http.Get(srv.URL + "/api/v1/state")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestAssistantDefaultModelFollowsJudge(t *testing.T) {
 	}
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/settings", `{"judge_model":"gemini-3.8-flash"}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"judge_model":"gemini-3.8-flash"}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	if v := d.state().Assistant.DefaultModel; v != "gemini-3.8-flash" {
@@ -330,7 +330,7 @@ func TestAssistantDefaultModelFollowsJudge(t *testing.T) {
 	if m := d.AssistantModel(); m != "gemini-3.8-flash" {
 		t.Fatalf("resolved %q", m)
 	}
-	if r := post(t, srv.URL+"/api/settings", `{"assistant":{"model":"gemini-3.6-flash"}}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"assistant":{"model":"gemini-3.6-flash"}}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	if m := d.AssistantModel(); m != "gemini-3.6-flash" {
@@ -407,7 +407,7 @@ func TestQuickSettingsSaved(t *testing.T) {
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
 	for _, body := range []string{`{"quick":{"group":"next","on":false}}`, `{"quick":{"off":true}}`} {
-		if r := post(t, srv.URL+"/api/settings", body); r.StatusCode != 200 {
+		if r := patch(t, srv.URL+"/api/v1/settings", body); r.StatusCode != 200 {
 			t.Fatalf("%s: status %d", body, r.StatusCode)
 		}
 	}
@@ -425,7 +425,7 @@ func TestQuickSettingsSaved(t *testing.T) {
 	if err != nil || json.Unmarshal(b, &saved) != nil || !saved.Quick.Off || !saved.Quick.Disabled["next"] {
 		t.Fatalf("settings.json %+v %v", saved.Quick, err)
 	}
-	if r := post(t, srv.URL+"/api/settings", `{"quick":{"group":"next","on":true}}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"quick":{"group":"next","on":true}}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	if d.state().Quick.Groups[1].On != true || len(d.settings.Quick.Disabled) != 0 {
@@ -438,7 +438,7 @@ func TestQuickSettingsUnknownGroup(t *testing.T) {
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
 	for _, body := range []string{`{"quick":{"group":"nope","on":false}}`, `{"quick":{"on":false}}`} {
-		if r := post(t, srv.URL+"/api/settings", body); r.StatusCode != 400 {
+		if r := patch(t, srv.URL+"/api/v1/settings", body); r.StatusCode != 400 {
 			t.Fatalf("%s: status %d", body, r.StatusCode)
 		}
 	}

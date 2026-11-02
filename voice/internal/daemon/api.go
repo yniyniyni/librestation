@@ -2,14 +2,13 @@ package daemon
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
-	"path/filepath"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +19,11 @@ import (
 	"voice/internal/wav"
 )
 
-//go:embed ui/index.html
-var indexHTML []byte
+// APIVersion is the version of the contract in docs/api.md.
+const APIVersion = 1
+
+// apiBase is the prefix of every API path.
+const apiBase = "/api/v1"
 
 type wordView struct {
 	ID          string    `json:"id"`
@@ -55,14 +57,33 @@ type stateView struct {
 		Error string  `json:"error,omitempty"`
 		Level float64 `json:"level"`
 	} `json:"audio"`
+	Player struct {
+		State string `json:"state"` // Soloist's status; "" until it has said
+	} `json:"player"`
+	Volume    *volumeView   `json:"volume"` // null without a volume control
 	Words     []wordView    `json:"words"`
-	Hits      []Hit         `json:"hits"`
+	Hits      []Hit         `json:"-"` // GET /hits and the "hits" event
 	Enroll    *enrollView   `json:"enroll"`
 	Train     trainState    `json:"train"`
 	Judge     judgeView     `json:"judge"`
 	Settings  settingsView  `json:"settings"`
 	Assistant assistantView `json:"assistant"`
 	Quick     quickView     `json:"quick"`
+}
+
+// volumeView is the one volume of Spotify, ring and voice.
+type volumeView struct {
+	Volume   int `json:"volume"`
+	KnobStep int `json:"knob_step"`
+}
+
+// liveView is the fast part of the state: the "live" event.
+type liveView struct {
+	Level     float64            `json:"level"`
+	AudioOK   bool               `json:"audio_ok"`
+	Scores    map[string]float32 `json:"scores"`
+	Assistant string             `json:"assistant,omitempty"`
+	Volume    *int               `json:"volume,omitempty"`
 }
 
 // quickView is the quick-commands card.
@@ -136,12 +157,26 @@ type settingsView struct {
 	AutoFalseUndo bool `json:"auto_false_undo"`
 }
 
+// volumeView reads the volume; never under d.mu, because a volume step holds
+// the control's own lock while it talks to Soloist.
+func (d *Daemon) volumeView() *volumeView {
+	c := d.opt.Volume
+	if c == nil {
+		return nil
+	}
+	return &volumeView{Volume: c.Volume(), KnobStep: c.KnobStep()}
+}
+
+// state is a snapshot for the API. d.mu is the audio goroutine's lock too, so
+// nothing here may touch the disk.
 func (d *Daemon) state() stateView {
+	var v stateView
+	v.Volume = d.volumeView()
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	var v stateView
 	v.Station = d.stationName()
 	v.Audio.OK, v.Audio.Error, v.Audio.Level = d.audioOK, d.audioErr, d.level
+	v.Player.State = d.playback
 	v.Words = make([]wordView, 0, len(d.words)) // [] not null for the UI
 	scores := map[string]float32{}
 	if d.det != nil {
@@ -151,11 +186,11 @@ func (d *Daemon) state() stateView {
 	}
 	for _, w := range d.words {
 		s := d.settings.Words[w.ID]
-		falses, _ := filepath.Glob(filepath.Join(d.wordDir(w.ID), "false-*.wav"))
+		falses := d.falses[w.ID]
 		v.Words = append(v.Words, wordView{
 			ID: w.ID, Name: w.Model.Name, Enabled: s != nil && s.Enabled, Sensitivity: s.Sensitivity, Action: s.Action,
 			Threshold: w.Model.Threshold, Recall: w.Model.Recall, FalsePerH: w.Model.FalsePerH,
-			Takes: w.Model.Takes, FalseClips: len(falses), NewFalses: d.newFalses(w.ID), Created: w.Model.Created,
+			Takes: w.Model.Takes, FalseClips: falses.clips, NewFalses: falses.fresh, Created: w.Model.Created,
 			Score: scores[w.ID], Notes: w.Model.TrainNotes,
 		})
 	}
@@ -180,6 +215,28 @@ func (d *Daemon) state() stateView {
 		Groups: make([]quickGroup, 0, len(quickGroups))}
 	for _, g := range quickGroups {
 		v.Quick.Groups = append(v.Quick.Groups, quickGroup{ID: g.id, Words: g.words, On: !d.settings.Quick.Disabled[g.id]})
+	}
+	return v
+}
+
+// live is the fast part of the state, cheap enough for several times a second.
+func (d *Daemon) live() liveView {
+	var v liveView
+	if c := d.opt.Volume; c != nil {
+		n := c.Volume()
+		v.Volume = &n
+	}
+	if a := d.opt.Assistant; a != nil {
+		v.Assistant = a.State()
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	v.Level, v.AudioOK = d.level, d.audioOK
+	v.Scores = make(map[string]float32, len(d.detWords))
+	if d.det != nil {
+		for i, id := range d.detWords {
+			v.Scores[id] = d.det.Scores[i]
+		}
 	}
 	return v
 }
@@ -251,41 +308,103 @@ func (p *assistantPatch) apply(s *AssistantSettings) error {
 	return nil
 }
 
-// Handler serves the UI and the JSON API.
+// Handler serves the panel and the API of docs/api.md.
 func (d *Daemon) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(indexHTML)
+	mux.HandleFunc("GET /{$}", serveIndex)
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeErr(w, notFound("нет такого адреса API"))
 	})
-	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
+	api := func(pattern string, f func(w http.ResponseWriter, r *http.Request) error) {
+		method, path, _ := strings.Cut(pattern, " ")
+		mux.HandleFunc(method+" "+apiBase+path, func(w http.ResponseWriter, r *http.Request) {
+			if err := f(w, r); err != nil {
+				writeErr(w, err)
+			}
+		})
+	}
+	if d.opt.LED != nil {
+		mux.Handle(apiBase+"/led", d.opt.LED)
+		mux.Handle(apiBase+"/led/", d.opt.LED)
+	}
+	api("GET /info", func(w http.ResponseWriter, r *http.Request) error {
+		writeJSON(w, d.info())
+		return nil
+	})
+	api("GET /state", func(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, d.state())
+		return nil
 	})
-	mux.HandleFunc("POST /api/words/{id}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET "+apiBase+"/events", d.serveEvents)
+	api("GET /hits", func(w http.ResponseWriter, r *http.Request) error {
+		writeJSON(w, map[string][]Hit{"hits": d.state().Hits})
+		return nil
+	})
+	api("GET /hits/{id}/audio", func(w http.ResponseWriter, r *http.Request) error {
+		h, err := d.hitByPath(r)
+		if err != nil {
+			return err
+		}
+		a, err := d.hitAudio(h)
+		if err != nil {
+			return notFound("запись срабатывания не найдена")
+		}
+		w.Header().Set("Content-Type", "audio/wav")
+		w.Write(wav.Encode(a, kws.SampleRate))
+		return nil
+	})
+	// verdict "false" keeps the clip as a hard negative of the word, "ok"
+	// says the hit was right and takes back a clip saved for it.
+	api("PUT /hits/{id}/verdict", func(w http.ResponseWriter, r *http.Request) error {
+		h, err := d.hitByPath(r)
+		if err != nil {
+			return err
+		}
+		var req struct {
+			Verdict string `json:"verdict"`
+		}
+		if err := decode(r, &req); err != nil {
+			return err
+		}
+		if err := d.setVerdict(h, req.Verdict); err != nil {
+			return err
+		}
+		writeOK(w)
+		return nil
+	})
+	api("POST /hits/{id}/judge", func(w http.ResponseWriter, r *http.Request) error {
+		h, err := d.hitByPath(r)
+		if err != nil {
+			return err
+		}
+		if !d.rejudge(h) {
+			return conflict("модель не настроена: нет ключа")
+		}
+		writeOK(w)
+		return nil
+	})
+	api("PATCH /words/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		var req struct {
 			Enabled     *bool    `json:"enabled"`
 			Sensitivity *float32 `json:"sensitivity"`
 			Action      *string  `json:"action"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpErr(w, err)
-			return
+		if err := decode(r, &req); err != nil {
+			return err
 		}
 		action := ""
 		if req.Action != nil {
 			a, err := normalizeAction(*req.Action)
 			if err != nil {
-				httpErr(w, err)
-				return
+				return err
 			}
 			action = a
 		}
 		d.mu.Lock()
-		defer d.mu.Unlock()
 		s := d.settings.Words[r.PathValue("id")]
 		if s == nil {
-			httpErr(w, errors.New("нет такого слова"))
-			return
+			d.mu.Unlock()
+			return notFound("нет такого слова")
 		}
 		if req.Enabled != nil {
 			s.Enabled = *req.Enabled
@@ -296,76 +415,37 @@ func (d *Daemon) Handler() http.Handler {
 		if req.Sensitivity != nil {
 			s.Sensitivity = max(-0.3, min(0.3, *req.Sensitivity))
 		}
-		if err := d.saveSettings(); err != nil {
-			httpErr(w, err)
-			return
+		err := d.rebuildDetector()
+		view := *s
+		d.mu.Unlock()
+		if err != nil {
+			return internal(err)
 		}
-		if err := d.rebuildDetector(); err != nil {
-			httpErr(w, err)
-			return
+		if err := d.persistSettings(); err != nil {
+			return internal(err)
 		}
-		writeJSON(w, s)
+		writeJSON(w, view)
+		return nil
 	})
-	mux.HandleFunc("DELETE /api/words/{id}", func(w http.ResponseWriter, r *http.Request) {
+	api("DELETE /words/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		id := r.PathValue("id")
 		if wordID(id) != id {
-			httpErr(w, errors.New("bad id"))
-			return
+			return notFound("нет такого слова")
 		}
 		if err := d.removeWord(id); err != nil {
-			httpErr(w, err)
-			return
+			return internal(err)
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w)
+		return nil
 	})
-	mux.HandleFunc("POST /api/words/{id}/retrain", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /words/{id}/retrain", func(w http.ResponseWriter, r *http.Request) error {
 		if err := d.startTraining(r.PathValue("id"), nil); err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w)
+		return nil
 	})
-	mux.HandleFunc("GET /api/hits/{n}", func(w http.ResponseWriter, r *http.Request) {
-		h := d.hit(r.PathValue("n"))
-		if h == nil {
-			http.NotFound(w, r)
-			return
-		}
-		a, err := d.hitAudio(h)
-		if err != nil {
-			httpErr(w, err)
-			return
-		}
-		w.Header().Set("Content-Type", "audio/wav")
-		w.Write(wav.Encode(a, kws.SampleRate))
-	})
-	mux.HandleFunc("POST /api/hits/{n}/judge", func(w http.ResponseWriter, r *http.Request) {
-		h := d.hit(r.PathValue("n"))
-		if h == nil {
-			http.NotFound(w, r)
-			return
-		}
-		if !d.rejudge(h) {
-			httpErr(w, errors.New("модель не настроена: нет ключа"))
-			return
-		}
-		writeJSON(w, map[string]bool{"ok": true})
-	})
-	// {verdict} is "false" (keep the clip as a hard negative of the word) or
-	// "ok" (the hit was right; takes back a clip saved for it).
-	mux.HandleFunc("POST /api/hits/{n}/{verdict}", func(w http.ResponseWriter, r *http.Request) {
-		h := d.hit(r.PathValue("n"))
-		if h == nil {
-			http.NotFound(w, r)
-			return
-		}
-		if err := d.setVerdict(h, r.PathValue("verdict")); err != nil {
-			httpErr(w, err)
-			return
-		}
-		writeJSON(w, map[string]bool{"ok": true})
-	})
-	mux.HandleFunc("POST /api/settings", func(w http.ResponseWriter, r *http.Request) {
+	api("PATCH /settings", func(w http.ResponseWriter, r *http.Request) error {
 		var req struct {
 			Judge         *bool           `json:"judge"`
 			JudgeModel    *string         `json:"judge_model"`
@@ -373,112 +453,160 @@ func (d *Daemon) Handler() http.Handler {
 			Assistant     *assistantPatch `json:"assistant"`
 			Quick         *quickPatch     `json:"quick"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpErr(w, err)
-			return
+		if err := decode(r, &req); err != nil {
+			return err
+		}
+		if m := req.JudgeModel; m != nil && !judge.ValidModel(*m) {
+			return badRequest(fmt.Sprintf("неверное имя модели %q", *m))
 		}
 		d.mu.Lock()
-		defer d.mu.Unlock()
-		asst := d.settings.Assistant
+		asst, quick := d.settings.Assistant, d.settings.Quick
+		var err error
 		if a := req.Assistant; a != nil {
-			if err := a.apply(&asst); err != nil {
-				httpErr(w, err)
-				return
-			}
+			err = a.apply(&asst)
 		}
-		quick := d.settings.Quick
-		if q := req.Quick; q != nil {
-			if err := q.apply(&quick); err != nil {
-				httpErr(w, err)
-				return
-			}
+		if q := req.Quick; q != nil && err == nil {
+			err = q.apply(&quick)
+		}
+		if err != nil {
+			d.mu.Unlock()
+			return err
 		}
 		if req.Judge != nil {
 			d.settings.JudgeOff = !*req.Judge
 		}
 		if m := req.JudgeModel; m != nil {
-			if !judge.ValidModel(*m) {
-				httpErr(w, fmt.Errorf("неверное имя модели %q", *m))
-				return
-			}
 			d.settings.JudgeModel = *m
 		}
 		if req.AutoFalseUndo != nil {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo
 		}
-		d.settings.Assistant = asst
-		d.settings.Quick = quick
-		if err := d.saveSettings(); err != nil {
-			httpErr(w, err)
-			return
+		d.settings.Assistant, d.settings.Quick = asst, quick
+		d.mu.Unlock()
+		if err := d.persistSettings(); err != nil {
+			return internal(err)
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w)
+		return nil
 	})
-	mux.HandleFunc("POST /api/record", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /volume", func(w http.ResponseWriter, r *http.Request) error {
+		v := d.volumeView()
+		if v == nil {
+			return conflict("управления громкостью нет")
+		}
+		writeJSON(w, v)
+		return nil
+	})
+	api("PATCH /volume", func(w http.ResponseWriter, r *http.Request) error {
+		var req struct {
+			Step     *int `json:"step"`
+			KnobStep *int `json:"knob_step"`
+		}
+		if err := decode(r, &req); err != nil {
+			return err
+		}
+		c := d.opt.Volume
+		if c == nil {
+			return conflict("управления громкостью нет")
+		}
+		if req.KnobStep != nil {
+			if err := c.SetKnobStep(*req.KnobStep); err != nil {
+				return badRequest(err.Error())
+			}
+		}
+		if req.Step != nil {
+			if *req.Step < -100 || *req.Step > 100 {
+				return badRequest("step должен быть от -100 до 100")
+			}
+			if err := c.Step(*req.Step); err != nil {
+				return conflict(err.Error())
+			}
+		}
+		writeJSON(w, d.volumeView())
+		return nil
+	})
+	api("POST /player/{action}", func(w http.ResponseWriter, r *http.Request) error {
+		act := d.opt.Actuator
+		if act == nil {
+			return conflict("управления музыкой нет")
+		}
+		do := map[string]func() error{"pause": act.Pause, "play": act.Play, "next": act.Next, "prev": act.Prev}[r.PathValue("action")]
+		if do == nil {
+			return notFound("нет такой команды")
+		}
+		if err := do(); err != nil {
+			return conflict(err.Error())
+		}
+		writeOK(w)
+		return nil
+	})
+	api("GET /record", func(w http.ResponseWriter, r *http.Request) error {
+		writeJSON(w, d.recordStatus())
+		return nil
+	})
+	api("POST /record", func(w http.ResponseWriter, r *http.Request) error {
 		var req struct {
 			Seconds int `json:"seconds"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpErr(w, err)
-			return
+		if err := decode(r, &req); err != nil {
+			return err
 		}
 		if req.Seconds < 1 || req.Seconds > maxRecordSecs {
-			http.Error(w, fmt.Sprintf(`{"error":"seconds must be 1..%d"}`, maxRecordSecs), http.StatusBadRequest)
-			return
+			return badRequest(fmt.Sprintf("seconds: от 1 до %d", maxRecordSecs))
 		}
 		if err := d.startRecording(req.Seconds); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusConflict)
-			return
+			return conflict(err.Error())
 		}
 		writeJSON(w, d.recordStatus())
+		return nil
 	})
-	mux.HandleFunc("GET /api/record", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, d.recordStatus())
-	})
-	mux.HandleFunc("POST /api/enroll/start", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /enroll", func(w http.ResponseWriter, r *http.Request) error {
 		var req struct {
 			Name string `json:"name"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpErr(w, err)
-			return
+		if err := decode(r, &req); err != nil {
+			return err
 		}
 		if _, err := d.startEnroll(req.Name); err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
 		writeJSON(w, d.state().Enroll)
+		return nil
 	})
-	mux.HandleFunc("POST /api/enroll/cancel", func(w http.ResponseWriter, r *http.Request) {
+	api("DELETE /enroll", func(w http.ResponseWriter, r *http.Request) error {
 		d.endEnroll()
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w)
+		return nil
 	})
-	mux.HandleFunc("POST /api/enroll/ambient", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /enroll/ambient", func(w http.ResponseWriter, r *http.Request) error {
 		level, err := d.recordAmbient(r.Context())
 		if err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
 		writeJSON(w, map[string]float64{"level": level})
+		return nil
 	})
-	mux.HandleFunc("POST /api/enroll/take", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /enroll/takes", func(w http.ResponseWriter, r *http.Request) error {
 		res, err := d.recordTake(r.Context())
 		if err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
 		writeJSON(w, res)
+		return nil
 	})
-	mux.HandleFunc("DELETE /api/enroll/take/{i}", func(w http.ResponseWriter, r *http.Request) {
-		i, _ := strconv.Atoi(r.PathValue("i"))
+	api("DELETE /enroll/takes/{i}", func(w http.ResponseWriter, r *http.Request) error {
+		i, err := strconv.Atoi(r.PathValue("i"))
+		if err != nil {
+			return notFound("нет такой записи")
+		}
 		if err := d.deleteTake(i); err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
 		writeJSON(w, d.state().Enroll)
+		return nil
 	})
 	// {i} is a take index or "last" (the latest take even if it was rejected).
-	mux.HandleFunc("GET /api/enroll/take/{i}", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /enroll/takes/{i}", func(w http.ResponseWriter, r *http.Request) error {
 		i, err := strconv.Atoi(r.PathValue("i"))
 		d.mu.Lock()
 		var pcm []int16
@@ -491,48 +619,117 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		d.mu.Unlock()
 		if pcm == nil {
-			http.NotFound(w, r)
-			return
+			return notFound("нет такой записи")
 		}
 		w.Header().Set("Content-Type", "audio/wav")
 		w.Write(wav.Encode(pcm, kws.SampleRate))
+		return nil
 	})
-	mux.HandleFunc("POST /api/enroll/speech", func(w http.ResponseWriter, r *http.Request) {
-		secs, _ := strconv.ParseFloat(r.URL.Query().Get("secs"), 64)
-		level, err := d.recordSpeech(r.Context(), secs)
+	api("POST /enroll/speech", func(w http.ResponseWriter, r *http.Request) error {
+		var req struct {
+			Seconds float64 `json:"seconds"`
+		}
+		if err := decode(r, &req); err != nil {
+			return err
+		}
+		level, err := d.recordSpeech(r.Context(), req.Seconds)
 		if err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
 		writeJSON(w, map[string]float64{"level": level})
+		return nil
 	})
-	mux.HandleFunc("POST /api/enroll/train", func(w http.ResponseWriter, r *http.Request) {
+	api("POST /enroll/train", func(w http.ResponseWriter, r *http.Request) error {
 		var req struct {
 			Action *string `json:"action"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			httpErr(w, err)
-			return
+		if err := decode(r, &req); err != nil && !errors.Is(err, io.EOF) {
+			return err
 		}
 		if err := d.finishEnroll(req.Action); err != nil {
-			httpErr(w, err)
-			return
+			return err
 		}
-		writeJSON(w, map[string]bool{"ok": true})
+		writeOK(w)
+		return nil
 	})
-	return mux
+	return d.guard(mux)
 }
 
-func (d *Daemon) hit(n string) *Hit {
-	id, _ := strconv.Atoi(n)
+// guard refuses changes coming from other sites' pages, so a page open in a
+// browser in this network cannot drive the speaker, and wakes the event hub
+// after a change. Apps do not send Origin.
+func (d *Daemon) guard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" {
+			if u, err := url.Parse(o); err != nil || u.Host != r.Host {
+				writeErr(w, &apiError{http.StatusForbidden, "forbidden", "запрос с чужого сайта"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+		d.hub.poke()
+	})
+}
+
+// info is the first request after discovery.
+func (d *Daemon) info() map[string]any {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, h := range d.hits {
-		if h.ID == id {
-			return h
+	name := d.stationName()
+	d.mu.Unlock()
+	return map[string]any{"api_version": APIVersion, "name": name, "features": map[string]bool{
+		"assistant": d.opt.Assistant != nil, "judge": d.opt.Judge != nil, "led": d.opt.LED != nil,
+		"player": d.opt.Actuator != nil, "quick": d.opt.Commands != nil, "volume": d.opt.Volume != nil,
+	}}
+}
+
+func (d *Daemon) hitByPath(r *http.Request) (*Hit, error) {
+	if id, err := strconv.Atoi(r.PathValue("id")); err == nil {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		for _, h := range d.hits {
+			if h.ID == id {
+				return h, nil
+			}
 		}
 	}
-	return nil
+	return nil, notFound("нет такого срабатывания")
+}
+
+// apiError is an error with its place in the contract: HTTP status and a code
+// for programs. Any other error from a handler is a bad request.
+type apiError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *apiError) Error() string { return e.message }
+
+func badRequest(msg string) error { return &apiError{http.StatusBadRequest, "bad_request", msg} }
+func notFound(msg string) error   { return &apiError{http.StatusNotFound, "not_found", msg} }
+func conflict(msg string) error   { return &apiError{http.StatusConflict, "conflict", msg} }
+func internal(err error) error {
+	return &apiError{http.StatusInternalServerError, "internal", err.Error()}
+}
+
+func writeErr(w http.ResponseWriter, err error) {
+	e := &apiError{http.StatusBadRequest, "bad_request", err.Error()}
+	if errors.Is(err, context.Canceled) {
+		e = &apiError{499, "canceled", "запрос отменён"}
+	}
+	errors.As(err, &e)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(e.status)
+	json.NewEncoder(w).Encode(map[string]map[string]string{"error": {"code": e.code, "message": e.message}})
+}
+
+// decode reads a JSON body of a sane size.
+func decode(r *http.Request, v any) error {
+	return json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(v)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -540,12 +737,4 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func httpErr(w http.ResponseWriter, err error) {
-	code := http.StatusBadRequest
-	if errors.Is(err, context.Canceled) {
-		code = 499
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
-}
+func writeOK(w http.ResponseWriter) { writeJSON(w, map[string]bool{"ok": true}) }

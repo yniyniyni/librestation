@@ -150,6 +150,7 @@ func (d *Daemon) applyJudgeLocked(h *Hit) {
 	if ff := h.FalseFile; ff != "" {
 		// A take-back marked it false, the model heard a real command.
 		os.Remove(filepath.Join(d.wordDir(h.Word), ff))
+		go d.refreshFalses(h.Word)
 	}
 	h.Verdict, h.Auto, h.FalseFile = "ok", true, ""
 }
