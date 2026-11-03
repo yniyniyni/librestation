@@ -221,7 +221,8 @@ const (
 	// radioStart bounds the wait for a station to load, radioTrack and
 	// shuffleWait for the commands that follow.
 	radioStart  = 5 * time.Second
-	radioTrack  = 3 * time.Second
+	radioTrack  = 1500 * time.Millisecond
+	radioSkips  = 4
 	shuffleWait = 1500 * time.Millisecond
 )
 
@@ -293,13 +294,16 @@ func (c *Client) PlayRadio(ctx context.Context, track string) error {
 	if !c.wait(ctx, radioStart, func() bool { return c.status == "playing" && c.item != "" }) {
 		return fmt.Errorf("soloist: станция не запустилась")
 	}
-	if err := c.Next(); err != nil {
-		return err
+	// Tracks queued earlier come first, so it may take more than one skip.
+	for range radioSkips {
+		if err := c.Next(); err != nil {
+			return err
+		}
+		if c.wait(ctx, radioTrack, func() bool { return c.item == track }) {
+			return nil
+		}
 	}
-	if !c.wait(ctx, radioTrack, func() bool { return c.item == track }) {
-		return fmt.Errorf("soloist: трек не начался")
-	}
-	return nil
+	return fmt.Errorf("soloist: трек не начался")
 }
 
 // SetShuffle turns shuffle on or off and waits for Soloist to report it: what

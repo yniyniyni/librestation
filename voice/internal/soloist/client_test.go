@@ -318,3 +318,29 @@ func TestSetShuffleWaitsForTheState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A track queued earlier plays first: skip on to the one asked for.
+func TestPlayRadioSkipsEarlierQueue(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayRadio(context.Background(), "spotify:track:x") }()
+	f.msg(t)
+	ctx := context.Background()
+	state := func(item string) {
+		sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"`+item+`"}}`))
+	}
+	state("spotify:track:first")
+	f.msg(t) // add_to_queue
+	f.msg(t) // skip_next
+	state("spotify:track:queued")
+	if got := f.msg(t); got != `{"type":"command","command":"skip_next"}` {
+		t.Fatalf("got %s", got)
+	}
+	state("spotify:track:x")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
