@@ -2,16 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	iofs "io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -21,6 +22,7 @@ import (
 	"voice/internal/input"
 	"voice/internal/judge"
 	"voice/internal/led/proto"
+	"voice/internal/mdns"
 	"voice/internal/soloist"
 	"voice/internal/volume"
 	"voice/internal/ycmd"
@@ -155,20 +157,19 @@ func cmdRun(args []string) error {
 		opt.PiperMissing = a.piperDown.Load
 	}
 
+	led, err := ledProxy(leddURL)
+	if err != nil {
+		return fmt.Errorf("-ledd: %w", err)
+	}
+	opt.LED, opt.Volume = led, vol
+
 	d, err := daemon.New(opt)
 	if err != nil {
 		return err
 	}
 	dmn.Store(d)
 
-	led, err := ledProxy(leddURL)
-	if err != nil {
-		return fmt.Errorf("-ledd: %w", err)
-	}
-	mux := withVolumeAPI(d.Handler(), vol)
-	mux.Handle("/api/led", led)
-	mux.Handle("/api/led/", led)
-	srv := &http.Server{Addr: opt.Listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: opt.Listen, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -176,6 +177,12 @@ func cmdRun(args []string) error {
 		srv.Shutdown(sctx)
 	}()
 	go d.Run(ctx)
+	if _, port, err := net.SplitHostPort(opt.Listen); err == nil {
+		if n, err := strconv.Atoi(port); err == nil {
+			go mdns.Serve(ctx, mdns.Service{Name: "_librestation._tcp", Port: n,
+				TXT: []string{fmt.Sprintf("api=%d", daemon.APIVersion), "path=/api/v1"}})
+		}
+	}
 	log.Printf("voiced: UI on %s, data in %s", opt.Listen, opt.DataDir)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
@@ -193,32 +200,6 @@ type actuator struct {
 var _ daemon.Actuator = actuator{}
 
 func (a actuator) Step(delta int) error { return a.vol.Step(delta) }
-
-// withVolumeAPI adds /api/volume (current volume and knob step) to the UI.
-func withVolumeAPI(h http.Handler, vol *volume.Sync) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.Handle("/", h)
-	state := func(w http.ResponseWriter) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]int{"volume": vol.Volume(), "knob_step": vol.KnobStep()})
-	}
-	mux.HandleFunc("GET /api/volume", func(w http.ResponseWriter, r *http.Request) { state(w) })
-	mux.HandleFunc("POST /api/volume", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			KnobStep int `json:"knob_step"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
-			return
-		}
-		if err := vol.SetKnobStep(req.KnobStep); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
-			return
-		}
-		state(w)
-	})
-	return mux
-}
 
 // readKnob reads knob presses, reopening the device after errors.
 func readKnob(ctx context.Context, path string, onKey func(uint16)) {

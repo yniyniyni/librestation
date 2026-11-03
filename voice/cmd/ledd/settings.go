@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -142,14 +141,20 @@ func (a *api) writeState(w http.ResponseWriter) {
 }
 
 func httpError(w http.ResponseWriter, code int, err error) {
-	http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), code)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	name := "bad_request"
+	if code >= http.StatusInternalServerError {
+		name = "internal"
+	}
+	json.NewEncoder(w).Encode(map[string]map[string]string{"error": {"code": name, "message": err.Error()}})
 }
 
-// Handler serves /api/led, /api/led/settings and /api/led/ai.
+// Handler serves /api/v1/led, /api/v1/led/settings and /api/v1/led/ai.
 func (a *api) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/led", func(w http.ResponseWriter, r *http.Request) { a.writeState(w) })
-	mux.HandleFunc("POST /api/led/settings", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/led", func(w http.ResponseWriter, r *http.Request) { a.writeState(w) })
+	mux.HandleFunc("PUT /api/v1/led/settings", func(w http.ResponseWriter, r *http.Request) {
 		var body bytes.Buffer
 		if _, err := body.ReadFrom(http.MaxBytesReader(w, r.Body, 4096)); err != nil {
 			httpError(w, http.StatusBadRequest, err)
@@ -171,7 +176,7 @@ func (a *api) Handler() http.Handler {
 		a.mu.Unlock()
 		a.writeState(w)
 	})
-	mux.HandleFunc("POST /api/led/ai", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("PUT /api/v1/led/ai", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			On bool `json:"on"`
 		}

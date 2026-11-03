@@ -64,7 +64,7 @@ func (d *Daemon) startRecording(secs int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.f != nil {
-		return errors.New("a recording is already in progress")
+		return errors.New("запись уже идёт")
 	}
 	dir := filepath.Join(d.opt.DataDir, "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -76,7 +76,7 @@ func (d *Daemon) startRecording(secs int) error {
 	if free, err := freeBytes(dir); err != nil {
 		return err
 	} else if free < need {
-		return fmt.Errorf("not enough free space: %d MB free, need %d MB", free>>20, need>>20)
+		return fmt.Errorf("мало места: свободно %d МБ, нужно %d МБ", free>>20, need>>20)
 	}
 	base := d.now().Format("20060102-150405")
 	path := filepath.Join(dir, base+".wav")

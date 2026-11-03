@@ -133,7 +133,7 @@ func (s *Sync) KnobStep() int {
 // SetKnobStep sets and saves the knob step, 1..MaxKnobStep.
 func (s *Sync) SetKnobStep(n int) error {
 	if n < 1 || n > MaxKnobStep {
-		return fmt.Errorf("knob step must be 1..%d", MaxKnobStep)
+		return fmt.Errorf("шаг колёсика: от 1 до %d", MaxKnobStep)
 	}
 	s.mu.Lock()
 	s.knobStep = n
