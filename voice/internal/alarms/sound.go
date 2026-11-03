@@ -33,10 +33,8 @@ var Sounds = []SoundInfo{
 	{"kids", "Детский"},
 }
 
-func knownSound(name string) bool {
-	if name == TimerSound {
-		return true
-	}
+// IsSound says whether name is an alarm ringtone.
+func IsSound(name string) bool {
 	for _, s := range Sounds {
 		if s.Name == name {
 			return true
@@ -44,6 +42,8 @@ func knownSound(name string) bool {
 	}
 	return false
 }
+
+func knownSound(name string) bool { return name == TimerSound || IsSound(name) }
 
 // LoadSound reads a ringtone from dir. It always returns something to play: a
 // ring must not be silent because a file is missing or broken.

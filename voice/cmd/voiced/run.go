@@ -207,7 +207,7 @@ func cmdRun(args []string) error {
 			}
 			return nil
 		}
-		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, wakeWords, opt.Actuator, sol, sp, spk, vol, out, ledSend)
+		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, wakeWords, opt.Actuator, sol, sp, spk, alm, vol, out, ledSend)
 		rng.hush = a.session.Hush
 		opt.Assistant = a.session
 		opt.LiveModel = ac.liveModel

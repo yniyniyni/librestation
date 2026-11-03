@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"voice/internal/agent"
+	"voice/internal/alarms"
 	"voice/internal/assistant"
 	"voice/internal/daemon"
 	"voice/internal/geminilive"
@@ -51,7 +52,7 @@ type builtAssistant struct {
 // model is the model for each turn; judgeModel is the client's fallback.
 func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel string, model func() string,
 	settings func() daemon.AssistantSettings, wakeWords func() []string,
-	act daemon.Actuator, sol *soloist.Client, sp *spotifyapi.Client, spk *speaker, vol *volume.Sync, out *output,
+	act daemon.Actuator, sol *soloist.Client, sp *spotifyapi.Client, spk *speaker, alm *alarms.Manager, vol *volume.Sync, out *output,
 	led func(proto.Event)) builtAssistant {
 	link := newSpotifyLink(sp.Linked)
 	go link.run(ctx, spotifyLinkEvery)
@@ -70,6 +71,7 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Radio:       sol.PlayRadio,
 		Shuffle:     sol.SetShuffle,
 		Seek:        sol.Seek,
+		Alarms:      alm,
 	})}
 
 	if err := os.MkdirAll(c.piperOut, 0o755); err != nil {
