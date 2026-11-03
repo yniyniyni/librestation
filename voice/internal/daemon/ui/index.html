@@ -42,7 +42,7 @@
   nav a svg { width:20px; height:20px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
   nav a.cur { background:var(--raise2); color:var(--fg); }
   main { padding:28px 32px 64px; max-width:1040px; width:100%; }
-  section { display:grid; gap:20px; }
+  section { display:grid; grid-template-columns:minmax(0,1fr); gap:20px; }
   @media (max-width:719px) {
     .app { grid-template-columns:minmax(0,1fr); }
     nav { position:fixed; z-index:5; left:0; right:0; top:auto; bottom:0; height:auto; flex-direction:row; justify-content:space-around; padding:6px 6px calc(6px + env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--line); background:var(--bg); }
@@ -76,6 +76,7 @@
   .field { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-height:56px; }
   .field > :first-child { flex:1 1 180px; min-width:0; }
   .field select, .field input[type=text] { flex:0 1 280px; min-width:0; }
+  @media (max-width:519px) { .field select, .field input[type=text] { flex:1 1 100%; } }
   .gtitle { margin:8px 0 8px 4px; }
 
   /* Home: the ring is the page. */
