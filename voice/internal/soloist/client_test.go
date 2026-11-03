@@ -267,10 +267,12 @@ func TestPlayRadioPutsTheTrackFirst(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 	ctx := context.Background()
-	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:other"}}`))
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"}}`))
 	if got := f.msg(t); got != `{"type":"command","command":"add_to_queue","uri":"spotify:track:x"}` {
 		t.Fatalf("got %s", got)
 	}
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"buffering","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:other"}}`))
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:other"}}`))
 	if got := f.msg(t); got != `{"type":"command","command":"skip_next"}` {
 		t.Fatalf("got %s", got)
 	}

@@ -49,6 +49,7 @@ type Client struct {
 
 	context string // what Soloist last reported playing
 	item    string
+	status  string
 	shuffle bool
 	lastErr string // its last error message, since clearErr
 }
@@ -151,9 +152,11 @@ func (c *Client) note(m wireMsg) {
 	if m.Type != "playback_state" {
 		return
 	}
+	c.status = m.Status
 	if m.Context != nil {
 		c.context = m.Context.URI
 	}
+	c.item = ""
 	if m.Item != nil {
 		c.item = m.Item.URI
 	}
@@ -268,16 +271,13 @@ func (c *Client) PlayRadio(ctx context.Context, track string) error {
 		return err
 	}
 	var failed string
-	c.wait(ctx, radioStart, func() bool {
+	started := c.wait(ctx, radioStart, func() bool {
 		failed = c.lastErr
 		return c.context == station || failed != ""
 	})
 	if failed != "" {
 		return fmt.Errorf("soloist: %s", failed)
 	}
-	c.mu.Lock()
-	started := c.context == station
-	c.mu.Unlock()
 	if !started {
 		return fmt.Errorf("soloist: станция не запустилась")
 	}
@@ -287,6 +287,11 @@ func (c *Client) PlayRadio(ctx context.Context, track string) error {
 		URI     string `json:"uri"`
 	}{"command", "add_to_queue", track}); err != nil {
 		return err
+	}
+	// It reports playing at once, with no item, then loads its first track: a
+	// skip before that track plays is lost, or skips past the queue.
+	if !c.wait(ctx, radioStart, func() bool { return c.status == "playing" && c.item != "" }) {
+		return fmt.Errorf("soloist: станция не запустилась")
 	}
 	if err := c.Next(); err != nil {
 		return err
