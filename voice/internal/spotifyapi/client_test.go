@@ -318,6 +318,24 @@ func TestCurrentKnowsTheAlbum(t *testing.T) {
 	}
 }
 
+func TestLikedURI(t *testing.T) {
+	f := newFake(t)
+	calls := 0
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Write([]byte(`{"id":"me"}`))
+	}
+	for range 2 {
+		u, err := f.c.LikedURI(context.Background())
+		if err != nil || u != "spotify:user:me:collection" {
+			t.Fatalf("%q %v", u, err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("%d requests, want 1 (kept)", calls)
+	}
+}
+
 func TestMyPlaylist(t *testing.T) {
 	f := newFake(t)
 	calls := 0

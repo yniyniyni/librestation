@@ -25,6 +25,7 @@ type Deps struct {
 	Radio   func(ctx context.Context, track string) error
 	Shuffle func(ctx context.Context, on bool) error
 	Seek    func(position time.Duration, relative bool) error
+	Context func(ctx context.Context, uri string) error
 }
 
 // All is the one list of the assistant's tools.
@@ -38,7 +39,7 @@ func All(d Deps) []agent.Tool {
 		Weather{DefaultCity: d.DefaultCity},
 		Web{LLM: d.LLM, Model: d.Model},
 		Playback{A: d.Actuator, SetVolume: d.SetVolume, Shuffle: d.Shuffle, Seek: d.Seek},
-		music(PlayMusic{S: d.Spotify, Radio: d.Radio, Shuffle: d.Shuffle}),
+		music(PlayMusic{S: d.Spotify, Radio: d.Radio, Shuffle: d.Shuffle, Context: d.Context}),
 		music(LikeTrack{S: d.Spotify}),
 		music(NowPlaying{S: d.Spotify}),
 	}

@@ -423,3 +423,33 @@ func TestSetShuffleSeesOptionsChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPlayContextLikedGoesByTwoNames(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayContext(context.Background(), "spotify:user:me:collection") }()
+	if got := f.msg(t); got != `{"type":"command","command":"play","uri":"spotify:user:me:collection"}` {
+		t.Fatalf("got %s", got)
+	}
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:collection"}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlayContextRefused(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayContext(context.Background(), "spotify:collection") }()
+	f.msg(t)
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"error","message":"play requires a valid playable Spotify URI"}`))
+	if err := <-done; err == nil {
+		t.Fatal("want an error")
+	}
+}

@@ -16,6 +16,8 @@ type PlayMusic struct {
 	S       *spotifyapi.Client
 	Radio   func(ctx context.Context, track string) error // nil = no station
 	Shuffle func(ctx context.Context, on bool) error
+	// Context plays a playlist or Liked Songs keeping their Smart Shuffle; nil = no.
+	Context func(ctx context.Context, uri string) error
 }
 
 // shuffleDelay lets a context started through the Web API reach the speaker:
@@ -71,14 +73,13 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 	if err := p.play(ctx, it); err != nil {
 		return nil, err
 	}
-	if on, _ := args["shuffle"].(bool); on && p.Shuffle != nil && it.Kind != "track" {
-		select {
-		case <-ctx.Done():
-		case <-time.After(shuffleDelay):
-		}
-		if err := p.Shuffle(ctx, true); err != nil {
-			log.Printf("spotify: shuffle: %v", err)
-		}
+	on, _ := args["shuffle"].(bool)
+	switch {
+	case p.Shuffle == nil || it.Kind == "track":
+	case kind == "current_album":
+		p.setShuffle(ctx, false) // from the start means in order
+	case on:
+		p.setShuffle(ctx, true)
 	}
 	res := map[string]any{"playing": it.Name, "kind": it.Kind}
 	if it.Artist != "" {
@@ -87,8 +88,7 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 	return res, nil
 }
 
-// currentAlbum is the album of what plays now, set to start from its first
-// track. Shuffle goes off: asked for from the start, it means in order.
+// currentAlbum is the album of what plays now, set to start from its first track.
 func (p PlayMusic) currentAlbum(ctx context.Context) (spotifyapi.Item, error) {
 	cur, ok, err := p.S.Current(ctx)
 	if err != nil {
@@ -97,16 +97,24 @@ func (p PlayMusic) currentAlbum(ctx context.Context) (spotifyapi.Item, error) {
 	if !ok || cur.Album == "" {
 		return spotifyapi.Item{}, fmt.Errorf("сейчас не играет трек из альбома")
 	}
-	if p.Shuffle != nil {
-		if err := p.Shuffle(ctx, false); err != nil {
-			log.Printf("spotify: shuffle: %v", err)
-		}
-	}
 	return spotifyapi.Item{Kind: "album", URI: cur.Album, Name: cur.AlbumName, Artist: cur.Artist, FromStart: true}, nil
 }
 
+// setShuffle sets shuffle once what was started has reached the speaker: set on
+// what played before, it would also forget that context's Smart Shuffle.
+func (p PlayMusic) setShuffle(ctx context.Context, on bool) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(shuffleDelay):
+	}
+	if err := p.Shuffle(ctx, on); err != nil {
+		log.Printf("spotify: shuffle: %v", err)
+	}
+}
+
 // play starts it: a track with its station after it, so what follows is a mix
-// of its kind. Without one the track plays in its album, then Spotify's autoplay.
+// of its kind (without one, in its album, then Spotify's autoplay); a playlist
+// or Liked Songs through Soloist where it can.
 func (p PlayMusic) play(ctx context.Context, it spotifyapi.Item) error {
 	if it.Kind == "track" && p.Radio != nil {
 		err := p.Radio(ctx, it.URI)
@@ -115,7 +123,25 @@ func (p PlayMusic) play(ctx context.Context, it spotifyapi.Item) error {
 		}
 		log.Printf("spotify: station of %s: %v", it.URI, err)
 	}
+	if (it.Kind == "liked" || it.Kind == "playlist") && p.Context != nil {
+		err := p.playContext(ctx, it)
+		if err == nil {
+			return nil
+		}
+		log.Printf("spotify: %s through Soloist: %v", it.URI, err)
+	}
 	return p.S.Play(ctx, it)
+}
+
+func (p PlayMusic) playContext(ctx context.Context, it spotifyapi.Item) error {
+	uri := it.URI
+	if it.Kind == "liked" {
+		var err error
+		if uri, err = p.S.LikedURI(ctx); err != nil {
+			return err
+		}
+	}
+	return p.Context(ctx, uri)
 }
 
 // LikeTrack saves the playing track to the library or removes it.
