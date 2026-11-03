@@ -39,6 +39,10 @@ type Item struct {
 	Name   string
 	Artist string // for tracks and albums
 	Album  string // a track's album URI
+	// AlbumName is the name of a track's album, when it is known.
+	AlbumName string
+	// FromStart plays a context from its first track.
+	FromStart bool
 }
 
 // Client talks to the Web API as the user whose refresh token is in TokenFile.
@@ -600,6 +604,9 @@ func (c *Client) Play(ctx context.Context, it Item) error {
 		body["uris"] = []string{it.URI}
 	default:
 		body["context_uri"] = it.URI
+		if it.FromStart {
+			body["offset"] = map[string]any{"position": 0}
+		}
 	}
 	play := func() (int, error) {
 		return c.call(ctx, http.MethodPut, "/v1/me/player/play", url.Values{"device_id": {d.ID}}, body, nil)
@@ -627,6 +634,10 @@ func (c *Client) Current(ctx context.Context) (Item, bool, error) {
 			URI     string      `json:"uri"`
 			Name    string      `json:"name"`
 			Artists []artistRef `json:"artists"`
+			Album   struct {
+				URI  string `json:"uri"`
+				Name string `json:"name"`
+			} `json:"album"`
 		} `json:"item"`
 	}
 	status, err := c.call(ctx, http.MethodGet, "/v1/me/player/currently-playing", nil, nil, &r)
@@ -640,7 +651,8 @@ func (c *Client) Current(ctx context.Context) (Item, bool, error) {
 	if kind == "" {
 		kind = "track"
 	}
-	return Item{Kind: kind, URI: r.Item.URI, Name: r.Item.Name, Artist: firstArtist(r.Item.Artists)}, true, nil
+	return Item{Kind: kind, URI: r.Item.URI, Name: r.Item.Name, Artist: firstArtist(r.Item.Artists),
+		Album: r.Item.Album.URI, AlbumName: r.Item.Album.Name}, true, nil
 }
 
 // SetLiked saves a track to (or removes it from) the user's library.

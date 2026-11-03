@@ -29,9 +29,9 @@ func (PlayMusic) Decl() agent.FuncDecl {
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"query": map[string]any{"type": "string", "description": "What to play: a song with its artist, an artist, an album or a playlist's name, spelled as it is really written (foreign names in Latin letters). Not needed for liked and dj"},
-				"kind": map[string]any{"type": "string", "enum": []string{"track", "artist", "album", "playlist", "any", "liked", "my_playlist", "dj"},
-					"description": "What the query names; any if unsure. liked: the user's Liked Songs (favourites). my_playlist: one of the user's own playlists; if there is none by that name the error lists them, choose from it. dj: a request for Spotify's DJ, which cannot start here; the error says what to do"},
+				"query": map[string]any{"type": "string", "description": "What to play: a song with its artist, an artist, an album or a playlist's name, spelled as it is really written (foreign names in Latin letters). Not needed for liked, dj and current_album"},
+				"kind": map[string]any{"type": "string", "enum": []string{"track", "artist", "album", "playlist", "any", "liked", "my_playlist", "dj", "current_album"},
+					"description": "What the query names; any if unsure. liked: the user's Liked Songs (favourites). my_playlist: one of the user's own playlists; if there is none by that name the error lists them, choose from it. dj: a request for Spotify's DJ, which cannot start here; the error says what to do. current_album: the album of the track playing now, from its first track, no query needed; use it instead of searching"},
 				"shuffle": map[string]any{"type": "boolean", "description": "Shuffle what is started, when asked to; to shuffle what already plays use playback"},
 			},
 		},
@@ -45,7 +45,7 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 	if kind == "" {
 		kind = "any"
 	}
-	if q == "" && kind != "liked" && kind != "dj" {
+	if q == "" && kind != "liked" && kind != "dj" && kind != "current_album" {
 		return nil, fmt.Errorf("не знаю, что включить")
 	}
 	var it spotifyapi.Item
@@ -58,6 +58,8 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 		// by the Web API and by Soloist's own play alike; it only works handed
 		// over from another device, so playback is left alone.
 		return nil, fmt.Errorf("DJ отсюда не запустить: включи его на телефоне и переведи на колонку через Spotify Connect")
+	case "current_album":
+		it, err = p.currentAlbum(ctx)
 	case "my_playlist":
 		it, err = p.S.MyPlaylist(ctx, q)
 	default:
@@ -83,6 +85,24 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 		res["artist"] = it.Artist
 	}
 	return res, nil
+}
+
+// currentAlbum is the album of what plays now, set to start from its first
+// track. Shuffle goes off: asked for from the start, it means in order.
+func (p PlayMusic) currentAlbum(ctx context.Context) (spotifyapi.Item, error) {
+	cur, ok, err := p.S.Current(ctx)
+	if err != nil {
+		return spotifyapi.Item{}, err
+	}
+	if !ok || cur.Album == "" {
+		return spotifyapi.Item{}, fmt.Errorf("сейчас не играет трек из альбома")
+	}
+	if p.Shuffle != nil {
+		if err := p.Shuffle(ctx, false); err != nil {
+			log.Printf("spotify: shuffle: %v", err)
+		}
+	}
+	return spotifyapi.Item{Kind: "album", URI: cur.Album, Name: cur.AlbumName, Artist: cur.Artist, FromStart: true}, nil
 }
 
 // play starts it: a track with its station after it, so what follows is a mix
@@ -138,7 +158,7 @@ type NowPlaying struct{ S *spotifyapi.Client }
 func (NowPlaying) Decl() agent.FuncDecl {
 	return agent.FuncDecl{
 		Name:        "now_playing",
-		Description: "Tell which track is playing now and who performs it.",
+		Description: "Tell which track is playing now, who performs it and which album it is from.",
 		Params:      map[string]any{"type": "object", "properties": map[string]any{}},
 	}
 }
@@ -151,5 +171,5 @@ func (n NowPlaying) Run(ctx context.Context, _ map[string]any) (map[string]any, 
 	if !ok {
 		return nil, fmt.Errorf("сейчас ничего не играет")
 	}
-	return map[string]any{"track": it.Name, "artist": it.Artist}, nil
+	return map[string]any{"track": it.Name, "artist": it.Artist, "album": it.AlbumName}, nil
 }

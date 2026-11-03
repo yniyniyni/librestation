@@ -299,6 +299,25 @@ func TestPlayLiked(t *testing.T) {
 	}
 }
 
+func TestPlayFromStart(t *testing.T) {
+	b := playBodyOf(t, Item{Kind: "album", URI: "spotify:album:a", FromStart: true})
+	off, _ := b["offset"].(map[string]any)
+	if b["context_uri"] != "spotify:album:a" || off["position"] != 0.0 {
+		t.Errorf("body = %v", b)
+	}
+}
+
+func TestCurrentKnowsTheAlbum(t *testing.T) {
+	f := newFake(t)
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"item":{"type":"track","uri":"spotify:track:t","name":"T","artists":[{"name":"A"}],"album":{"uri":"spotify:album:b","name":"B"}}}`))
+	}
+	it, ok, err := f.c.Current(context.Background())
+	if err != nil || !ok || it.Album != "spotify:album:b" || it.AlbumName != "B" {
+		t.Errorf("%+v %v %v", it, ok, err)
+	}
+}
+
 func TestMyPlaylist(t *testing.T) {
 	f := newFake(t)
 	calls := 0
