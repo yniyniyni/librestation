@@ -188,6 +188,10 @@ func (n *nnet) run() []float32 {
 			for j, v := range x {
 				y[j] = v * min(max(v+3, 0), 6) / 6
 			}
+		case kindRelu:
+			for j, v := range x {
+				y[j] = max(v, 0)
+			}
 		case kindSoftmax:
 			for f := range nx {
 				softmax(x[f*nd.dim:(f+1)*nd.dim], y[f*nd.dim:(f+1)*nd.dim])

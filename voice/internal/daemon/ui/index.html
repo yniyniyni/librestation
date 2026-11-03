@@ -188,6 +188,7 @@
 
     <section id="tab-words" hidden>
       <div class="row wrap"><h1 class="grow">Слова</h1><button class="primary" id="newword">Добавить слово</button></div>
+      <div class="group" id="stockwake" hidden></div>
       <div class="group" id="training" hidden><div>
         <div class="row"><b class="grow">Обучение «<span id="tword"></span>»</b><span class="muted small" id="tstage"></span></div>
         <div class="meter" style="margin-top:10px"><i id="tbar"></i></div>
@@ -516,6 +517,11 @@ function renderSettings(s) {
     setValue($("asstvoice"), a.settings.voice || "");
     setValue($("asstcity"), a.settings.city || "");
   }
+  const sw = s.stock_wake;
+  $("stockwake").hidden = !sw.words.length && !sw.error;
+  setHTML($("stockwake"), sw.words.length
+    ? sw.words.map(w => `<label class="field"><span>${esc(w.name)}<br><span class="muted small">Готовое слово Яндекса, запись не нужна</span></span><input type="checkbox" class="sw" data-stockwake="${esc(w.id)}" ${w.on ? "checked" : ""}></label>`).join("")
+    : `<div class="muted">Готовые слова «Алиса» и «Яндекс»: ${esc(sw.error)}</div>`);
   const q = s.quick;
   $("quickerr").hidden = q.available;
   $("quickerr").textContent = q.available ? "" : "Недоступны: " + (q.error || "модель Яндекса не загружена");
@@ -687,6 +693,7 @@ document.addEventListener("change", (ev) => {
   if (t.id === "ledauto" || t.id === "ledbright" || ds.led) { saveLED(); done(); }
   if ("quickon" in ds) run(null, () => api("PATCH", "/settings", { quick: { off: !t.checked } }));
   if (ds.quick) run(null, () => api("PATCH", "/settings", { quick: { group: ds.quick, on: t.checked } }));
+  if (ds.stockwake) run(null, () => api("PATCH", "/settings", { stock_wake: { [ds.stockwake]: t.checked } }));
   if (ds.enable) run(null, () => api("PATCH", "/words/" + ds.enable, { enabled: t.checked }));
   if (ds.action !== undefined) run(null, async () => { await api("PATCH", "/words/" + ds.action, { action: t.value || "none" }); done(); });
   if (ds.sens) run(null, async () => { await api("PATCH", "/words/" + ds.sens, { sensitivity: parseFloat(t.value) }); done(); });

@@ -60,12 +60,12 @@ type spotter interface {
 const LiveGain = 2
 
 // spotCommands takes one raw capture block's channel 0 at 16 kHz, once, and
-// shares it: the Yandex spotter (when the model is loaded) and the
-// assistant's Live session (when there is one). It runs on the audio
-// goroutine without d.mu.
+// shares it: the Yandex spotters (those loaded and switched on) and the
+// assistant's Live session (when there is one). It runs on the audio goroutine
+// without d.mu.
 func (d *Daemon) spotCommands(block []int16) {
 	asst := d.opt.Assistant
-	if d.spot == nil && asst == nil {
+	if d.spot == nil && asst == nil && len(d.wakes) == 0 {
 		return
 	}
 	if d.yin == nil {
@@ -81,11 +81,16 @@ func (d *Daemon) spotCommands(block []int16) {
 		}
 		return out
 	}
-	if d.spot != nil {
+	if d.spot != nil || len(d.wakes) > 0 {
 		clip := level(1)
 		d.mu.Lock()
 		d.yring.write(clip)
+		for _, w := range d.wakes {
+			w.on = d.settings.StockWake[w.id]
+		}
 		d.mu.Unlock()
+	}
+	if d.spot != nil {
 		d.spot.Push(pcm, func(cmd string, conf float64) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
@@ -94,9 +99,68 @@ func (d *Daemon) spotCommands(block []int16) {
 			}
 		})
 	}
+	for _, w := range d.wakes {
+		w.push(pcm, func(conf float64) {
+			d.mu.Lock()
+			defer d.mu.Unlock()
+			if d.paused == 0 {
+				d.onStockWake(w.id, w.name, conf)
+			}
+		})
+	}
 	if asst != nil {
 		asst.LiveAudio(level(LiveGain))
 	}
+}
+
+// wakeDither is the noise the stock trigger words listen through, the size
+// their flags name, in units of the spotter's input.
+const wakeDither = 0.1
+
+// wakeRepeat: a stock word firing again this soon is the same word.
+const wakeRepeat = 1500 * time.Millisecond
+
+// wakeSpot is one stock trigger word; it costs nothing while switched off.
+type wakeSpot struct {
+	id, name string
+	spot     spotter
+	reset    func()
+	on, ran  bool
+}
+
+// push runs the spotter when it is on. Switched on again, it starts clean.
+func (w *wakeSpot) push(pcm []float32, fire func(conf float64)) {
+	if !w.on {
+		w.ran = false
+		return
+	}
+	if !w.ran {
+		w.reset()
+		w.ran = true
+	}
+	w.spot.Push(pcm, func(_ string, conf float64) { fire(conf) })
+}
+
+// onStockWake calls the assistant for a stock trigger word; caller holds d.mu.
+func (d *Daemon) onStockWake(id, name string, conf float64) {
+	now := d.now()
+	state := "idle"
+	if a := d.opt.Assistant; a != nil {
+		state = a.State()
+	}
+	// While the reply plays the word may be the reply's own echo, and the
+	// voice watch hears a real interruption anyway. The stock speaker does the
+	// same (use-tts-blocker).
+	if state == "speaking" || now.Sub(d.lastWake) < wakeRepeat {
+		log.Printf("stock word %s conf %.3f ignored, state %s", id, conf, state)
+		return
+	}
+	d.lastWake = now
+	h := &Hit{Word: id, Name: name, Score: float32(conf), At: now, Source: "yandex", Action: "assistant",
+		volBefore: d.volume, Playback: d.playback == "playing"}
+	h.audio = d.yring.last(hitSecs * kws.SampleRate)
+	d.wakeLocked(h)
+	log.Printf("stock word %s conf %.3f state %s", id, conf, state)
 }
 
 // onCommand records a Yandex command and runs it when the situation allows;

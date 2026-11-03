@@ -21,18 +21,26 @@ const (
 // frameLen samples; fill tops them up and frame computes one frame and
 // slides the window by frameShift.
 type fbank struct {
-	win   [frameLen]float64
-	melLo [numMel]int       // first FFT bin of each mel triangle
-	melW  [numMel][]float64 // the triangle's weights from melLo on
-	tw    [nfft / 2]complex128
-	x     [frameLen]float64 // pending samples
-	n     int               // how many of x are filled
-	buf   [nfft]complex128
+	win    [frameLen]float64
+	bins   int
+	melLo  []int       // first FFT bin of each mel triangle
+	melW   [][]float64 // the triangle's weights from melLo on
+	energy float64     // log energy of the last frame, before pre-emphasis
+	dither float64     // size of the noise added to the samples; 0 = none
+	rng    uint32      // its generator state
+	tw     [nfft / 2]complex128
+	x      [frameLen]float64 // pending samples
+	n      int               // how many of x are filled
+	buf    [nfft]complex128
 }
 
 func melScale(f float64) float64 { return 1127 * math.Log(1+f/700) }
 
-func (f *fbank) init() {
+func (f *fbank) init() { f.initBins(numMel) }
+
+// initBins makes it a bank of bins mel filters.
+func (f *fbank) initBins(bins int) {
+	f.bins, f.melLo, f.melW = bins, make([]int, bins), make([][]float64, bins)
 	for i := range f.win {
 		f.win[i] = math.Pow(0.5-0.5*math.Cos(2*math.Pi*float64(i)/(frameLen-1)), 0.85)
 	}
@@ -40,8 +48,8 @@ func (f *fbank) init() {
 		f.tw[i] = cmplx.Exp(complex(0, -2*math.Pi*float64(i)/nfft))
 	}
 	lo, hi := melScale(20), melScale(8000)
-	delta := (hi - lo) / (numMel + 1)
-	for b := range numMel {
+	delta := (hi - lo) / float64(bins+1)
+	for b := range bins {
 		l, c, r := lo+float64(b)*delta, lo+float64(b+1)*delta, lo+float64(b+2)*delta
 		f.melLo[b] = -1
 		for k := range nfft / 2 { // Kaldi ignores the Nyquist bin
@@ -63,18 +71,33 @@ func (f *fbank) init() {
 
 func (f *fbank) reset() { f.n = 0 }
 
+// noise is a cheap zero-mean value of about unit size: the sum of two uniforms
+// from an xorshift generator.
+func (f *fbank) noise() float64 {
+	next := func() float64 {
+		f.rng ^= f.rng << 13
+		f.rng ^= f.rng >> 17
+		f.rng ^= f.rng << 5
+		return float64(f.rng)/(1<<32) - 0.5
+	}
+	return 2.4 * (next() + next())
+}
+
 // fill takes samples from pcm until a frame is complete and reports how
 // many it took and whether a frame is ready.
 func (f *fbank) fill(pcm []float32) (int, bool) {
 	k := min(len(pcm), frameLen-f.n)
 	for i, v := range pcm[:k] {
 		f.x[f.n+i] = float64(v)
+		if f.dither > 0 {
+			f.x[f.n+i] += f.dither * f.noise()
+		}
 	}
 	f.n += k
 	return k, f.n == frameLen
 }
 
-// frame writes the log-mel energies of the full window to out (numMel
+// frame writes the log-mel energies of the full window to out (bins
 // values) and drops the oldest frameShift samples.
 func (f *fbank) frame(out []float32) {
 	fr := f.x
@@ -86,9 +109,12 @@ func (f *fbank) frame(out []float32) {
 		mean += v
 	}
 	mean /= frameLen
+	f.energy = 0
 	for i := range fr {
 		fr[i] -= mean
+		f.energy += fr[i] * fr[i]
 	}
+	f.energy = math.Log(math.Max(f.energy, 1.1920929e-07))
 	for i := frameLen - 1; i > 0; i-- {
 		fr[i] -= preemph * fr[i-1]
 	}
@@ -101,7 +127,7 @@ func (f *fbank) frame(out []float32) {
 		}
 	}
 	f.fft()
-	for b := range numMel {
+	for b := range f.bins {
 		e := 0.0
 		for j, w := range f.melW[b] {
 			x := f.buf[f.melLo[b]+j]

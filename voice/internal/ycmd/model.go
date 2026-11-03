@@ -19,6 +19,9 @@ import (
 // against; Load accepts others (the format is the same) but callers may warn.
 const TestedVersion = "ru-RU-quasar-commands-29Nov24-08-35-retune-v2-shrd-bt-q16-rt"
 
+// defaultRearm is the interval after a hit for a model that does not set it.
+const defaultRearm = "25"
+
 // Command is one phrase the model can report: a single word or an ordered
 // pair such as "включи свет".
 type Command struct {
@@ -36,6 +39,11 @@ type Model struct {
 	Rearm    int // frames to stay quiet after a hit
 
 	net []*node // in graph order; every input refers to an earlier index
+
+	// The cmn:lda front end, for a model with one; nil = log-mel.
+	lda       []float32
+	ldaCols   int
+	cmnWindow int
 }
 
 // compKind is the component types the reader understands.
@@ -47,6 +55,7 @@ const (
 	kindAffine                    // Q16FixedAffineComponent: w*x (+ bias)
 	kindConv                      // Q16GroupConvCorouComponent: streaming depthwise FIR
 	kindHardswish                 // hardswish
+	kindRelu                      // RectifiedLinearComponent
 	kindSoftmax                   // SoftmaxComponent
 )
 
@@ -56,6 +65,7 @@ var kindByType = map[string]compKind{
 	"Q16FixedAffineComponent":    kindAffine,
 	"Q16GroupConvCorouComponent": kindConv,
 	"hardswish":                  kindHardswish,
+	"RectifiedLinearComponent":   kindRelu,
 	"SoftmaxComponent":           kindSoftmax,
 }
 
@@ -97,6 +107,10 @@ func Load(dir string) (*Model, error) {
 	if m.Commands, err = parseCommands(flags, words); err != nil {
 		return nil, err
 	}
+	// The activation models do not set the interval: the commands' value.
+	if flags["interval-after-last-activation"] == "" {
+		flags["interval-after-last-activation"] = defaultRearm
+	}
 	for _, f := range []struct {
 		key string
 		dst *int
@@ -107,10 +121,23 @@ func Load(dir string) (*Model, error) {
 		}
 		*f.dst = v
 	}
+	if flags["feat-pipeline"] == "cmn:lda" {
+		if m.ldaCols, m.lda, err = loadLDA(filepath.Join(dir, "lda.mat")); err != nil {
+			return nil, fmt.Errorf("ycmd: lda.mat: %w", err)
+		}
+		if m.cmnWindow, err = strconv.Atoi(flags["cmn-window"]); err != nil || m.cmnWindow <= 0 {
+			return nil, fmt.Errorf("ycmd: flags.txt: bad cmn-window %q", flags["cmn-window"])
+		}
+	}
 	if m.net, err = parseNnet(data); err != nil {
 		return nil, fmt.Errorf("ycmd: acoustic_model.nnet: %w", err)
 	}
-	if n := posteriors(m.net); n != len(words) {
+	// An activation model's words.txt may spell its one word out in phones,
+	// while the network has only filler and word; the flags name it then.
+	n := posteriors(m.net)
+	if name := flags["string-representations"]; name != "" && n == 2 && len(m.Commands) == 1 {
+		m.Commands[0].Name, m.Commands[0].Labels = name, []int{1}
+	} else if n != len(words) {
 		return nil, fmt.Errorf("ycmd: acoustic_model.nnet gives %d posteriors, words.txt has %d words", n, len(words))
 	}
 	return m, nil

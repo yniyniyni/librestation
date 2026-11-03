@@ -8,6 +8,8 @@ type Spotter struct {
 	dec  *decoder
 	cmds []Command
 	feat [numMel]float32
+	mel  [numMel]float32 // the LDA front end's input
+	lda  *ldaFront       // nil = log-mel goes straight to the network
 }
 
 // NewSpotter makes a recogniser over m. Several spotters may share m.
@@ -18,7 +20,18 @@ func NewSpotter(m *Model) *Spotter {
 		cmds: m.Commands,
 	}
 	s.fb.init()
+	if m.lda != nil {
+		s.fb.initBins(mfccBins)
+		s.lda = newLDAFront(m.lda, m.ldaCols, m.cmnWindow)
+	}
 	return s
+}
+
+// Dither adds noise of the given size to the samples, as the model's flags ask.
+// An activation model takes digital silence around any word for its own word:
+// it only ever heard microphones. The commands' results are checked without it.
+func (s *Spotter) Dither(size float64) {
+	s.fb.dither, s.fb.rng = size, 2463534242
 }
 
 // Push feeds 16 kHz samples at int16 scale, in any chunking, and calls fire
@@ -33,12 +46,25 @@ func (s *Spotter) Push(pcm []float32, fire func(cmd string, conf float64)) {
 		if !ok {
 			continue
 		}
-		s.fb.frame(s.feat[:])
+		if !s.feature() {
+			continue
+		}
 		if s.nn.add(s.feat[:]) {
 			s.decode(fire)
 		}
 	}
 	s.decode(fire)
+}
+
+// feature computes the next network input from the full window; false while
+// the front end still gathers context.
+func (s *Spotter) feature() bool {
+	if s.lda == nil {
+		s.fb.frame(s.feat[:])
+		return true
+	}
+	s.fb.frame(s.mel[:])
+	return s.lda.push(s.mel[:], s.fb.energy, s.feat[:])
 }
 
 // decode runs the queued frames through the network and the decoder.
@@ -58,6 +84,9 @@ func (s *Spotter) decode(fire func(cmd string, conf float64)) {
 // Reset forgets all audio, as if the spotter were new.
 func (s *Spotter) Reset() {
 	s.fb.reset()
+	if s.lda != nil {
+		s.lda.reset()
+	}
 	s.nn.reset()
 	s.dec.reset()
 }
