@@ -69,7 +69,7 @@ const (
 	endGrace    = 1500 * time.Millisecond
 )
 
-const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation. Если в услышанном нет обращения к тебе — музыка, телевизор, разговор не с тобой — вызови no_request и ничего не говори. Если ты отвечал и тебя перебили словом «стоп», «хватит» или «пауза», это значит замолчать: вызови end_conversation, музыку не трогай. Названия песен и исполнителей передавай в инструменты так, как они пишутся на самом деле: иностранные — латиницей, а не русскими буквами. Если просят включить любимое, лайкнутое, «мою музыку» или мой плейлист, это play_music с kind liked или my_playlist. Просьба перемешать то, что играет, это playback с действием shuffle_on: не спрашивай, что включить.`
+const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Команды управления музыкой (пауза, дальше, назад, громкость, перемешивание, лайк) выполняй молча, сразу вызывая инструмент и ничего не говоря. Если пользователь просит закончить разговор, вызови end_conversation. Если в услышанном нет обращения к тебе — музыка, телевизор, разговор не с тобой — вызови no_request и ничего не говори. Если ты отвечал и тебя перебили словом «стоп», «хватит» или «пауза», это значит замолчать: вызови end_conversation, музыку не трогай. Названия песен и исполнителей передавай в инструменты так, как они пишутся на самом деле: иностранные — латиницей, а не русскими буквами. Если просят включить любимое, лайкнутое, «мою музыку» или мой плейлист, это play_music с kind liked или my_playlist; просьба включить диджея или DJ это kind dj. Просьба перемешать то, что играет, это playback с действием shuffle_on: не спрашивай, что включить.`
 
 func LiveDeclarations(tools []agent.Tool) []geminilive.Declaration {
 	out := make([]geminilive.Declaration, 0, len(tools)+1)
@@ -729,6 +729,13 @@ func (r *liveRun) resume() bool {
 // call runs a batch of tool calls on its own goroutine and answers them.
 func (r *liveRun) call(calls []geminilive.FunctionCall) {
 	t := r.begin()
+	if !slices.ContainsFunc(calls, func(c geminilive.FunctionCall) bool { return !silentTools[c.Name] }) {
+		// A command: nothing of the reply is played, unless it fails.
+		if r.state == "speaking" || r.finishing {
+			r.out.flush()
+		}
+		r.drop, r.finishing = true, false
+	}
 	r.tools++
 	r.stall = nil
 	if r.waiting() {
@@ -801,6 +808,13 @@ func (r *liveRun) toolsDone(b toolBatch) bool {
 		} else {
 			return r.lost(b.err)
 		}
+	}
+	if r.tools == 0 && r.turn != nil {
+		if silentDone(r.turn.summary()) {
+			r.why = "command done"
+			return false
+		}
+		r.drop = false // the model explains what went wrong
 	}
 	if r.tools == 0 && !r.finishing && (r.state == "thinking" || r.state == "speaking") {
 		r.stall = r.s.after(r.stallLimit())

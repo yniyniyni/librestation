@@ -175,3 +175,25 @@ func TestPlayTrackWithoutStationUsesItsAlbum(t *testing.T) {
 		t.Errorf("err %v, album %q", err, album)
 	}
 }
+
+func TestPlayDJNeedsNoQuery(t *testing.T) {
+	var ctxURI string
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			var b struct {
+				URI string `json:"context_uri"`
+			}
+			json.NewDecoder(r.Body).Decode(&b)
+			ctxURI = b.URI
+		}
+	})
+	if _, err := (PlayMusic{S: c}).Run(context.Background(), map[string]any{"kind": "dj"}); err != nil {
+		t.Fatal(err)
+	}
+	if ctxURI != "spotify:playlist:37i9dQZF1EYkqdzj48dyYq" {
+		t.Errorf("context %q", ctxURI)
+	}
+}

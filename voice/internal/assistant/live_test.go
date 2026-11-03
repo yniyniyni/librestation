@@ -529,10 +529,10 @@ func TestLiveSilentAfterEndConversation(t *testing.T) {
 }
 
 func TestLiveSilentAfterAction(t *testing.T) {
-	g := newLiveRig(t, liveTool{name: "playback"})
+	g := newLiveRig(t, liveTool{name: "play_music"})
 	f := g.conn()
 	g.open()
-	g.send(f, mHeard("пауза"), mTool("t1", "playback", `{}`))
+	g.send(f, mHeard("включи джаз"), mTool("t1", "play_music", `{}`))
 	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
 	g.until("grace timer", func() bool { return g.clock.count(actionGrace) == 2 }) // startLimit is the other
 	g.clock.Advance(actionGrace)
@@ -540,6 +540,79 @@ func TestLiveSilentAfterAction(t *testing.T) {
 	if s := g.stockLog(); len(s) != 0 {
 		t.Errorf("stock %v, want none", s)
 	}
+}
+
+// A plain command is done, not talked about: the conversation ends as soon as
+// the tool has answered, and nothing of a reply plays.
+func TestLiveCommandIsSilent(t *testing.T) {
+	g := newLiveRig(t, liveTool{name: "playback"})
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("дальше"), mTool("t1", "playback", `{"action":"next"}`))
+	g.ended()
+	if !f.isClosed() {
+		t.Error("Live not closed")
+	}
+	if len(f.responses()) != 1 {
+		t.Errorf("responses %v", f.responses())
+	}
+	if c, n := g.chunks(), g.finishes(); c != 0 || n != 0 {
+		t.Errorf("played %d chunks, %d replies", c, n)
+	}
+	if s := g.stockLog(); len(s) != 0 {
+		t.Errorf("stock %v, want none", s)
+	}
+	if d := g.duckLog(); !slices.Equal(d, []float64{duckGain, 1}) {
+		t.Errorf("ducks %v", d)
+	}
+}
+
+// What the model began to say before calling the command stops.
+func TestLiveCommandCutsTheReply(t *testing.T) {
+	release := make(chan struct{})
+	g := newLiveRig(t, liveTool{name: "playback", release: release})
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("дальше"), mAudio())
+	g.untilState("speaking")
+	g.send(f, mTool("t1", "playback", `{}`))
+	g.until("flush", func() bool { return g.flushes() >= 1 })
+	before := g.chunks()
+	g.send(f, mAudio())
+	close(release)
+	g.ended()
+	if c := g.chunks(); c != before {
+		t.Errorf("played %d chunks after the command, want none", c-before)
+	}
+}
+
+// A command that failed is told about.
+func TestLiveFailedCommandSpeaks(t *testing.T) {
+	g := newLiveRig(t, liveTool{name: "playback", err: errors.New("нет")})
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("дальше"), mTool("t1", "playback", `{}`))
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.until("the tool done", func() bool { return g.clock.count(liveStall) >= 1 })
+	g.send(f, mAudio(), mSaid("Не получилось."), mDone())
+	g.until("reply played", func() bool { return g.finishes() == 1 && g.s.State() == "followup" })
+	if g.chunks() != 1 {
+		t.Errorf("played %d chunks, want 1", g.chunks())
+	}
+}
+
+// A command together with a question still gets its answer.
+func TestLiveCommandWithInfoSpeaks(t *testing.T) {
+	g := newLiveRig(t, liveTool{name: "playback"}, liveTool{name: "get_time"})
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("дальше и который час"), mTool("t1", "get_time", `{}`))
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.send(f, mTool("t2", "playback", `{}`))
+	g.until("both answered", func() bool { return len(f.responses()) == 2 })
+	g.until("the tools done", func() bool { return g.clock.count(liveStall) >= 2 })
+	g.send(f, mAudio(), mSaid("Десять."), mDone())
+	g.until("reply played", func() bool { return g.finishes() == 1 })
 }
 
 func TestLiveQuietSpeechDoesNotBargeIn(t *testing.T) {

@@ -34,7 +34,7 @@ const (
 
 // Item is something playable.
 type Item struct {
-	Kind   string // track, artist, album, playlist, liked
+	Kind   string // track, artist, album, playlist, liked, dj
 	URI    string
 	Name   string
 	Artist string // for tracks and albums
@@ -448,6 +448,12 @@ func pick(r searchResp, q, kind string) (Item, bool) {
 // it goes on to its autoplay at the end.
 func Liked() Item {
 	return Item{Kind: "liked", URI: "spotify:collection", Name: "Любимые треки"}
+}
+
+// DJ is Spotify's DJ: to the API an ordinary playlist with the same URI for all,
+// made for whoever plays it.
+func DJ() Item {
+	return Item{Kind: "dj", URI: "spotify:playlist:37i9dQZF1EYkqdzj48dyYq", Name: "DJ"}
 }
 
 // ErrNoPlaylistAccess is the answer to asking for the user's playlists on a
