@@ -197,12 +197,136 @@ func TestSearchAnyPrefersExactArtist(t *testing.T) {
 	if it.URI != "spotify:artist:a1" || it.Kind != "artist" {
 		t.Errorf("item = %+v", it)
 	}
-	if got["path"] != "/v1/search" || got["type"] != "track,artist,album,playlist" || got["limit"] != "5" {
+	if got["path"] != "/v1/search" || got["type"] != "track,artist,album,playlist" || got["limit"] != searchLimit {
 		t.Errorf("request = %v", got)
 	}
 	it, err = f.c.Search(context.Background(), "starboy", "any")
 	if err != nil || it.Kind != "track" || it.Artist != "The Weeknd" {
 		t.Errorf("item = %+v, %v", it, err)
+	}
+}
+
+func TestSimilarBySound(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"кендрик ламар", "Kendrick Lamar", true},
+		{"рамштайн", "Rammstein", true},
+		{"The Weeknd", "the weeknd!", true},
+		{"кино", "Metallica", false},
+		{"", "x", false},
+	} {
+		if got := similar(c.a, c.b) >= minMatch; got != c.want {
+			t.Errorf("similar(%q, %q) = %.2f", c.a, c.b, similar(c.a, c.b))
+		}
+	}
+}
+
+func TestSearchPrefersTheNameThatSoundsRight(t *testing.T) {
+	f := newFake(t)
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tracks":{"items":[{"uri":"spotify:track:x","name":"Песня про Кендрика","artists":[{"name":"Кто-то"}],"album":{"uri":"spotify:album:x"}}]},
+			"artists":{"items":[{"uri":"spotify:artist:k","name":"Kendrick Lamar"}]}}`))
+	}
+	it, err := f.c.Search(context.Background(), "кендрик ламар", "any")
+	if err != nil || it.URI != "spotify:artist:k" {
+		t.Errorf("item = %+v, %v", it, err)
+	}
+}
+
+func TestSearchTracksKeepAlbum(t *testing.T) {
+	f := newFake(t)
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"tracks":{"items":[{"uri":"spotify:track:s","name":"Starboy","artists":[{"name":"The Weeknd"}],"album":{"uri":"spotify:album:a"}}]}}`))
+	}
+	it, err := f.c.Search(context.Background(), "starboy the weeknd", "track")
+	if err != nil || it.URI != "spotify:track:s" || it.Album != "spotify:album:a" {
+		t.Errorf("item = %+v, %v", it, err)
+	}
+}
+
+func TestSearchRetriesInLatin(t *testing.T) {
+	f := newFake(t)
+	var qs []string
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		qs = append(qs, q)
+		if q == "metallika" {
+			w.Write([]byte(`{"artists":{"items":[{"uri":"spotify:artist:m","name":"Metallica"}]}}`))
+			return
+		}
+		w.Write([]byte(`{}`))
+	}
+	it, err := f.c.Search(context.Background(), "металлика", "artist")
+	if err != nil || it.URI != "spotify:artist:m" || len(qs) != 2 {
+		t.Errorf("item = %+v, %v, queries %v", it, err, qs)
+	}
+}
+
+// playBodyOf plays it on a fake speaker and returns the play request's body.
+func playBodyOf(t *testing.T, it Item) map[string]any {
+	t.Helper()
+	f := newFake(t)
+	var body map[string]any
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			json.NewDecoder(r.Body).Decode(&body)
+		}
+	}
+	if err := f.c.Play(context.Background(), it); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// A lone track stops at its end; in its album's context Spotify's autoplay
+// follows.
+func TestPlayTrackInItsAlbum(t *testing.T) {
+	b := playBodyOf(t, Item{Kind: "track", URI: "spotify:track:s", Album: "spotify:album:a"})
+	off, _ := b["offset"].(map[string]any)
+	if b["context_uri"] != "spotify:album:a" || off["uri"] != "spotify:track:s" || b["uris"] != nil {
+		t.Errorf("body = %v", b)
+	}
+}
+
+func TestPlayLiked(t *testing.T) {
+	if b := playBodyOf(t, Liked()); b["context_uri"] != "spotify:collection" {
+		t.Errorf("body = %v", b)
+	}
+}
+
+func TestMyPlaylist(t *testing.T) {
+	f := newFake(t)
+	calls := 0
+	f.api = func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/v1/me/playlists" {
+			t.Errorf("unexpected %s", r.URL)
+		}
+		w.Write([]byte(`{"items":[{"uri":"spotify:playlist:g","name":"Для зала"},null,{"uri":"spotify:playlist:c","name":"Chill evening"}]}`))
+	}
+	ctx := context.Background()
+	it, err := f.c.MyPlaylist(ctx, "для зала")
+	if err != nil || it.URI != "spotify:playlist:g" {
+		t.Errorf("item = %+v, %v", it, err)
+	}
+	if _, err = f.c.MyPlaylist(ctx, "совсем другое"); err == nil || !strings.Contains(err.Error(), "Chill evening") {
+		t.Errorf("a miss must list the names: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("%d list requests, want 1 (kept)", calls)
+	}
+}
+
+func TestMyPlaylistWithoutPermission(t *testing.T) {
+	f := newFake(t)
+	f.api = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
+	if _, err := f.c.MyPlaylist(context.Background(), "x"); !errors.Is(err, ErrNoPlaylistAccess) {
+		t.Errorf("err = %v", err)
 	}
 }
 

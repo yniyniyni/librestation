@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -99,5 +100,33 @@ func TestMusicNotLinked(t *testing.T) {
 		if err := run(); !errors.Is(err, spotifyapi.ErrNotLinked) {
 			t.Errorf("err = %v", err)
 		}
+	}
+}
+
+func TestPlayLikedNeedsNoQuery(t *testing.T) {
+	var ctxURI string
+	var shuffled string
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			var b struct {
+				URI string `json:"context_uri"`
+			}
+			json.NewDecoder(r.Body).Decode(&b)
+			ctxURI = b.URI
+		case "/v1/me/player/shuffle":
+			shuffled = r.URL.Query().Get("state")
+		default:
+			t.Errorf("unexpected %s", r.URL)
+		}
+	})
+	res, err := PlayMusic{S: c}.Run(context.Background(), map[string]any{"kind": "liked", "shuffle": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctxURI != "spotify:collection" || shuffled != "true" || res["kind"] != "liked" {
+		t.Errorf("context %q, shuffle %q, res %v", ctxURI, shuffled, res)
 	}
 }
