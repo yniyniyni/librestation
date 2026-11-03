@@ -4,6 +4,7 @@ package scene
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,6 +73,13 @@ const (
 	// AIErrorHold is how long the AI error state shows before it ends.
 	AIErrorHold = 1500 * time.Millisecond
 	defaultDT   = 40 * time.Millisecond
+	// aiFade is the assistant's way in and out, aiStateFade from one of its
+	// states to another: none of them just replaces what was on.
+	aiFade      = 350 * time.Millisecond
+	aiStateFade = 200 * time.Millisecond
+	// speakTau is how fast the speaking ring follows the voice: without it the
+	// ring flickers with every syllable.
+	speakTau = 120 * time.Millisecond
 )
 
 type overlayKind int
@@ -91,8 +99,10 @@ type Scene struct {
 	set    Settings
 
 	ai        bool
-	aiState   string // listening, thinking, speaking, error
-	aiStart   time.Time
+	aiState   string    // listening, thinking, speaking, error
+	aiOn      time.Time // when the layer came on; its motion runs from here
+	aiStart   time.Time // when the state began
+	speakLv   float64   // the voice level the speaking ring shows
 	playing   bool
 	playStart time.Time
 	level     float64
@@ -106,6 +116,15 @@ type Scene struct {
 	action  string
 
 	lastFrame time.Time
+
+	layer     string // what the last frame showed
+	shown     bool   // a frame has been drawn
+	lastScr   anim.Screen
+	lastRing  anim.Ring
+	fadeScr   anim.Screen // what the fade started from
+	fadeRing  anim.Ring
+	fadeStart time.Time
+	fadeLen   time.Duration // 0 = no fade running
 }
 
 // New creates a scene with default settings. now is the clock source.
@@ -151,6 +170,9 @@ func (s *Scene) AI(on bool, state string) {
 	if state == "" {
 		state = "listening"
 	}
+	if on && !s.ai {
+		s.aiOn = s.now()
+	}
 	if on && (!s.ai || state != s.aiState) {
 		s.aiStart = s.now()
 	}
@@ -192,62 +214,121 @@ func (s *Scene) Frame() (anim.Screen, anim.Ring) {
 	}
 	s.lastFrame = now
 
+	scr, ring, layer := s.compose(now, dt)
+	if layer != s.layer {
+		if d := fadeFor(s.layer, layer); d > 0 && s.shown {
+			s.fadeScr, s.fadeRing, s.fadeStart, s.fadeLen = s.lastScr, s.lastRing, now, d
+		} else {
+			s.fadeLen = 0
+		}
+		s.layer = layer
+	}
+	if s.fadeLen > 0 {
+		if p := float64(now.Sub(s.fadeStart)) / float64(s.fadeLen); p >= 1 {
+			s.fadeLen = 0
+		} else {
+			p = p * p * (3 - 2*p) // eased at both ends
+			scr, ring = mixScreen(s.fadeScr, scr, p), mixRing(s.fadeRing, ring, p)
+		}
+	}
+	s.lastScr, s.lastRing, s.shown = scr, ring, true
+	return scr, ring
+}
+
+// fadeFor is how long the change between two layers fades. The overlays answer
+// a knob or a command, so they come on at once.
+func fadeFor(from, to string) time.Duration {
+	fromAI, toAI := strings.HasPrefix(from, "ai:"), strings.HasPrefix(to, "ai:")
+	switch {
+	case to == "volume" || to == "command":
+		return 0
+	case fromAI && toAI:
+		return aiStateFade
+	case fromAI || toAI:
+		return aiFade
+	}
+	return 0
+}
+
+func mix8(a, b uint8, p float64) uint8 {
+	return uint8(float64(a) + (float64(b)-float64(a))*p + 0.5)
+}
+
+func mixScreen(a, b anim.Screen, p float64) anim.Screen {
+	for i := range a {
+		a[i] = mix8(a[i], b[i], p)
+	}
+	return a
+}
+
+func mixRing(a, b anim.Ring, p float64) anim.Ring {
+	for i := range a {
+		a[i] = asset.RGB{R: mix8(a[i].R, b[i].R, p), G: mix8(a[i].G, b[i].G, p), B: mix8(a[i].B, b[i].B, p)}
+	}
+	return a
+}
+
+// compose draws the layer on top now and names it.
+func (s *Scene) compose(now time.Time, dt time.Duration) (anim.Screen, anim.Ring, string) {
 	switch s.overlay {
 	case overlayVolume:
 		if t := now.Sub(s.ovStart); t < volumeHold {
-			return s.volumeFrame(t)
+			scr, ring := s.volumeFrame(t)
+			return scr, ring, "volume"
 		}
 		s.overlay = overlayNone
 	case overlayCommand:
 		t := now.Sub(s.ovStart)
 		ring, ok := anim.FlashRing(s.set.Flash, s.action, t)
 		if ok || t < commandHold {
-			return s.iconScreen(t), ring
+			return s.iconScreen(t), ring, "command"
 		}
 		s.overlay = overlayNone
 	}
 
 	switch {
 	case s.ai:
-		t := now.Sub(s.aiStart)
-		if s.aiState == "error" && t >= AIErrorHold {
+		if s.aiState == "error" && now.Sub(s.aiStart) >= AIErrorHold {
 			s.ai = false
 			break
 		}
+		t := now.Sub(s.aiOn)
 		var scr anim.Screen
 		if s.set.AIScreen == "eq" {
 			scr = anim.AIEq(s.level, t)
 		} else {
 			scr = anim.AIDots(s.level, t)
 		}
-		return scr, s.aiRing(t)
+		return scr, s.aiRing(t, now.Sub(s.aiStart), dt), "ai:" + s.aiState
 	}
 	if s.playing {
-		return s.musicScreen(now, dt), anim.Ring{}
+		return s.musicScreen(now, dt), anim.Ring{}, "music"
 	}
-	return anim.Clock(s.font, now, 3), anim.Ring{}
+	return anim.Clock(s.font, now, 3), anim.Ring{}, "clock"
 }
 
-// aiRing draws the ring for the current assistant state; t is the time
-// since the state began.
-func (s *Scene) aiRing(t time.Duration) anim.Ring {
+// aiRing draws the ring for the current assistant state; t is the time since
+// the assistant came on, so a new state carries on the motion, and st since the
+// state began.
+func (s *Scene) aiRing(t, st, dt time.Duration) anim.Ring {
 	ring := anim.AIRing(s.set.AIRing, t)
 	switch s.aiState {
-	case "thinking": // the listening ring, one revolution per second
+	case "thinking": // the listening ring, one revolution per second more
 		var r anim.Ring
-		k := int(t.Seconds()*float64(len(r))) % len(r)
+		k := int(st.Seconds()*float64(len(r))) % len(r)
 		for i := range r {
 			r[(i+k)%len(r)] = ring[i]
 		}
 		return r
 	case "speaking": // brightness follows the level
-		g := 0.25 + 0.75*math.Max(0, math.Min(1, s.level))
+		s.speakLv += (s.level - s.speakLv) * (1 - math.Exp(-float64(dt)/float64(speakTau)))
+		g := 0.25 + 0.75*math.Max(0, math.Min(1, s.speakLv))
 		for i, c := range ring {
 			ring[i] = asset.RGB{R: uint8(float64(c.R) * g), G: uint8(float64(c.G) * g), B: uint8(float64(c.B) * g)}
 		}
 	case "error": // red blink, 4 Hz
 		ring = anim.Ring{}
-		if int(t/(125*time.Millisecond))%2 == 0 {
+		if int(st/(125*time.Millisecond))%2 == 0 {
 			for i := range ring {
 				ring[i] = asset.RGB{R: 255}
 			}

@@ -177,8 +177,10 @@ func TestCommandOverAIThenBack(t *testing.T) {
 		t.Fatal("icon with dark ring expected")
 	}
 	c.add(300 * time.Millisecond)
+	s.Frame() // the fade back begins
+	c.add(aiFade)
 	scr, ring = s.Frame()
-	if scr != anim.AIDots(0, 1100*time.Millisecond) || ring != anim.AIRing("carousel", 1100*time.Millisecond) {
+	if d := 1100*time.Millisecond + aiFade; scr != anim.AIDots(0, d) || ring != anim.AIRing("carousel", d) {
 		t.Fatal("back to AI expected")
 	}
 }
@@ -192,7 +194,9 @@ func TestVolumeOverAI(t *testing.T) {
 		t.Fatal("volume over AI expected")
 	}
 	c.add(2 * time.Second)
-	if _, ring := s.Frame(); ring != anim.AIRing("carousel", 3*time.Second) {
+	s.Frame() // the fade back begins
+	c.add(aiFade)
+	if _, ring := s.Frame(); ring != anim.AIRing("carousel", 3*time.Second+aiFade) {
 		t.Fatal("AI expected after volume")
 	}
 }
@@ -237,8 +241,61 @@ func TestAITimeoutIsCallers(t *testing.T) {
 		t.Fatal("scene must not time out AI")
 	}
 	s.AI(false, "")
+	s.Frame()
+	c.add(aiFade)
 	if _, ring := s.Frame(); lit(ring) {
 		t.Fatal("AI off must show clock")
+	}
+}
+
+// The assistant comes and goes smoothly: right after the change the frame is
+// still what was on, halfway it is in between, and the fade ends on the layer.
+func TestAIFadesInAndOut(t *testing.T) {
+	s, c := newScene(Assets{})
+	s.Frame()
+	s.AI(true, "")
+	if _, ring := s.Frame(); lit(ring) {
+		t.Fatal("the ring must not jump on at once")
+	}
+	c.add(aiFade / 2)
+	_, half := s.Frame()
+	full := anim.AIRing("carousel", aiFade/2)
+	if !lit(half) || half == full {
+		t.Fatalf("halfway %v, want dimmer than %v", half, full)
+	}
+	c.add(aiFade)
+	if _, ring := s.Frame(); ring != anim.AIRing("carousel", aiFade*3/2) {
+		t.Fatal("the fade must end on the ring")
+	}
+	s.AI(false, "")
+	if _, ring := s.Frame(); !lit(ring) {
+		t.Fatal("the ring must not jump off at once")
+	}
+	c.add(aiFade + time.Millisecond)
+	scr, ring := s.Frame()
+	if lit(ring) || scr != anim.Clock(asset.BuiltinFont(), c.now(), 3) {
+		t.Fatal("after the fade: clock, dark ring")
+	}
+}
+
+// A new state carries on the motion instead of restarting it.
+func TestAIStateKeepsTheMotion(t *testing.T) {
+	s, c := newScene(Assets{})
+	s.AI(true, "listening")
+	s.Frame()
+	c.add(time.Second)
+	s.AI(true, "speaking")
+	s.Audio(1, [12]float64{})
+	s.Frame()
+	c.add(aiStateFade)
+	s.Frame()
+	c.add(10 * time.Second) // the level has been followed by now
+	_, ring := s.Frame()
+	want := anim.AIRing("carousel", time.Second+aiStateFade+10*time.Second)
+	for i := range ring {
+		if d := int(ring[i].R) - int(want[i].R); d > 2 || d < -2 {
+			t.Fatalf("led %d: %v, want about %v", i, ring[i], want[i])
+		}
 	}
 }
 
