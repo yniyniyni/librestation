@@ -82,7 +82,7 @@ func (d *Daemon) alarmsView() *alarmsView {
 
 // WatchAlarms has the panel told at once of a change. It only pokes the hub: the
 // ring's stop runs under d.mu.
-func (d *Daemon) WatchAlarms(m *alarms.Manager) { m.OnChange = d.hub.poke }
+func (d *Daemon) WatchAlarms(m *alarms.Manager) { m.SetOnChange(d.hub.poke) }
 
 func (d *Daemon) alarmRoutes(api func(string, func(http.ResponseWriter, *http.Request) error)) {
 	c := d.opt.Alarms

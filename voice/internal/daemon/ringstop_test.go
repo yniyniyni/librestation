@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -109,5 +111,29 @@ func TestStockWordStopsTheRingAndListens(t *testing.T) {
 	d.mu.Unlock()
 	if r.stops != 1 || a.wakes != 1 {
 		t.Errorf("stops %d, wakes %d", r.stops, a.wakes)
+	}
+}
+
+// Said twice, "стоп" must not pause the music the first one just brought back.
+func TestSecondStopWordLeavesTheMusic(t *testing.T) {
+	d, f, a, _, _ := cmdTest(t)
+	r := &fakeRing{on: true}
+	d.opt.Ring = r
+	say(d, "стоп")
+	say(d, "стоп")
+	idle(t, f, a)
+}
+
+func TestBrokenSettingsDoNotStopTheDaemon(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("{broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(Options{DataDir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path + ".bad"); err != nil || string(b) != "{broken" {
+		t.Errorf(".bad: %q, %v", b, err)
 	}
 }

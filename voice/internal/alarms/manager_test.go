@@ -405,7 +405,7 @@ func TestBrokenFileReported(t *testing.T) {
 func TestChangeReported(t *testing.T) {
 	g := newRig(t)
 	n := 0
-	g.m.OnChange = func() { n++ }
+	g.m.SetOnChange(func() { n++ })
 	g.addAlarm(Alarm{Hour: 7})
 	if n != 1 {
 		t.Errorf("after add: %d", n)
@@ -454,5 +454,106 @@ func TestNearestTimer(t *testing.T) {
 	g.m.CancelTimer(long.ID)
 	if secs, ok := g.m.NearestTimer(); !ok || secs != 90 {
 		t.Errorf("a paused one is still shown: %d, %v", secs, ok)
+	}
+}
+
+// Someone who set two alarms expects the second to ring its full time.
+func TestJoiningFiringExtendsTheRing(t *testing.T) {
+	g := newRig(t)
+	g.addAlarm(Alarm{Hour: 7})
+	g.addAlarm(Alarm{Hour: 7, Minute: 4, Days: []int{5}})
+	g.advance(time.Minute)
+	g.advance(4 * time.Minute)
+	g.advance(ringTimeout - time.Second)
+	if !g.m.Ringing() {
+		t.Fatal("the second alarm was cut short")
+	}
+	g.advance(time.Second)
+	if g.m.Ringing() {
+		t.Error("rings on past its own time")
+	}
+	g.wantRings(1)
+}
+
+// A wrong clock put right must not leave alarms waiting for the wrong date.
+func TestClockPutRight(t *testing.T) {
+	g := newRig(t)
+	g.addAlarm(Alarm{Hour: 7, Days: []int{1, 2, 3, 4, 5, 6, 7}})
+	right := g.now
+	g.now = right.AddDate(0, 1, 0) // a month ahead: its firing is in the past by minutes or days
+	g.m.Tick()
+	g.m.Stop()
+	before := len(g.r.starts)
+	g.now = right
+	g.advance(time.Minute) // 7:00 today, truly
+	if len(g.r.starts) != before+1 {
+		t.Fatalf("%d rings, want %d", len(g.r.starts), before+1)
+	}
+}
+
+func TestAlarmSetUnderAWrongClock(t *testing.T) {
+	g := newRig(t)
+	right := g.now
+	g.now = right.AddDate(0, 1, 0)
+	g.addAlarm(Alarm{Hour: 7, Days: []int{1, 2, 3, 4, 5, 6, 7}})
+	g.now = right
+	g.m.Tick()
+	g.advance(time.Minute)
+	g.wantRings(1)
+}
+
+func TestRingSurvivesRestart(t *testing.T) {
+	g := newRig(t)
+	g.addAlarm(Alarm{Hour: 7, Sound: "birds", Title: "работа"})
+	g.advance(time.Minute)
+	g.wantRings(1)
+	g.now = g.now.Add(time.Minute)
+	r2 := &fakeRinger{}
+	m := New(g.path, r2, func() time.Time { return g.now })
+	m.Tick()
+	if len(r2.starts) != 1 || r2.starts[0].Sound != "birds" || r2.starts[0].Title != "работа" || !m.Ringing() {
+		t.Fatalf("%+v", r2.starts)
+	}
+	if _, err := m.Snooze(); err != nil {
+		t.Errorf("the restarted ring cannot be snoozed: %v", err)
+	}
+	r3 := &fakeRinger{}
+	m = New(g.path, r3, func() time.Time { return g.now })
+	m.Tick()
+	if len(r3.starts) != 0 {
+		t.Errorf("a stopped ring came back: %+v", r3.starts)
+	}
+}
+
+func TestRestartedRingKeepsItsDeadline(t *testing.T) {
+	g := newRig(t)
+	g.addAlarm(Alarm{Hour: 7})
+	g.advance(time.Minute)
+	g.now = g.now.Add(ringTimeout - time.Second)
+	r2 := &fakeRinger{}
+	m := New(g.path, r2, func() time.Time { return g.now })
+	m.Tick()
+	if !m.Ringing() {
+		t.Fatal("not ringing")
+	}
+	g.now = g.now.Add(time.Second)
+	m.Tick()
+	if m.Ringing() {
+		t.Error("the timeout started over")
+	}
+}
+
+func TestRingTooOldToComeBack(t *testing.T) {
+	g := newRig(t)
+	if _, err := g.m.AddTimer(time.Minute, ""); err != nil {
+		t.Fatal(err)
+	}
+	g.advance(time.Minute)
+	g.now = g.now.Add(ringTimeout)
+	r2 := &fakeRinger{}
+	m := New(g.path, r2, func() time.Time { return g.now })
+	m.Tick()
+	if len(r2.starts) != 0 || m.Ringing() {
+		t.Errorf("%+v", r2.starts)
 	}
 }

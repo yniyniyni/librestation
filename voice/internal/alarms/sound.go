@@ -59,18 +59,33 @@ func LoadSound(dir, name string) ([]int16, int) {
 	return pcm, rate
 }
 
+// guarded turns a decoder's panic into an error: the library panics on some
+// broken files, and in the middle of a ring that would stop the ring.
+func guarded(f func() ([]int16, int, error)) (pcm []int16, rate int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("decoder: %v", r)
+		}
+	}()
+	return f()
+}
+
 func readSound(dir, name string) ([]int16, int, error) {
+	pcm, rate, err := guarded(func() ([]int16, int, error) { return decodeSound(dir, name) })
+	if err == nil && (len(pcm) == 0 || rate <= 0) {
+		err = fmt.Errorf("%d samples at %d Hz", len(pcm), rate)
+	}
+	return pcm, rate, err
+}
+
+func decodeSound(dir, name string) ([]int16, int, error) {
 	if !knownSound(name) {
 		return nil, 0, errors.New("no such ringtone")
 	}
 	base := filepath.Join(dir, name)
 	b, err := os.ReadFile(base + ".wav")
 	if err == nil {
-		pcm, rate, err := wav.Decode(b)
-		if err == nil && len(pcm) == 0 {
-			err = errors.New("empty")
-		}
-		return pcm, rate, err
+		return wav.Decode(b)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, 0, err
@@ -92,9 +107,6 @@ func decodeMP3(b []byte) ([]int16, int, error) {
 		return nil, 0, fmt.Errorf("mp3: %w", err)
 	}
 	pcm := make([]int16, len(raw)/4)
-	if len(pcm) == 0 {
-		return nil, 0, errors.New("mp3: empty")
-	}
 	for i := range pcm {
 		l := int16(uint16(raw[4*i]) | uint16(raw[4*i+1])<<8)
 		r := int16(uint16(raw[4*i+2]) | uint16(raw[4*i+3])<<8)

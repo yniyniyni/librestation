@@ -13,6 +13,11 @@ import (
 const (
 	// musicWait is how long a music alarm waits for the music before ringing.
 	musicWait = 10 * time.Second
+	// musicLost is how long music that was playing may stay off before the ring
+	// takes over: the network dropped, the phone took Spotify, the list ended.
+	musicLost = 5 * time.Second
+	// musicSettle bounds the wait for a cancelled request when the ring ends.
+	musicSettle = 2 * time.Second
 	// timerMinVolume keeps a timer audible when the music was left very quiet.
 	timerMinVolume = 30
 	// ringEvery is how often a ring looks at the time and tells ledd it is on.
@@ -90,6 +95,9 @@ func (r *ringer) show(kind alarms.Kind) {
 }
 
 func (r *ringer) run(ctx context.Context, ring alarms.Ring) {
+	if ctx.Err() != nil {
+		return // stopped before it began: the word that did it may have woken a session
+	}
 	start := r.now()
 	if r.hush != nil {
 		r.hush()
@@ -106,6 +114,9 @@ func (r *ringer) run(ctx context.Context, ring alarms.Ring) {
 	var melody sync.WaitGroup
 	soundOn, resume := false, false
 	startSound := func() {
+		if soundOn {
+			return
+		}
 		soundOn = true
 		// What played stays where it was: the ring only interrupts it.
 		if r.playing() {
@@ -121,19 +132,29 @@ func (r *ringer) run(ctx context.Context, ring alarms.Ring) {
 		}()
 	}
 
+	// At volume 0 Soloist is silent whatever the amplifier does, and it is set
+	// by the user: only the ringtone can wake them then.
+	musicCtx, cancelMusic := context.WithCancel(ctx)
+	defer cancelMusic()
 	var musicDone chan error
-	waiting := ring.Music != "" && r.music != nil
+	waiting := ring.Music != "" && r.music != nil && r.volume() > 0
 	if waiting {
 		musicDone = make(chan error, 1)
-		go func() { musicDone <- r.music(ctx, ring.Music) }()
+		go func() { musicDone <- r.music(musicCtx, ring.Music) }()
 	} else {
 		startSound()
 	}
+	asked := waiting // the music may come until its request has failed
 	musicOn := false
-	asked := false // the request for the music came back without an error
+	var lost time.Time // when playing music was last seen to stop
 
 	ticks, stop := r.ticks()
 	defer stop()
+	giveUp := func() {
+		waiting, musicOn = false, false
+		cancelMusic()
+		startSound()
+	}
 loop:
 	for {
 		select {
@@ -142,11 +163,11 @@ loop:
 		case err := <-musicDone:
 			musicDone = nil
 			if err != nil {
-				log.Printf("ring: music: %v; ringing instead", err)
-				waiting = false
-				startSound()
-			} else {
-				asked = true
+				asked = false
+				if !soundOn {
+					log.Printf("ring: music: %v; ringing instead", err)
+					giveUp()
+				}
 			}
 		case now := <-ticks:
 			elapsed := now.Sub(start)
@@ -157,29 +178,45 @@ loop:
 				}
 			}
 			r.show(ring.Kind)
-			if waiting {
-				if asked && r.playing() {
-					waiting, musicOn = false, true
-				} else if elapsed >= musicWait {
-					log.Printf("ring: no music after %v; ringing instead", musicWait)
-					waiting = false
-					startSound()
-				}
+			switch {
+			case waiting && musicDone == nil && r.playing():
+				waiting, musicOn = false, true
+			case waiting && elapsed >= musicWait:
+				log.Printf("ring: no music after %v; ringing instead", musicWait)
+				giveUp()
+			case musicOn && r.playing():
+				lost = time.Time{}
+			case musicOn && lost.IsZero():
+				lost = now
+			case musicOn && now.Sub(lost) >= musicLost:
+				log.Printf("ring: the music stopped; ringing instead")
+				giveUp()
 			}
 		}
 	}
 
+	cancelMusic()
+	if musicDone != nil {
+		// A request cut off may still have reached Spotify before the end.
+		select {
+		case <-musicDone:
+		case <-time.After(musicSettle):
+		}
+	}
 	melody.Wait()
 	if soundOn {
 		r.flush()
 	}
 	r.show("")
-	r.hold(-1)
-	if musicOn || waiting {
+	// The ring's own music goes off first: the amplifier may be climbing back.
+	if asked || (ring.Music != "" && !wasPlaying && r.playing()) {
 		if err := r.pause(); err != nil {
 			log.Printf("ring: pause: %v", err)
 		}
-	} else if resume {
+		resume = false
+	}
+	r.hold(-1)
+	if resume {
 		if err := r.resume(); err != nil {
 			log.Printf("ring: resume: %v", err)
 		}

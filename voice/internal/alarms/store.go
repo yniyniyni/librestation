@@ -5,12 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 )
 
 // State is what lives on disk.
 type State struct {
 	Alarms []Alarm `json:"alarms"`
 	Timers []Timer `json:"timers"`
+	// Ring is the ring on now: voiced restarted in the middle of it goes on.
+	Ring *RingRecord `json:"ring,omitempty"`
+}
+
+// RingRecord is a ring as it is kept across a restart.
+type RingRecord struct {
+	Ring     Ring      `json:"ring"`
+	AlarmID  string    `json:"alarm_id,omitempty"`
+	Since    time.Time `json:"since"`
+	Deadline time.Time `json:"deadline"`
 }
 
 // Load reads the state. A missing file is an empty state. A broken one is kept
@@ -34,15 +46,34 @@ func Load(path string) (State, error) {
 	return s, nil
 }
 
-// Save writes the state atomically.
+// Save writes the state atomically and durably: a power cut right after must
+// leave either the old file or the new one, not a broken one.
 func Save(path string, s State) error {
 	b, err := json.MarshalIndent(s, "", " ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if e := f.Close(); err == nil {
+		err = e
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		dir.Sync()
+		dir.Close()
+	}
+	return nil
 }

@@ -34,10 +34,10 @@ const (
 
 // Ring is one ring as the hardware needs it.
 type Ring struct {
-	Kind  Kind
-	Sound string
-	Music string
-	Title string
+	Kind  Kind   `json:"kind"`
+	Sound string `json:"sound,omitempty"`
+	Music string `json:"music,omitempty"`
+	Title string `json:"title,omitempty"`
 }
 
 // Ringer makes the sound; its calls must not block.
@@ -61,9 +61,7 @@ func RingLevel(elapsed time.Duration) int {
 
 // Manager keeps the alarms and timers and decides when to ring.
 type Manager struct {
-	// OnChange is told of any change the panel should see, without locks held.
-	// Set it before Run.
-	OnChange func()
+	onChange atomic.Pointer[func()]
 
 	path   string
 	ringer Ringer
@@ -76,6 +74,7 @@ type Manager struct {
 	err      string
 	ring     Ring
 	since    time.Time
+	deadline time.Time
 	alarmID  string    // the alarm ringing or rung last
 	stopped  time.Time // when the last ring ended
 	knobOver time.Time
@@ -114,20 +113,37 @@ func (m *Manager) Tick() {
 	now := m.now()
 	m.mu.Lock()
 	var start *Ring
-	var stop, changed bool
-	if m.ringing.Load() && now.Sub(m.since) >= ringTimeout {
+	var stop, changed, dirty bool
+	if rec := m.st.Ring; rec != nil && !m.ringing.Load() {
+		// Only a restart gets here: every end of a ring clears the record.
+		if now.Before(rec.Since) || !now.Before(rec.Deadline) {
+			m.st.Ring, dirty = nil, true
+		} else {
+			m.ring, m.since, m.deadline, m.alarmID = rec.Ring, rec.Since, rec.Deadline, rec.AlarmID
+			m.ringing.Store(true)
+			start = &rec.Ring
+			changed = true
+		}
+	}
+	if m.ringing.Load() && !now.Before(m.deadline) {
 		m.endRingLocked(now)
-		stop, changed = true, true
+		stop, changed, dirty = true, true, true
 		log.Printf("alarms: nobody stopped the ring")
 	}
-	rings, dirty := m.dueLocked(now)
-	if len(rings) > 0 && !m.ringing.Load() {
-		r := rings[0]
-		m.ring, m.since = r.Ring, now
-		m.alarmID = r.alarmID
-		m.ringing.Store(true)
-		start = &r.Ring
-		changed = true
+	rings, fired := m.dueLocked(now)
+	dirty = dirty || fired
+	if len(rings) > 0 {
+		m.deadline = now.Add(ringTimeout)
+		if !m.ringing.Load() {
+			r := rings[0]
+			m.ring, m.since = r.Ring, now
+			m.alarmID = r.alarmID
+			m.ringing.Store(true)
+			start = &r.Ring
+			changed = true
+		}
+		// A firing that joins a ring gets its full time too.
+		m.st.Ring = &RingRecord{Ring: m.ring, AlarmID: m.alarmID, Since: m.since, Deadline: m.deadline}
 	}
 	if dirty {
 		m.saveLocked()
@@ -153,13 +169,18 @@ type due struct {
 
 // dueLocked marks what has come as fired and returns what should ring, alarms
 // first. It counts from the last firing, not from the previous tick, so a clock
-// moved back cannot ring the same firing twice.
+// moved back cannot ring the same firing twice. A firing still ahead of the clock
+// says the clock was wrong or has been moved: Armed is what counts until then,
+// and one ahead too is brought back, or the alarm would wait for that date.
 func (m *Manager) dueLocked(now time.Time) (rings []due, dirty bool) {
 	for i := range m.st.Alarms {
 		a := &m.st.Alarms[i]
+		if a.Armed.After(now) {
+			a.Armed, dirty = now, true
+		}
 		for {
 			from := a.Armed
-			if a.Fired.After(from) {
+			if a.Fired.After(from) && !a.Fired.After(now) {
 				from = a.Fired
 			}
 			next := a.Next(from.In(now.Location()))
@@ -199,6 +220,7 @@ func (m *Manager) dueLocked(now time.Time) (rings []due, dirty bool) {
 
 func (m *Manager) endRingLocked(now time.Time) {
 	m.ringing.Store(false)
+	m.st.Ring = nil
 	m.stopped = now
 	m.knobOver = now.Add(knobGuard)
 }
@@ -225,6 +247,7 @@ func (m *Manager) Stop() {
 		return
 	}
 	m.endRingLocked(m.now())
+	m.saveLocked()
 	m.mu.Unlock()
 	m.ringer.Stop(false)
 	m.changed()
@@ -271,6 +294,7 @@ func (m *Manager) Test() {
 		return
 	}
 	m.ring, m.since = Ring{Kind: KindAlarm}, m.now()
+	m.deadline = m.since.Add(ringTimeout)
 	m.alarmID = ""
 	m.ringing.Store(true)
 	r := m.ring
@@ -469,9 +493,13 @@ func (m *Manager) saveLocked() {
 	m.err = ""
 }
 
+// SetOnChange names who is told of any change the panel should see. The call is
+// made without locks held, possibly under the caller's own: it must not block.
+func (m *Manager) SetOnChange(f func()) { m.onChange.Store(&f) }
+
 func (m *Manager) changed() {
-	if m.OnChange != nil {
-		m.OnChange()
+	if f := m.onChange.Load(); f != nil {
+		(*f)()
 	}
 }
 

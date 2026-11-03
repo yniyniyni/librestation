@@ -85,12 +85,14 @@ type RingControl interface {
 	Stop()
 }
 
-// stopRingLocked ends the ring if one is on and says so; caller holds d.mu.
+// stopRingLocked ends the ring if one is on and says so; caller holds d.mu. The
+// same word said again just after must not pause the music the ring gives back.
 func (d *Daemon) stopRingLocked() bool {
 	if d.opt.Ring == nil || !d.opt.Ring.Ringing() {
 		return false
 	}
 	d.opt.Ring.Stop()
+	d.lastAction["pause"] = d.now()
 	return true
 }
 
@@ -368,7 +370,10 @@ func New(opt Options) (*Daemon, error) {
 	d.settings = Settings{Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
-			return nil, fmt.Errorf("settings: %w", err)
+			// A broken file must not keep the panel and the alarms down.
+			log.Printf("settings: %v; kept as .bad, starting from the defaults", err)
+			os.Rename(d.settingsPath(), d.settingsPath()+".bad")
+			d.settings = Settings{}
 		}
 	}
 	if d.settings.Words == nil {

@@ -97,3 +97,23 @@ func TestLoadSoundMP3(t *testing.T) {
 		t.Errorf("%d samples at %d", len(pcm), rate)
 	}
 }
+
+// A sound that cannot be played must not reach the speaker, which would refuse
+// it again and again in silence.
+func TestLoadSoundZeroRate(t *testing.T) {
+	dir := t.TempDir()
+	if err := wav.WriteFile(filepath.Join(dir, "birds.wav"), []int16{1, 2, 3}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if pcm, rate := LoadSound(dir, "birds"); !sameAsFallback(pcm, rate) {
+		t.Errorf("%d samples at %d", len(pcm), rate)
+	}
+}
+
+// The MP3 library panics on some broken files; the ring must go on.
+func TestDecoderPanicIsAnError(t *testing.T) {
+	_, _, err := guarded(func() ([]int16, int, error) { panic("index out of range") })
+	if err == nil {
+		t.Error("no error")
+	}
+}

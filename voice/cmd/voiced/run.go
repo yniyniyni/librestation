@@ -222,16 +222,19 @@ func cmdRun(args []string) error {
 	}
 	opt.LED, opt.Volume = led, vol
 
-	d, err := daemon.New(opt)
-	if err != nil {
-		return err
-	}
-	dmn.Store(d)
-	d.WatchAlarms(alm)
+	// Alarms do not depend on the rest coming up.
 	go alm.Run(ctx)
 	if ledSend != nil {
 		go showTimers(ctx, alm, ledSend)
 	}
+	d, err := daemon.New(opt)
+	if err != nil {
+		log.Printf("voiced: %v; only alarms and timers are on", err)
+		<-ctx.Done()
+		return err
+	}
+	dmn.Store(d)
+	d.WatchAlarms(alm)
 
 	srv := &http.Server{Addr: opt.Listen, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

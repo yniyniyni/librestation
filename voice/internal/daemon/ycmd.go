@@ -176,7 +176,7 @@ func (d *Daemon) onCommand(cmd string, conf float64) {
 		h := &Hit{Word: cmd, Name: cmd, Score: float32(conf), At: d.now(), Source: "yandex", volBefore: d.volume}
 		h.audio = d.yring.last(hitSecs * kws.SampleRate)
 		if q.group == "pause" {
-			d.opt.Ring.Stop()
+			d.stopRingLocked()
 			h.Action, h.Fired = "ring_stop", true
 		} else {
 			h.Debounced = true

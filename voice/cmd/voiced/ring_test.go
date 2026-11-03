@@ -328,3 +328,110 @@ func TestRingWithoutOptionalParts(t *testing.T) {
 	g.waitPlay()
 	g.stop()
 }
+
+// At volume 0 Soloist makes no sound whatever the amplifier does.
+func TestMusicAlarmAtVolumeZeroRings(t *testing.T) {
+	g := newRingRig(t)
+	g.vol = 0
+	g.r.Start(alarms.Ring{Kind: alarms.KindAlarm, Music: "x"})
+	g.waitPlay()
+	if has(g.calls(), "music x") {
+		t.Errorf("%v", g.calls())
+	}
+	g.stop()
+}
+
+func TestMusicThatStopsFallsToSound(t *testing.T) {
+	g := newRingRig(t)
+	g.r.Start(alarms.Ring{Kind: alarms.KindAlarm, Music: "x"})
+	for !has(g.calls(), "music x") {
+		time.Sleep(time.Millisecond)
+	}
+	g.mu.Lock()
+	g.playing = true
+	g.mu.Unlock()
+	g.tick(time.Second)
+	g.mu.Lock()
+	g.playing = false
+	g.mu.Unlock()
+	g.tick(time.Second)
+	g.tick(musicLost - time.Second)
+	if has(g.calls(), "play") {
+		t.Fatal("gave up too soon")
+	}
+	g.tick(time.Second)
+	g.waitPlay()
+	g.stop()
+}
+
+// Past the wait the request must not start music on top of the ring.
+func TestMusicRequestCancelledAtFallback(t *testing.T) {
+	g := newRingRig(t)
+	asked, cancelled := make(chan struct{}), make(chan struct{})
+	g.r.music = func(ctx context.Context, q string) error {
+		close(asked)
+		<-ctx.Done()
+		close(cancelled)
+		return ctx.Err()
+	}
+	g.r.Start(alarms.Ring{Kind: alarms.KindAlarm, Music: "x"})
+	<-asked
+	g.tick(musicWait)
+	g.waitPlay()
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("still asking")
+	}
+	g.tick(time.Second) // the late error is taken; there must be no second sound
+	select {
+	case <-g.started:
+		t.Error("a second sound")
+	case <-time.After(20 * time.Millisecond):
+	}
+	g.stop()
+}
+
+// Music that arrived though the ring gave up on it goes off with the ring.
+func TestStopPausesMusicThatCameLate(t *testing.T) {
+	g := newRingRig(t)
+	g.r.Start(alarms.Ring{Kind: alarms.KindAlarm, Music: "x"})
+	for !has(g.calls(), "music x") {
+		time.Sleep(time.Millisecond)
+	}
+	g.tick(musicWait)
+	g.waitPlay()
+	g.mu.Lock()
+	g.playing = true
+	g.mu.Unlock()
+	g.stop()
+	c := g.calls()
+	if !has(c, "pause") || has(c, "resume") {
+		t.Errorf("%v", c)
+	}
+}
+
+// The amplifier goes back to the user's volume only once the music is off.
+func TestMusicAlarmPausesBeforeReleasingVolume(t *testing.T) {
+	g := newRingRig(t)
+	g.r.Start(alarms.Ring{Kind: alarms.KindAlarm, Music: "x"})
+	for !has(g.calls(), "music x") {
+		time.Sleep(time.Millisecond)
+	}
+	g.mu.Lock()
+	g.playing = true
+	g.mu.Unlock()
+	g.tick(time.Second)
+	g.stop()
+	before(t, g.calls(), "pause", "hold -1")
+}
+
+func TestStoppedBeforeItBeganDoesNothing(t *testing.T) {
+	g := newRingRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	g.r.run(ctx, alarms.Ring{Kind: alarms.KindAlarm})
+	if c := g.calls(); len(c) != 0 {
+		t.Errorf("%v", c)
+	}
+}
