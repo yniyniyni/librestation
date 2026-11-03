@@ -46,7 +46,7 @@ type output struct {
 }
 
 func newOutput(hwCmd []string, gainFile string) *output {
-	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, prev: -1, duckF: 1, wake: make(chan struct{}, 1)}
+	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, prev: -1, duckF: 1, force: true, wake: make(chan struct{}, 1)}
 }
 
 // set is volume.Sync.Out: it must not block.
@@ -127,7 +127,9 @@ func (o *output) wanted() (int, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	f := o.force
-	o.force = false
+	if o.target >= 0 {
+		o.force = false
+	}
 	return o.target, f
 }
 
@@ -168,6 +170,15 @@ func (o *output) ramp(ctx context.Context, in io.Writer, cur int) (int, error) {
 	for {
 		t, force := o.wanted()
 		if force && t >= 0 {
+			// The HAL drops a write of the value it believes is set, even when
+			// the amplifier has moved since: a neighbour first makes it write.
+			nudge := t - 1
+			if t == 0 {
+				nudge = 1
+			}
+			if _, err := fmt.Fprintf(in, "%d\n", nudge); err != nil {
+				return cur, err
+			}
 			cur = -1 // unknown: write t directly
 		}
 		if t < 0 || t == cur {
@@ -214,12 +225,16 @@ func logLines(prefix string, r io.Reader) {
 const (
 	ampEvery  = 500 * time.Millisecond
 	ampSettle = 300 * time.Millisecond
+	// ampTries readings in a row try to set it back, then one in ampRetryEvery.
+	ampTries      = 3
+	ampRetryEvery = 20
 )
 
 // ampWatch remembers the level the current volume makes on the amplifier.
 type ampWatch struct {
 	volume, level int
 	known         bool
+	off           int // readings in a row that were not level
 }
 
 // watchAmp puts the amplifier back whenever something else changes it. The
@@ -254,9 +269,17 @@ func (o *output) checkAmp(w *ampWatch, level int, now time.Time) {
 	}
 	switch {
 	case !w.known || w.volume != v:
-		*w = ampWatch{v, level, true}
-	case level != w.level:
-		log.Printf("amplifier changed behind our back: level %d, want %d for volume %d; setting it back", level, w.level, v)
-		o.refresh(v)
+		*w = ampWatch{volume: v, level: level, known: true}
+	case level == w.level:
+		w.off = 0
+	default:
+		if w.off == 0 {
+			log.Printf("amplifier changed behind our back: level %d, want %d for volume %d; setting it back", level, w.level, v)
+		}
+		// Should it not take, keep trying, but seldom.
+		if w.off < ampTries || w.off%ampRetryEvery == 0 {
+			o.refresh(v)
+		}
+		w.off++
 	}
 }

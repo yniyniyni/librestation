@@ -52,12 +52,12 @@ func TestRefreshRewritesSameVolume(t *testing.T) {
 		t.Fatalf("helper got %q, want %q", w.String(), want)
 	}
 	o.set(32)
-	wait("32\n")
-	o.set(32) // unchanged: nothing to write
+	wait("31\n32\n") // the first value too: the HAL may believe it is set
+	o.set(32)        // unchanged: nothing to write
 	time.Sleep(30 * time.Millisecond)
-	wait("32\n")
+	wait("31\n32\n")
 	o.refresh(32)
-	wait("32\n32\n")
+	wait("31\n32\n31\n32\n") // a neighbour first, or the HAL drops the write
 }
 
 func TestDuckScalesGain(t *testing.T) {
@@ -99,7 +99,7 @@ func TestDuckScalesGain(t *testing.T) {
 func TestAmpWatchSetsItBack(t *testing.T) {
 	o := newOutput(nil, "")
 	o.mu.Lock()
-	o.target = 27
+	o.target, o.force = 27, false
 	o.mu.Unlock()
 	var w ampWatch
 	now := time.Now()
@@ -114,10 +114,31 @@ func TestAmpWatchSetsItBack(t *testing.T) {
 	}
 }
 
+func TestAmpWatchTriesSeldomWhenItDoesNotTake(t *testing.T) {
+	o := newOutput(nil, "")
+	o.mu.Lock()
+	o.target, o.force = 27, false
+	o.mu.Unlock()
+	var w ampWatch
+	now := time.Now()
+	o.checkAmp(&w, 132, now)
+	tries := 0
+	for range 2 * ampRetryEvery {
+		now = now.Add(ampEvery)
+		o.checkAmp(&w, 100, now)
+		if _, force := o.wanted(); force {
+			tries++
+		}
+	}
+	if tries > ampTries+2 {
+		t.Errorf("%d tries", tries)
+	}
+}
+
 func TestAmpWatchLearnsANewVolume(t *testing.T) {
 	o := newOutput(nil, "")
 	o.mu.Lock()
-	o.target = 27
+	o.target, o.force = 27, false
 	o.mu.Unlock()
 	var w ampWatch
 	now := time.Now()
