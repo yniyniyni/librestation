@@ -107,8 +107,8 @@ func TestJudgeKeepsUserVerdict(t *testing.T) {
 	<-done
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	post(t, srv.URL+"/api/hits/1/ok", "")
-	if r := post(t, srv.URL+"/api/hits/1/judge", ""); r.StatusCode != 200 {
+	put(t, srv.URL+"/api/v1/hits/1/verdict", `{"verdict":"ok"}`)
+	if r := post(t, srv.URL+"/api/v1/hits/1/judge", ""); r.StatusCode != 200 {
 		t.Fatalf("rejudge: %d", r.StatusCode)
 	}
 	if h := waitJudged(t, d); h.Verdict != "ok" || h.Auto || falseClips(d) != 0 {
@@ -169,7 +169,7 @@ func TestJudgeOffOrMissing(t *testing.T) {
 	<-done2
 	srv := httptest.NewServer(d2.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/hits/1/judge", ""); r.StatusCode == 200 || d2.state().Judge.Available {
+	if r := post(t, srv.URL+"/api/v1/hits/1/judge", ""); r.StatusCode == 200 || d2.state().Judge.Available {
 		t.Fatalf("rejudge without a model: %d", r.StatusCode)
 	}
 }
@@ -201,10 +201,10 @@ func TestJudgeModelSetting(t *testing.T) {
 	if v := d.state().Judge; v.Model != "gemini-3.5-flash-lite" || len(v.Models) == 0 {
 		t.Fatalf("default: %+v", v)
 	}
-	if r := post(t, srv.URL+"/api/settings", `{"judge_model":"gemini-3.8-flash"}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"judge_model":"gemini-3.8-flash"}`); r.StatusCode != 200 {
 		t.Fatalf("set model: %d", r.StatusCode)
 	}
-	if r := post(t, srv.URL+"/api/settings", `{"judge_model":"bad model; rm"}`); r.StatusCode == 200 {
+	if r := patch(t, srv.URL+"/api/v1/settings", `{"judge_model":"bad model; rm"}`); r.StatusCode == 200 {
 		t.Fatal("bad model name accepted")
 	}
 	hit(d)

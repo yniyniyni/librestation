@@ -17,8 +17,26 @@ const (
 	trainedMarker     = "falses-trained"
 )
 
+// falseCount is a word's false-alarm clips. The state reads it from memory
+// many times a second; refreshFalses updates it when the files change.
+type falseCount struct{ clips, fresh int }
+
 // newFalses counts the word's false-alarm clips saved after its last training.
-func (d *Daemon) newFalses(id string) int {
+func (d *Daemon) newFalses(id string) int { return d.countFalses(id).fresh }
+
+// refreshFalses recounts a word's clips; caller must not hold d.mu.
+func (d *Daemon) refreshFalses(id string) {
+	c := d.countFalses(id)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.falses == nil {
+		d.falses = map[string]falseCount{}
+	}
+	d.falses[id] = c
+}
+
+// countFalses reads the disk; caller must not hold d.mu.
+func (d *Daemon) countFalses(id string) falseCount {
 	dir := d.wordDir(id)
 	var since time.Time
 	if st, err := os.Stat(filepath.Join(dir, trainedMarker)); err == nil {
@@ -33,7 +51,7 @@ func (d *Daemon) newFalses(id string) int {
 			n++
 		}
 	}
-	return n
+	return falseCount{clips: len(falses), fresh: n}
 }
 
 // markTrained notes that a training which started at start succeeded.
@@ -46,6 +64,7 @@ func (d *Daemon) markTrained(id string, start time.Time) {
 	if err != nil {
 		log.Printf("train %s: marker: %v", id, err)
 	}
+	d.refreshFalses(id)
 }
 
 // autoRetrain retrains id when enough new false clips have piled up and

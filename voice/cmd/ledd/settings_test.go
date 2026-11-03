@@ -47,7 +47,7 @@ func newTestAPI(t *testing.T) (*api, *fakeScene, *[]*fakeTimer) {
 
 func post(a *api, path, body string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
-	a.Handler().ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(body)))
+	a.Handler().ServeHTTP(w, httptest.NewRequest("PUT", path, strings.NewReader(body)))
 	return w
 }
 
@@ -71,7 +71,7 @@ func TestSettingsSaveAndReload(t *testing.T) {
 	want := scene.DefaultSettings()
 	want.Flash = "white"
 	body := `{"volume_screen":"` + want.VolumeScreen + `","ai_ring":"` + want.AIRing + `","ai_screen":"` + want.AIScreen + `","flash":"white","music":"` + want.Music + `"}`
-	w := post(a, "/api/led/settings", body)
+	w := post(a, "/api/v1/led/settings", body)
 	if w.Code != 200 {
 		t.Fatalf("code %d: %s", w.Code, w.Body)
 	}
@@ -85,7 +85,7 @@ func TestSettingsSaveAndReload(t *testing.T) {
 		t.Fatalf("body %s", w.Body)
 	}
 	g := httptest.NewRecorder()
-	a.Handler().ServeHTTP(g, httptest.NewRequest("GET", "/api/led", nil))
+	a.Handler().ServeHTTP(g, httptest.NewRequest("GET", "/api/v1/led", nil))
 	if g.Code != 200 || !strings.Contains(g.Body.String(), `"flash":"white"`) {
 		t.Fatalf("GET: %d %s", g.Code, g.Body)
 	}
@@ -96,7 +96,7 @@ func TestSettingsSaveAndReload(t *testing.T) {
 
 func TestPostSettingsRejectsUnknown(t *testing.T) {
 	a, fs, _ := newTestAPI(t)
-	if w := post(a, "/api/led/settings", `{"flash":"white","volume_screen":"pulse","ai_ring":"carousel","ai_screen":"dots","music":"spectrum"}`); w.Code != 200 {
+	if w := post(a, "/api/v1/led/settings", `{"flash":"white","volume_screen":"pulse","ai_ring":"carousel","ai_screen":"dots","music":"spectrum"}`); w.Code != 200 {
 		t.Fatalf("setup: %d %s", w.Code, w.Body)
 	}
 	before, _ := os.ReadFile(filepath.Join(a.dir, "led.json"))
@@ -105,7 +105,7 @@ func TestPostSettingsRejectsUnknown(t *testing.T) {
 		`{"volume_screen":"pulse","ai_ring":"carousel","ai_screen":"dots","flash":"sweep","music":"spectrum","extra":1}`,
 		`nope`,
 	} {
-		if w := post(a, "/api/led/settings", body); w.Code != http.StatusBadRequest {
+		if w := post(a, "/api/v1/led/settings", body); w.Code != http.StatusBadRequest {
 			t.Errorf("%s: code %d", body, w.Code)
 		}
 	}
@@ -120,13 +120,13 @@ func TestPostSettingsRejectsUnknown(t *testing.T) {
 
 func TestAIDemoTurnsOffAfter30s(t *testing.T) {
 	a, fs, timers := newTestAPI(t)
-	if w := post(a, "/api/led/ai", `{"on":true}`); w.Code != 200 {
+	if w := post(a, "/api/v1/led/ai", `{"on":true}`); w.Code != 200 {
 		t.Fatalf("code %d", w.Code)
 	}
 	if len(*timers) != 1 || (*timers)[0].d != 30*time.Second {
 		t.Fatalf("timers %+v", *timers)
 	}
-	post(a, "/api/led/ai", `{"on":true}`) // newer POST resets the timer
+	post(a, "/api/v1/led/ai", `{"on":true}`) // newer POST resets the timer
 	if !(*timers)[0].stopped || len(*timers) != 2 {
 		t.Fatalf("timer not reset: %+v", *timers)
 	}
@@ -138,8 +138,8 @@ func TestAIDemoTurnsOffAfter30s(t *testing.T) {
 	if last := fs.ai[len(fs.ai)-1]; last {
 		t.Fatal("AI still on after 30 s")
 	}
-	post(a, "/api/led/ai", `{"on":true}`)
-	post(a, "/api/led/ai", `{"on":false}`)
+	post(a, "/api/v1/led/ai", `{"on":true}`)
+	post(a, "/api/v1/led/ai", `{"on":false}`)
 	if fs.ai[len(fs.ai)-1] || !(*timers)[2].stopped {
 		t.Fatal("on:false must turn off now and cancel timer")
 	}

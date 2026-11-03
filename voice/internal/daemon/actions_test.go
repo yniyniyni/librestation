@@ -109,13 +109,13 @@ func TestHitKeepsAudio(t *testing.T) {
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
 	var st struct{ Hits []struct{ ID int } }
-	r, _ := http.Get(srv.URL + "/api/state")
+	r, _ := http.Get(srv.URL + "/api/v1/hits")
 	json.NewDecoder(r.Body).Decode(&st)
 	r.Body.Close()
 	if len(st.Hits) != 1 {
 		t.Fatalf("hits %v", st.Hits)
 	}
-	w, err := http.Get(srv.URL + "/api/hits/1")
+	w, err := http.Get(srv.URL + "/api/v1/hits/1/audio")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,32 +134,48 @@ func TestHitKeepsAudio(t *testing.T) {
 	}
 }
 
-func post(t *testing.T, url, body string) *http.Response {
+func call(t *testing.T, method, url, body string) *http.Response {
 	t.Helper()
-	r, err := http.Post(url, "application/json", strings.NewReader(body))
+	req, err := http.NewRequest(method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Body.Close() })
 	return r
 }
+
+func post(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	return call(t, "POST", url, body)
+}
+func patch(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	return call(t, "PATCH", url, body)
+}
+func put(t *testing.T, url, body string) *http.Response { t.Helper(); return call(t, "PUT", url, body) }
 
 func TestUnknownActionRejected(t *testing.T) {
 	d, _ := newTest(t, &fakeAct{}, "", false)
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/words/x", `{"action":"dance"}`); r.StatusCode != 400 {
+	if r := patch(t, srv.URL+"/api/v1/words/x", `{"action":"dance"}`); r.StatusCode != 400 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	if d.settings.Words["x"].Action != "" {
 		t.Fatal("action changed")
 	}
-	if r := post(t, srv.URL+"/api/words/x", `{"action":"louder"}`); r.StatusCode != 200 {
+	if r := patch(t, srv.URL+"/api/v1/words/x", `{"action":"louder"}`); r.StatusCode != 200 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 	if d.settings.Words["x"].Action != "louder" {
 		t.Fatal("action not saved")
 	}
-	if r := post(t, srv.URL+"/api/words/x", `{"action":"none"}`); r.StatusCode != 200 || d.settings.Words["x"].Action != "" {
+	if r := patch(t, srv.URL+"/api/v1/words/x", `{"action":"none"}`); r.StatusCode != 200 || d.settings.Words["x"].Action != "" {
 		t.Fatal("none must clear")
 	}
 }
@@ -168,7 +184,7 @@ func TestEnrollTrainRejectsUnknownAction(t *testing.T) {
 	d, _ := newTest(t, nil, "", false)
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/enroll/train", `{"action":"dance"}`); r.StatusCode != 400 {
+	if r := post(t, srv.URL+"/api/v1/enroll/train", `{"action":"dance"}`); r.StatusCode != 400 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 }
@@ -202,7 +218,7 @@ func TestEnrollTrainMalformedBody(t *testing.T) {
 	d, _ := newTest(t, nil, "", false)
 	srv := httptest.NewServer(d.Handler())
 	defer srv.Close()
-	if r := post(t, srv.URL+"/api/enroll/train", `{bad`); r.StatusCode != 400 {
+	if r := post(t, srv.URL+"/api/v1/enroll/train", `{bad`); r.StatusCode != 400 {
 		t.Fatalf("status %d", r.StatusCode)
 	}
 }

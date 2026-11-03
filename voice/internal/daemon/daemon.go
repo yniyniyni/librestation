@@ -6,10 +6,10 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,6 +47,10 @@ type Options struct {
 	// PiperMissing is true while Piper cannot run (replies use Gemini's
 	// voice). It must return at once; nil = never.
 	PiperMissing func() bool
+	// Volume is the one volume (volume.Sync); nil = none.
+	Volume VolumeControl
+	// LED serves /api/v1/led* (a proxy to ledd); nil = none.
+	LED http.Handler
 	// OnLED receives events for the LED daemon (nil = off). It must not block.
 	OnLED func(proto.Event)
 	// Judge labels hits with an audio model (nil = off); JudgeModel names it
@@ -57,6 +61,15 @@ type Options struct {
 	// capture (nil = none); CommandsErr says why there is none.
 	Commands    *ycmd.Model
 	CommandsErr string
+}
+
+// VolumeControl is the volume behind the API. Its calls may wait for Soloist,
+// so they are never made under d.mu.
+type VolumeControl interface {
+	Volume() int
+	KnobStep() int
+	SetKnobStep(n int) error
+	Step(delta int) error
 }
 
 // Judge is the audio model that labels hits (judge.Client).
@@ -232,8 +245,11 @@ type Daemon struct {
 	judgeDelay time.Duration  // wait before judging, so a take-back is known
 	io         sync.WaitGroup // background hit writes
 	ioMu       sync.Mutex     // serialises hit writes; taken before mu
-	playback   string         // last Soloist status
-	volume     int            // last observed volume, -1 unknown
+	settingsIO sync.Mutex     // serialises settings writes; taken before mu
+	falses     map[string]falseCount
+	hub        eventHub
+	playback   string // last Soloist status
+	volume     int    // last observed volume, -1 unknown
 
 	bands   *dsp.Bands // playback reference spectrum; nil without OnLED
 	lastLED time.Time  // last audio event sent (audio goroutine only)
@@ -321,8 +337,8 @@ func New(opt Options) (*Daemon, error) {
 func (d *Daemon) removeWord(id string) error {
 	d.mu.Lock()
 	delete(d.settings.Words, id)
-	d.saveSettings()
 	d.mu.Unlock()
+	d.persistSettings()
 	if err := os.RemoveAll(d.wordDir(id)); err != nil {
 		return err
 	}
@@ -361,9 +377,15 @@ func (d *Daemon) wordDir(id string) string {
 	return filepath.Join(d.opt.DataDir, "words", id)
 }
 
-// saveSettings writes settings atomically; caller holds d.mu.
-func (d *Daemon) saveSettings() error {
+// persistSettings writes settings without holding d.mu over the disk, because
+// the audio goroutine needs d.mu. Writes are serialised and each one takes a
+// fresh snapshot, so a later state is never overwritten by an earlier one.
+func (d *Daemon) persistSettings() error {
+	d.settingsIO.Lock()
+	defer d.settingsIO.Unlock()
+	d.mu.Lock()
 	b, _ := json.MarshalIndent(d.settings, "", "  ")
+	d.mu.Unlock()
 	tmp := d.settingsPath() + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
 		return err
@@ -376,9 +398,9 @@ func (d *Daemon) loadWords() error {
 	if err != nil {
 		return err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.words = nil
+	// Disk first, d.mu after: the audio goroutine needs d.mu.
+	var words []word
+	falses := map[string]falseCount{}
 	for _, e := range dirs {
 		if !e.IsDir() {
 			continue
@@ -392,12 +414,18 @@ func (d *Daemon) loadWords() error {
 			log.Printf("word %s: bad model: %v", e.Name(), err)
 			continue
 		}
-		d.words = append(d.words, word{e.Name(), m})
-		if d.settings.Words[e.Name()] == nil {
-			d.settings.Words[e.Name()] = &WordSettings{Enabled: true}
+		words = append(words, word{e.Name(), m})
+		falses[e.Name()] = d.countFalses(e.Name())
+	}
+	sort.Slice(words, func(i, j int) bool { return words[i].ID < words[j].ID })
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.words, d.falses = words, falses
+	for _, w := range words {
+		if d.settings.Words[w.ID] == nil {
+			d.settings.Words[w.ID] = &WordSettings{Enabled: true}
 		}
 	}
-	sort.Slice(d.words, func(i, j int) bool { return d.words[i].ID < d.words[j].ID })
 	return d.rebuildDetector()
 }
 
@@ -631,7 +659,7 @@ type capture struct {
 	done chan struct{}
 }
 
-var errBusy = errors.New("another recording is in progress")
+var errBusy = conflict("идёт другая запись")
 
 func (d *Daemon) record(ctx context.Context, secs, preSecs float64) ([]int16, error) {
 	pre := int(preSecs * kws.SampleRate)
@@ -642,7 +670,7 @@ func (d *Daemon) record(ctx context.Context, secs, preSecs float64) ([]int16, er
 	}
 	if !d.audioOK {
 		d.mu.Unlock()
-		return nil, errors.New("no audio from the station: " + d.audioErr)
+		return nil, conflict("нет звука со станции: " + d.audioErr)
 	}
 	c := &capture{want: pre + int(secs*kws.SampleRate), done: make(chan struct{})}
 	c.buf = d.ring.last(pre)
@@ -664,7 +692,7 @@ func (d *Daemon) record(ctx context.Context, secs, preSecs float64) ([]int16, er
 			d.capture = nil
 		}
 		d.mu.Unlock()
-		return nil, errors.New("audio stream stalled")
+		return nil, conflict("звук со станции пропал")
 	}
 }
 

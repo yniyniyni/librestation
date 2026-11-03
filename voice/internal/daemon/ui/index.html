@@ -2,509 +2,718 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Голосовые команды</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0e0d14">
+<title>Станция</title>
 <style>
-  :root { --bg:#f4f2fb; --card:#fff; --fg:#1d1b26; --muted:#6c6880; --accent:#7a55ff; --ok:#1f9d55; --bad:#d64545; --line:#e4e0f2; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#14131a; --card:#1e1c27; --fg:#ece9f6; --muted:#9a95ad; --line:#2f2c3b; } }
-  * { box-sizing: border-box; }
-  [hidden] { display: none !important; }
-  body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:var(--fg); }
-  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h2 { font-size: 17px; margin: 0 0 10px; }
-  .muted { color: var(--muted); }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 14px 0; }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .grow { flex: 1; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 10px; padding: 8px 14px; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.big { font-size: 18px; padding: 14px 22px; }
-  button.danger { color: var(--bad); }
-  button:disabled { opacity: .5; cursor: default; }
-  input[type=text] { font: inherit; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 220px; }
-  .pill { display:inline-flex; gap:6px; align-items:center; padding: 3px 10px; border-radius: 99px; font-size: 13px; background: var(--bg); border:1px solid var(--line); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
-  .dot.on { background: var(--ok); }
-  .meter { position: relative; height: 10px; background: var(--bg); border-radius: 6px; overflow: hidden; border:1px solid var(--line); }
-  .meter > i { position:absolute; left:0; top:0; bottom:0; background: var(--accent); transition: width .15s; }
-  .meter > b { position:absolute; top:-2px; bottom:-2px; width:2px; background: var(--fg); opacity:.6; }
-  .level { width: 120px; }
-  .stats { font-size: 13px; color: var(--muted); }
-  .takes { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
-  .take { display:inline-flex; gap:4px; align-items:center; padding:4px 8px; border-radius:8px; background:var(--bg); border:1px solid var(--line); font-size:13px; }
-  .take button { padding: 0 6px; border: none; background: none; }
-  .say { font-size: 28px; font-weight: 700; color: var(--accent); min-height: 40px; }
-  .msg { min-height: 22px; }
-  .msg.bad { color: var(--bad); }
-  .msg.ok { color: var(--ok); }
-  .steps { display:grid; gap: 14px; }
-  .step { border-left: 3px solid var(--line); padding-left: 12px; }
-  .step.done { border-color: var(--ok); }
-  .step.cur { border-color: var(--accent); }
-  .reading { background: var(--bg); border-radius: 10px; padding: 10px 12px; font-size: 16px; }
-  table { width:100%; border-collapse: collapse; font-size: 14px; }
-  td { padding: 6px 4px; border-top: 1px solid var(--line); }
-  input[type=range] { width: 160px; accent-color: var(--accent); }
-  .switch { display:inline-flex; gap:6px; align-items:center; cursor:pointer; }
-  tr.suspect td { background: color-mix(in srgb, var(--bad) 8%, transparent); }
-  .station { font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: .02em; min-height: 18px; }
+  :root {
+    --bg:#0e0d14; --raise:#191722; --raise2:#242130; --fg:#eeecf5; --muted:#9591a6; --line:#2b2838;
+    --tick:#2f2c3d; --accent:#8b6dff; --on-accent:#fff; --ok:#49c98a; --warn:#f0b34a; --bad:#ff6f6f;
+    --ring:var(--accent);
+  }
+  @media (prefers-color-scheme: light) { :root {
+    --bg:#f3f1f8; --raise:#fff; --raise2:#ebe8f3; --fg:#1b1924; --muted:#666175; --line:#dfdbea;
+    --tick:#d6d1e4; --accent:#6a48ee; --ok:#14804e; --warn:#a56a00; --bad:#c93434;
+  } }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html { -webkit-text-size-adjust:100%; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 ui-rounded,"SF Pro Rounded",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  h1 { font-size:26px; font-weight:600; margin:0; letter-spacing:-.01em; }
+  h2 { font-size:18px; font-weight:600; margin:0; }
+  p { margin:0; }
+  a { color:inherit; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .muted { color:var(--muted); }
+  .small { font-size:14px; }
+  .bad { color:var(--bad); }
+  .ok { color:var(--ok); }
+  .warn { color:var(--warn); }
+  .grow { flex:1; min-width:0; }
+  .row { display:flex; align-items:center; gap:12px; }
+  .wrap { flex-wrap:wrap; }
+
+  /* The frame: a rail on a computer, a tab bar on a phone. */
+  .app { display:grid; grid-template-columns:200px minmax(0,1fr); min-height:100vh; min-height:100dvh; }
+  nav { position:sticky; top:0; height:100vh; height:100dvh; padding:24px 12px; display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--line); }
+  .brand { padding:0 12px 18px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  nav a { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; text-decoration:none; color:var(--muted); }
+  nav a svg { width:20px; height:20px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+  nav a.cur { background:var(--raise2); color:var(--fg); }
+  main { padding:28px 32px 64px; max-width:1040px; width:100%; }
+  section { display:grid; grid-template-columns:minmax(0,1fr); gap:20px; }
+  @media (max-width:719px) {
+    .app { grid-template-columns:minmax(0,1fr); }
+    nav { position:fixed; z-index:5; left:0; right:0; top:auto; bottom:0; height:auto; flex-direction:row; justify-content:space-around; padding:6px 6px calc(6px + env(safe-area-inset-bottom)); border-right:0; border-top:1px solid var(--line); background:var(--bg); }
+    .brand { display:none; }
+    nav a { flex:1; flex-direction:column; gap:2px; padding:6px 2px; font-size:12px; }
+    main { padding:18px 16px calc(92px + env(safe-area-inset-bottom)); }
+    h1 { font-size:22px; }
+  }
+
+  button, select, input[type=text] { font:inherit; color:var(--fg); }
+  button { min-height:40px; border:1px solid var(--line); background:var(--raise); border-radius:10px; padding:8px 14px; cursor:pointer; }
+  button:hover:not(:disabled) { background:var(--raise2); }
+  button:disabled { opacity:.5; cursor:default; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
+  button.primary:hover:not(:disabled) { background:var(--accent); filter:brightness(1.1); }
+  button.danger { color:var(--bad); }
+  button.icon { width:44px; height:44px; padding:0; border-radius:50%; font-size:18px; line-height:1; }
+  button.play { width:36px; min-height:36px; height:36px; padding:0; }
+  select, input[type=text] { min-height:40px; max-width:100%; padding:8px 10px; border-radius:10px; border:1px solid var(--line); background:var(--bg); }
+  input[type=range] { accent-color:var(--accent); width:100%; margin:0; }
+  input[type=checkbox].sw { appearance:none; -webkit-appearance:none; flex:none; width:44px; height:26px; margin:0; border-radius:13px; background:var(--tick); position:relative; cursor:pointer; transition:background .15s; }
+  input[type=checkbox].sw::after { content:""; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:transform .15s; }
+  input[type=checkbox].sw:checked { background:var(--accent); }
+  input[type=checkbox].sw:checked::after { transform:translateX(18px); }
+  input[type=checkbox].sw:disabled { opacity:.45; cursor:default; }
+
+  /* Group of rows: one surface, lines between. Used for everything list-like. */
+  .group { background:var(--raise); border-radius:16px; overflow:hidden; }
+  .group > * { padding:14px 16px; }
+  .group > * + * { border-top:1px solid var(--line); }
+  .field { display:flex; align-items:center; gap:12px; flex-wrap:wrap; min-height:56px; }
+  .field > :first-child { flex:1 1 180px; min-width:0; }
+  .field select, .field input[type=text] { flex:0 1 280px; min-width:0; }
+  @media (max-width:519px) { .field select, .field input[type=text] { flex:1 1 100%; } }
+  .gtitle { margin:8px 0 8px 4px; }
+
+  /* Home: the ring is the page. */
+  .home { display:grid; grid-template-columns:minmax(280px,380px) minmax(0,1fr); gap:32px; align-items:start; }
+  @media (max-width:879px) { .home { grid-template-columns:minmax(0,1fr); gap:20px; } }
+  .ringbox { display:grid; justify-items:center; gap:14px; }
+  .ring { position:relative; width:min(100%,340px); aspect-ratio:1; }
+  .ring svg { width:100%; height:100%; display:block; }
+  .ring line { stroke:var(--tick); stroke-width:6; stroke-linecap:round; }
+  .ring line.on { stroke:var(--ring); }
+  .ring .lvl { fill:none; stroke:var(--ring); stroke-width:3; stroke-linecap:round; opacity:.55; transition:stroke-dasharray .25s linear; }
+  .ring-c { position:absolute; inset:0; display:grid; place-content:center; justify-items:center; text-align:center; pointer-events:none; }
+  .ring-n { font-size:clamp(64px,22vw,88px); line-height:1; font-weight:300; font-variant-numeric:tabular-nums; letter-spacing:-.03em; }
+  .ring-s { margin-top:4px; color:var(--muted); }
+  .ring[data-state=listening] { --ring:#45c7e6; }
+  .ring[data-state=followup] { --ring:#45c7e6; }
+  .ring[data-state=thinking] { --ring:var(--warn); }
+  .ring[data-state=speaking] { --ring:var(--ok); }
+  .ring[data-state=off] { --ring:var(--bad); }
+  .pad { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:center; }
+  .pad .sep { width:1px; height:24px; background:var(--line); margin:0 4px; }
+
+  .banner { padding:10px 14px; border-radius:12px; background:var(--raise2); }
+  .meter { position:relative; height:6px; border-radius:3px; background:var(--tick); overflow:hidden; }
+  .meter > i { position:absolute; inset:0 auto 0 0; background:var(--accent); transition:width .25s linear; }
+  .meter > b { position:absolute; top:0; bottom:0; width:2px; background:var(--fg); }
+
+  /* Words */
+  .word { display:grid; gap:12px; }
+  .wname { font-size:20px; font-weight:600; overflow-wrap:anywhere; }
+  .sens { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:10px; align-items:center; }
+
+  /* Enrol wizard: a real sequence, so real numbers. */
+  ol.steps { list-style:none; margin:0; padding:0; counter-reset:s; }
+  ol.steps > li { counter-increment:s; position:relative; padding-left:64px !important; display:grid; gap:10px; }
+  ol.steps > li::before { content:counter(s); position:absolute; left:16px; top:14px; width:32px; height:32px; border-radius:50%; display:grid; place-items:center; background:var(--raise2); color:var(--muted); font-variant-numeric:tabular-nums; }
+  ol.steps > li.cur::before { background:var(--accent); color:var(--on-accent); }
+  ol.steps > li.done::before { content:"✓"; background:var(--ok); color:#06291a; }
+  .say { font-size:30px; font-weight:600; color:var(--accent); min-height:44px; }
+  .takes { display:flex; flex-wrap:wrap; gap:6px; }
+  .take { display:inline-flex; align-items:center; gap:4px; padding:2px 2px 2px 10px; border-radius:10px; background:var(--raise2); font-size:14px; font-variant-numeric:tabular-nums; }
+  .take button { min-height:32px; height:32px; width:32px; padding:0; border:0; background:none; }
+  .reading { padding:12px 14px; border-radius:10px; background:var(--raise2); max-width:66ch; }
+
+  /* Log */
+  .hit { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; align-items:start; }
+  .hit.suspect { box-shadow:inset 3px 0 0 var(--warn); }
+  .hit time { color:var(--muted); font-variant-numeric:tabular-nums; margin-right:6px; }
+  .hit .acts { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+  .hit .more { grid-column:1/-1; font-size:14px; color:var(--muted); overflow-wrap:anywhere; }
+  @media (max-width:519px) { .hit { grid-template-columns:minmax(0,1fr); } .hit .acts { justify-content:flex-start; } }
+  details summary { cursor:pointer; color:var(--muted); }
+  details p { margin-top:8px; max-width:66ch; }
+
+  dialog { border:0; border-radius:16px; padding:20px; background:var(--raise); color:var(--fg); width:min(92vw,420px); }
+  dialog::backdrop { background:rgba(0,0,0,.55); }
+  dialog input[type=text] { width:100%; margin-top:12px; }
+  dialog .row { justify-content:flex-end; margin-top:16px; }
+  .toast { position:fixed; z-index:9; left:50%; bottom:24px; transform:translateX(-50%); width:max-content; max-width:calc(100vw - 32px); padding:10px 16px; border-radius:12px; background:var(--fg); color:var(--bg); }
+  @media (max-width:719px) { .toast { bottom:calc(84px + env(safe-area-inset-bottom)); } }
+  @media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
 </style>
 </head>
 <body>
-<main>
-  <div class="row">
-    <div class="grow">
-      <div class="station" id="station"></div>
-      <h1>Голосовые команды</h1>
-      <div class="muted">Скажите своё слово — станция выполнит выбранное действие.</div>
-    </div>
-    <span class="pill" title="Звук с микрофонов станции после шумоподавления"><span id="adot" class="dot"></span><span id="atext">нет звука</span><span class="meter level"><i id="alevel"></i></span></span>
-  </div>
+<div class="app">
+  <nav aria-label="Разделы">
+    <div class="brand" id="brand">Станция</div>
+    <a href="#home" data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/></svg>Главная</a>
+    <a href="#words" data-tab="words"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>Слова</a>
+    <a href="#log" data-tab="log"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>Журнал</a>
+    <a href="#settings" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Настройки</a>
+  </nav>
+  <main>
+    <div class="banner warn" id="offline" role="status" style="margin-bottom:16px" hidden>Нет связи со станцией. Подключаюсь снова.</div>
 
-  <div id="words"></div>
-
-  <div class="card" id="newcard">
-    <div class="row">
-      <div class="grow"><h2>Новое слово</h2><div class="muted">Запись идёт микрофонами станции — говорите так же, как будете звать её потом.</div></div>
-      <button class="primary" id="newbtn">Добавить слово</button>
-    </div>
-  </div>
-
-  <div class="card" id="wizard" hidden>
-    <div class="row"><h2 class="grow">Слово «<span id="wname"></span>»</h2><button id="wcancel">Отмена</button></div>
-    <div class="steps">
-      <div class="step" id="s-ambient">
-        <b>1. Тишина в комнате</b>
-        <div class="muted">8 секунд станция слушает обычный фон комнаты. Не говорите в это время (телевизор и музыку оставьте, если они обычно играют).</div>
-        <div class="row" style="margin-top:8px"><button id="ambbtn">Записать фон</button><span id="ambmsg" class="msg"></span></div>
+    <section id="tab-home" hidden>
+      <div class="home">
+        <div class="ringbox">
+          <div class="ring" id="ring" data-state="idle">
+            <svg viewBox="0 0 240 240" aria-hidden="true"><g id="ticks"></g><circle class="lvl" id="lvl" cx="120" cy="120" r="88" transform="rotate(-90 120 120)" stroke-dasharray="0 553"/></svg>
+            <div class="ring-c"><div class="ring-n" id="volnum">–</div><div class="ring-s" id="ringstate">подключаюсь</div></div>
+          </div>
+          <div class="pad">
+            <button class="icon" data-vol="-5" aria-label="Тише">−</button>
+            <button class="icon" data-vol="5" aria-label="Громче">+</button>
+            <span class="sep"></span>
+            <button class="icon" data-player="prev" aria-label="Предыдущий трек">⏮</button>
+            <button class="icon" id="playpause" aria-label="Пауза или продолжить">⏯</button>
+            <button class="icon" data-player="next" aria-label="Следующий трек">⏭</button>
+          </div>
+          <p class="small bad" id="audioerr" style="text-align:center" hidden></p>
+        </div>
+        <div style="display:grid;gap:20px;min-width:0">
+          <div class="banner" id="hometrain" hidden></div>
+          <div>
+            <h2 class="gtitle">Последнее срабатывание</h2>
+            <div class="group" id="lasthit"></div>
+          </div>
+          <div id="homeassist" hidden>
+            <h2 class="gtitle">Ассистент</h2>
+            <div class="group"><div id="assistlast"></div></div>
+          </div>
+          <div class="group">
+            <label class="field" id="homequick"><span>Быстрые команды<br><span class="muted small">«стоп», «дальше» и другие без слова-пробуждения</span></span><input type="checkbox" class="sw" data-quickon></label>
+          </div>
+        </div>
       </div>
-      <div class="step" id="s-takes">
-        <b>2. Произнесите слово</b>
-        <div class="muted">Нажмите «Записать» и после надписи «Говорите!» скажите слово один раз. Нужно минимум <span id="mintakes">6</span>, лучше 10–15: с разных мест комнаты, громче и тише, разными людьми.</div>
-        <div class="row" style="margin-top:8px"><button class="primary big" id="takebtn">Записать</button><div class="say grow" id="say"></div></div>
-        <div class="row"><span id="takemsg" class="msg"></span><button id="lastbtn" data-play="/api/enroll/take/last" title="Послушать последнюю запись" hidden>▶ послушать</button></div>
-        <div class="takes" id="takes"></div>
+    </section>
+
+    <section id="tab-words" hidden>
+      <div class="row wrap"><h1 class="grow">Слова</h1><button class="primary" id="newword">Добавить слово</button></div>
+      <div class="group" id="training" hidden><div>
+        <div class="row"><b class="grow">Обучение «<span id="tword"></span>»</b><span class="muted small" id="tstage"></span></div>
+        <div class="meter" style="margin-top:10px"><i id="tbar"></i></div>
+        <p class="small muted" style="margin-top:8px">Идёт на станции, страницу можно закрыть.</p>
+      </div></div>
+      <div id="wizard" hidden>
+        <div class="row" style="margin-bottom:10px"><h2 class="grow">Новая запись «<span id="wname"></span>»</h2><button id="wcancel">Бросить</button></div>
+        <ol class="group steps">
+          <li id="s-ambient"><b>Шум комнаты</b>
+            <p class="muted small">8 секунд станция слушает обычный фон. Молчите, телевизор и музыку оставьте, если они обычно играют.</p>
+            <div class="row wrap"><button id="ambbtn">Записать фон</button><span id="ambmsg" class="small"></span></div></li>
+          <li id="s-takes"><b>Произнесите слово</b>
+            <p class="muted small">Нажмите «Записать» и после «Говорите!» скажите слово один раз. Нужно минимум <span id="mintakes">6</span>, лучше 10–15: из разных мест комнаты, громче и тише, разными людьми.</p>
+            <div class="row wrap"><button class="primary" id="takebtn">Записать</button><div class="say grow" id="say" aria-live="assertive"></div></div>
+            <div class="row wrap"><span id="takemsg" class="small"></span><button id="lastbtn" data-play="/api/v1/enroll/takes/last" hidden>▶ Послушать</button></div>
+            <div class="takes" id="takes"></div></li>
+          <li id="s-speech"><b>Обычная речь, по желанию</b>
+            <p class="muted small">20 секунд читайте вслух. Так станция научится не путать слово с вашей речью.</p>
+            <p class="reading small">Сегодня обещали тёплую погоду, поэтому мы решили погулять в парке. Вечером нужно купить хлеб, молоко и что-нибудь к чаю. Позвоню маме и спрошу, как у неё дела. Завтра рано вставать, так что лягу пораньше и почитаю книгу.</p>
+            <div class="row wrap"><button id="speechbtn">Читать 20 секунд</button><span id="speechmsg" class="small"></span></div></li>
+          <li id="s-train"><b>Обучение</b>
+            <p class="muted small">Около 2–3 минут на станции. Страницу можно закрыть.</p>
+            <label class="row wrap small"><span>Действие по слову</span><select id="enrollaction"></select></label>
+            <div class="row wrap"><button class="primary" id="trainbtn">Обучить</button><span id="trainmsg" class="small"></span></div></li>
+        </ol>
       </div>
-      <div class="step" id="s-speech">
-        <b>3. Обычная речь (по желанию)</b>
-        <div class="muted">20 секунд прочитайте вслух текст ниже. Так станция научится не путать слово с вашей обычной речью.</div>
-        <div class="reading" style="margin-top:8px">Сегодня обещали тёплую погоду, поэтому мы решили погулять в парке. Вечером нужно купить хлеб, молоко и что-нибудь к чаю. Позвоню маме и спрошу, как у неё дела. Завтра рано вставать, так что лягу пораньше и почитаю книгу.</div>
-        <div class="row" style="margin-top:8px"><button id="speechbtn">Читать 20 секунд</button><span id="speechmsg" class="msg"></span></div>
+      <div id="words" style="display:grid;gap:16px"></div>
+    </section>
+
+    <section id="tab-log" hidden>
+      <h1>Журнал</h1>
+      <div class="group" id="hits"></div>
+      <details class="small"><summary>Как работает разметка</summary>
+        <p class="muted">Если команда сработала зря, нажмите «Ложное»: запись пойдёт в обучение, и после 10 новых ложных слово переобучится само. Через 10 с после срабатывания Gemini слушает запись: от 70% ставит «верное», до 30% ставит «ложное». Ваш выбор Gemini не меняет. Жёлтой чертой отмечены команды, отменённые за 10 с: пауза и сразу продолжить, следующий и сразу назад, громче и сразу обратно колёсиком.</p>
+      </details>
+    </section>
+
+    <section id="tab-settings" hidden>
+      <h1>Настройки</h1>
+      <div>
+        <h2 class="gtitle">Звук</h2>
+        <div class="group">
+          <label class="field"><span>Шаг колёсика</span><select id="knobstep"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+        </div>
       </div>
-      <div class="step" id="s-train">
-        <b>4. Обучение</b>
-        <div class="row" style="margin-top:8px"><span class="stats">Действие по слову:</span><select id="enrollaction"></select></div>
-        <div class="muted">Модель обучается прямо на станции, около 2–3 минут. Страницу можно закрыть.</div>
-        <div class="row" style="margin-top:8px"><button class="primary" id="trainbtn">Обучить</button><span id="trainmsg" class="msg"></span></div>
+      <div id="asstgroup">
+        <h2 class="gtitle">Ассистент</h2>
+        <div class="group">
+          <div id="asstoff" class="muted" hidden>Нет ключа Gemini. Запустите ./setup, он спросит ключ.</div>
+          <div class="field" id="asstspotifyrow"><span>Spotify</span><span id="asstspotify" class="muted"></span></div>
+          <div id="asstnopiper" class="warn small" hidden>Piper не запустился, ответы идут голосом Gemini.</div>
+          <label class="field asst"><span>Модель</span><select id="asstmodel"></select></label>
+          <label class="field asst"><span>Озвучка</span><select id="assttts"><option value="gemini">Gemini: живее, через интернет</option><option value="piper">Piper: на колонке, без интернета</option></select></label>
+          <label class="field asst" id="asstvoicerow"><span>Голос Gemini</span><input type="text" id="asstvoice" maxlength="64" placeholder="Kore"></label>
+          <label class="field asst"><span>Город для погоды</span><input type="text" id="asstcity" maxlength="64" placeholder="Москва"></label>
+        </div>
       </div>
-    </div>
-  </div>
+      <div>
+        <h2 class="gtitle">Быстрые команды</h2>
+        <div class="group" id="quick">
+          <div id="quickerr" class="muted" hidden></div>
+          <label class="field" id="quickoffrow"><span>Включены</span><input type="checkbox" class="sw" data-quickon></label>
+          <div id="quickgroups" hidden></div>
+        </div>
+      </div>
+      <div>
+        <h2 class="gtitle">Проверка срабатываний</h2>
+        <div class="group">
+          <label class="field"><span>Проверять через Gemini<br><span class="muted small" id="judgestat"></span></span><input type="checkbox" class="sw" id="judge"></label>
+          <label class="field" id="judgerow"><span>Модель проверки</span><select id="judgemodel"></select></label>
+          <label class="field"><span>Отменённую вами команду сразу считать ложной</span><input type="checkbox" class="sw" id="autoundo"></label>
+        </div>
+      </div>
+      <div>
+        <h2 class="gtitle">Экран и кольцо</h2>
+        <div class="group" id="ledgroup">
+          <div id="ledmsg" class="bad" hidden>Сервис экрана не отвечает, настройки сейчас недоступны.</div>
+          <div class="field"><span>Яркость экрана<br><span class="muted small" id="ledbrightv"></span></span>
+            <label class="row small"><span>авто</span><input type="checkbox" class="sw" id="ledauto"></label>
+            <input type="range" id="ledbright" min="1" max="100" style="flex:1 1 200px" aria-label="Яркость экрана"></div>
+          <div class="field"><span>Режим ИИ<br><span class="muted small">Показать, как выглядит ассистент за работой</span></span><button id="ledai">Показать</button></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
 
-  <div class="card" id="traincard" hidden>
-    <h2>Обучение «<span id="tword"></span>»</h2>
-    <div class="meter"><i id="tbar"></i></div>
-    <div class="stats" id="tstage" style="margin-top:6px"></div>
-  </div>
+<dialog id="dlg"><form method="dialog">
+  <p id="dlgtext"></p>
+  <input type="text" id="dlginput" maxlength="40" autocomplete="off">
+  <div class="row"><button value="" formnovalidate>Отмена</button><button value="ok" class="primary" id="dlgok">Готово</button></div>
+</form></dialog>
+<div class="toast" id="toast" role="alert" hidden></div>
 
-  <div class="card">
-    <div class="row">
-      <div class="grow"><h2>Громкость <span id="volnow" class="muted"></span></h2><div class="muted">Одна громкость на всё: Spotify, кольцо и голос.</div></div>
-      <span class="stats">Шаг кольца:</span>
-      <select id="knobstep"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
-    </div>
-  </div>
-
-  <div class="card" id="ledcard">
-    <div class="row">
-      <div class="grow"><h2>Экран и кольцо</h2><div class="muted">Как светятся экран и кольцо станции.</div></div>
-      <span id="ledmsg" class="msg bad"></span>
-    </div>
-    <div id="ledsel"></div>
-    <div class="row" style="margin-top:8px">
-      <span class="stats grow">Яркость экрана</span>
-      <label class="stats"><input type="checkbox" id="ledauto"> авто</label>
-      <input type="range" id="ledbright" min="1" max="100">
-      <span id="ledbrightv" class="stats" style="min-width:36px;text-align:right"></span>
-    </div>
-    <div class="row" style="margin-top:10px"><button id="ledai">Показать режим ИИ</button></div>
-  </div>
-
-  <div class="card" id="asstcard">
-    <div class="row">
-      <div class="grow"><h2>Ассистент</h2><div class="muted">Слово с действием «ассистент» — и спросите что угодно: погоду, время, музыку.</div></div>
-      <span class="pill" id="asstpill"><span id="asstdot" class="dot"></span><span id="asststate"></span></span>
-    </div>
-    <div class="stats" id="asstoff" hidden>нет ключа Gemini — ассистент выключен</div>
-    <div id="asston">
-      <div class="stats" style="margin:2px 0 6px">Spotify: <span id="asstspotify"></span></div>
-      <div class="stats" id="asstnopiper" style="margin:2px 0 6px" hidden>Piper (запасной голос без интернета) не установлен</div>
-      <div class="row stats" style="margin:4px 0"><span>модель</span> <select id="asstmodel"></select></div>
-      <div class="row stats" style="margin:4px 0"><span>озвучка</span>
-        <select id="assttts"><option value="gemini">Gemini — живее, через интернет</option><option value="piper">Piper — на колонке, без интернета</option></select></div>
-      <div class="row stats" id="asstvoicerow" style="margin:4px 0"><span>голос Gemini</span> <input type="text" id="asstvoice" maxlength="64" placeholder="Kore"></div>
-      <div class="row stats" style="margin:4px 0"><span>город для погоды</span> <input type="text" id="asstcity" maxlength="64" placeholder="Москва"></div>
-      <div class="stats" id="asstlast" style="margin-top:8px"></div>
-    </div>
-  </div>
-
-  <div class="card" id="quickcard">
-    <div class="row">
-      <div class="grow"><h2>Быстрые команды</h2><div class="muted">Стандартные команды Яндекса: скажите «стоп» или «дальше» — без слова-пробуждения.</div></div>
-      <label class="switch stats" id="quickoffrow"><input type="checkbox" id="quickon"> включены</label>
-    </div>
-    <div class="stats" id="quickerr" hidden></div>
-    <div id="quickgroups"></div>
-  </div>
-
-  <div class="card">
-    <h2>Последние срабатывания</h2>
-    <label class="switch stats"><input type="checkbox" id="judge"> проверять срабатывания через Gemini</label>
-    <div class="row stats" id="judgerow" style="margin:2px 0 4px 24px">
-      <span>модель</span> <select id="judgemodel"></select>
-    </div>
-    <div class="stats" id="judgestat" style="margin:2px 0 4px 24px"></div>
-    <label class="switch stats"><input type="checkbox" id="autoundo"> отменённую вами команду сразу считать ложной</label>
-    <div class="muted" id="nohits" style="margin-top:10px">Пока не было. Скажите слово — здесь появится запись.</div>
-    <table id="hits"></table>
-  </div>
-
-  <div class="row muted" style="font-size:13px">
-    <span class="grow">Если команда сработала зря — нажмите «Ложное» у записи, а потом «Переобучить» у слова.
-      Через 10 с после срабатывания Gemini слушает запись и оценивает вероятность команды: от 70% ставит «верное», до 30% — «ложное»;
-      ложные записи идут в обучение. Ваш выбор Gemini не меняет.
-      Команды, отменённые в течение 10 с (пауза → продолжить, следующий → назад, громче → обратно колёсиком),
-      подсвечены.</span>
-  </div>
-</main>
 <script>
 const $ = (id) => document.getElementById(id);
-let state = null, busy = false;
+const BASE = "/api/v1";
+let state = null, hits = [], busy = false, led = null, tab = "";
 
 async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: body ? {"Content-Type": "application/json"} : {}, body: body ? JSON.stringify(body) : undefined });
+  const r = await fetch(BASE + path, { method, headers: body !== undefined ? {"Content-Type": "application/json"} : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  if (!r.ok) throw new Error((j.error && j.error.message) || r.statusText);
   return j;
 }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function pct(x) { return Math.round(x * 100) + "%"; }
-function msg(el, text, kind) { el.textContent = text || ""; el.className = "msg " + (kind || ""); }
-
-const ACTIONS = [["", "нет"], ["pause", "пауза"], ["play", "продолжить"], ["next", "следующий"], ["prev", "предыдущий"], ["louder", "громче"], ["quieter", "тише"], ["assistant", "ассистент"]];
-function actionOptions(sel) {
-  return ACTIONS.map(([v, l]) => `<option value="${v}"${v === sel ? " selected" : ""}>${l}</option>`).join("");
+function msg(el, text, kind) { el.textContent = text || ""; el.className = "small " + (kind || ""); }
+const clock = (t) => new Date(t).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit"});
+function clockOrDate(t) {
+  const d = new Date(t);
+  return d.toDateString() === new Date().toDateString() ? clock(t) : d.toLocaleDateString("ru-RU", {day: "numeric", month: "short"}) + ", " + clock(t);
 }
-
-function renderWords(s) {
-  const box = $("words");
-  const keep = document.activeElement && (document.activeElement.type === "range" || document.activeElement.tagName === "SELECT");
-  if (keep) { // do not rebuild under a dragged slider; just move meters
-    for (const w of s.words) {
-      const m = document.querySelector(`[data-meter="${w.id}"]`);
-      if (m) m.style.width = pct(w.score);
-    }
-    return;
-  }
-  box.innerHTML = s.words.map(w => {
-    const thr = Math.min(0.99, Math.max(0.05, w.threshold - w.sensitivity));
-    return `<div class="card">
-      <div class="row">
-        <h2 class="grow" style="margin:0">«${esc(w.name)}»</h2>
-        <label class="switch"><input type="checkbox" data-enable="${w.id}" ${w.enabled ? "checked" : ""}> включено</label>
-      </div>
-      <div class="meter" style="margin:12px 0 6px" title="Уверенность сейчас; отметка — порог срабатывания">
-        <i data-meter="${w.id}" style="width:${pct(w.score)}"></i><b style="left:${pct(thr)}"></b></div>
-      <div class="row">
-        <span class="stats grow">${w.takes} записей · проверка: узнаёт ${pct(w.recall)} · ложных ≈ ${w.false_per_h.toFixed(1)}/час${w.false_clips ? ` · отмечено ложных: ${w.false_clips}` : ""}${w.new_falses ? ` · новых ${w.new_falses} из 10 — потом переобучится само` : ""}</span>
-        <span class="stats">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" data-sens="${w.id}"><span class="stats">чаще</span>
-      </div>
-      <div class="row" style="margin-top:8px"><span class="stats">действие:</span>
-        <select data-action="${w.id}">${actionOptions(w.action)}</select></div>
-      ${(w.notes || []).length ? `<div class="stats">${w.notes.map(esc).join("<br>")}</div>` : ""}
-      <div class="row" style="margin-top:10px">
-        <button data-more="${esc(w.name)}">Дозаписать</button>
-        <button data-retrain="${w.id}">Переобучить</button>
-        <span class="grow"></span>
-        <button class="danger" data-del="${w.id}" data-name="${esc(w.name)}">Удалить</button>
-      </div></div>`;
-  }).join("");
+// editing: a control the user is busy with is never rewritten under their hand.
+const editing = (el) => el === document.activeElement;
+function setValue(el, v) { if (!editing(el)) el.value = v; }
+function setChecked(el, v) { if (!editing(el)) el.checked = v; }
+function setHTML(el, html) {
+  if (el.dataset.html === html) return;
+  const a = document.activeElement;
+  if (a && el.contains(a) && (a.type === "range" || a.tagName === "SELECT" || a.type === "text")) return;
+  el.innerHTML = html; el.dataset.html = html;
 }
-
-function hitStatus(h) {
-  if (h.action === "hush" && h.fired && !h.error) return "ассистент замолчал";
-  if (h.error) return `<span class="msg bad">${esc(h.error)}</span>`;
-  if (h.undone) return `отменено через ${h.undone.toFixed(1)} с`;
-  if (h.fired) return "действие выполнено";
-  return h.debounced ? "повтор" : "";
+let toastT;
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastT); toastT = setTimeout(() => { t.hidden = true; }, 5000);
 }
-function hitJudge(h) {
-  if (h.judge_error) return `<div class="msg bad" title="${esc(h.judge_error)}">Gemini: ошибка <button data-rejudge="${h.id}">Ещё раз</button></div>`;
-  const j = h.judge;
-  if (!j) return "";
-  const heard = j.heard ? ` · слышно «${esc(j.heard)}»` : "";
-  // probability is the chance it was a command; hits judged before it carry command + confidence
-  const call = j.command != null ? `${j.command ? "команда" : "ложное"} (${Math.round(j.confidence * 100)}%)` :
-    `${j.probability >= 0.7 ? "команда" : j.probability <= 0.3 ? "ложное" : "не уверен"} · вероятность команды ${Math.round(j.probability * 100)}%`;
-  return `<div class="stats" title="${esc(j.reason)}">Gemini: ${call}${heard}${j.reason ? ` — ${esc(j.reason)}` : ""}</div>`;
+function ask(text, opts = {}) {
+  return new Promise(res => {
+    const d = $("dlg"), i = $("dlginput");
+    $("dlgtext").textContent = text;
+    i.hidden = !opts.input; i.value = "";
+    i.placeholder = opts.placeholder || "";
+    $("dlgok").textContent = opts.ok || "Готово";
+    $("dlgok").className = opts.danger ? "danger" : "primary";
+    d.returnValue = "";
+    d.onclose = () => res(d.returnValue === "ok" ? (opts.input ? i.value.trim() : true) : (opts.input ? "" : false));
+    d.showModal();
+    if (opts.input) i.focus();
+  });
 }
-function hitVerdict(h) {
-  const play = `<button data-play="/api/hits/${h.id}">▶</button>`;
-  if (h.verdict === "false") return `${play} <span class="stats">ложное${h.auto ? " (авто)" : ""}</span> <button data-verdict="ok" data-hit="${h.id}">Не ложное</button>`;
-  if (h.verdict === "ok") return `${play} <span class="stats">верное</span> <button data-verdict="false" data-hit="${h.id}">Ложное</button>`;
-  return `${play} <button data-verdict="false" data-hit="${h.id}">Ложное</button>${h.undone ? ` <button data-verdict="ok" data-hit="${h.id}">Верно</button>` : ""}`;
-}
-function renderHits(s) {
-  $("nohits").hidden = s.hits.length > 0;
-  if (document.activeElement !== $("judge")) $("judge").checked = s.settings.judge;
-  if (document.activeElement !== $("autoundo")) $("autoundo").checked = s.settings.auto_false_undo;
-  const j = s.judge;
-  $("judge").disabled = !j.available;
-  $("judgerow").hidden = !j.available;
-  const sel = $("judgemodel");
-  const ids = j.models.map(m => m.id);
-  if (!ids.includes(j.model)) ids.push(j.model);
-  const opts = ids.map(id => { const m = j.models.find(x => x.id === id); return `<option value="${esc(id)}">${esc(id)}${m ? " — " + esc(m.note) : ""}</option>`; }).join("");
-  if (document.activeElement !== sel && sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
-  if (document.activeElement !== sel) sel.value = j.model;
-  $("judgestat").textContent = !j.available ? "нет ключа: запустите ./setup, он спросит ключ Gemini" :
-    !j.on ? "выключено" : (j.pending ? `в очереди ${j.pending}` : "");
-  $("hits").innerHTML = s.hits.map(h => `<tr${h.undone && !h.verdict ? ' class="suspect"' : ""}>
-    <td>${new Date(h.at).toLocaleTimeString()}</td><td>«${esc(h.name)}»${h.source === "yandex" ? ' <span class="stats">Яндекс</span>' : ""}</td>
-    <td title="уверенность">${h.score.toFixed(2)}${h.playback ? ' <span class="stats" title="играла музыка">♪</span>' : ""}</td>
-    <td>${hitStatus(h)}${hitJudge(h)}</td>
-    <td>${hitVerdict(h)}</td></tr>`).join("");
-}
-
-function renderQuick(s) {
-  const q = s.quick;
-  $("quickerr").hidden = q.available;
-  $("quickerr").textContent = q.available ? "" : "быстрые команды недоступны: " + (q.error || "модель Яндекса не загружена");
-  $("quickoffrow").hidden = !q.available;
-  $("quickgroups").hidden = !q.available;
-  if (!q.available) return;
-  if (document.activeElement !== $("quickon")) $("quickon").checked = !q.off;
-  const html = q.groups.map(g => `<label class="switch stats" style="display:block;margin:4px 0"><input type="checkbox" data-quick="${g.id}"${g.on ? " checked" : ""}${q.off ? " disabled" : ""}> ${esc(g.words)}</label>`).join("");
-  if ($("quickgroups").dataset.html !== html && !$("quickgroups").contains(document.activeElement)) {
-    $("quickgroups").innerHTML = html;
-    $("quickgroups").dataset.html = html;
-  }
-}
-
-const ASST_STATES = { idle: "ждёт", listening: "слушает", thinking: "думает", speaking: "говорит", followup: "ждёт продолжения" };
-function renderAssistant(s) {
-  const a = s.assistant;
-  $("asstoff").hidden = a.available;
-  $("asston").hidden = !a.available;
-  $("asstpill").hidden = !a.available;
-  if (!a.available) return;
-  const st = a.status || {};
-  $("asstdot").className = "dot" + (st.state && st.state !== "idle" ? " on" : "");
-  $("asststate").textContent = ASST_STATES[st.state] || st.state || "";
-  $("asstnopiper").hidden = !a.piper_missing;
-  $("asstspotify").textContent = a.spotify_linked == null ? "проверяю…" : a.spotify_linked ? "привязан" : "не привязан — запустите ./setup";
-  const sel = $("asstmodel");
-  const ids = s.judge.models.map(m => m.id);
-  if (a.settings.model && !ids.includes(a.settings.model)) ids.push(a.settings.model);
-  const opts = `<option value="">по умолчанию (${esc(a.default_model)})</option>` + ids.map(id => {
-    const m = s.judge.models.find(x => x.id === id);
-    return `<option value="${esc(id)}">${esc(id)}${m ? " — " + esc(m.note) : ""}</option>`;
-  }).join("");
-  if (document.activeElement !== sel && sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
-  if (document.activeElement !== sel) sel.value = a.settings.model || "";
-  if (document.activeElement !== $("assttts")) $("assttts").value = a.settings.tts;
-  $("asstvoicerow").hidden = a.settings.tts !== "gemini";
-  if (document.activeElement !== $("asstvoice")) $("asstvoice").value = a.settings.voice || "";
-  if (document.activeElement !== $("asstcity")) $("asstcity").value = a.settings.city || "";
-  const last = [];
-  if (st.last_heard) last.push(`<div>инструменты: ${esc(st.last_heard)}</div>`);
-  if (st.last_reply) last.push(`<div>ответ: «${esc(st.last_reply)}»</div>`);
-  if (st.last_error) last.push(`<div class="msg bad">ошибка: ${esc(st.last_error)}</div>`);
-  if (last.length && st.at) last.unshift(`<div>${new Date(st.at).toLocaleTimeString()}</div>`);
-  const html = last.join("") || "запросов пока не было";
-  if ($("asstlast").innerHTML !== html) $("asstlast").innerHTML = html;
-}
-
-function renderEnroll(s) {
-  const e = s.enroll;
-  $("wizard").hidden = !e;
-  $("newcard").hidden = !!e || s.train.active;
-  if (!e) return;
-  $("wname").textContent = e.name;
-  $("mintakes").textContent = e.min_takes;
-  $("s-ambient").className = "step " + (e.has_ambient ? "done" : "cur");
-  $("s-takes").className = "step " + (e.takes.length >= e.min_takes ? "done" : (e.has_ambient ? "cur" : ""));
-  $("s-speech").className = "step " + (e.speech_secs > 0 ? "done" : "");
-  $("s-train").className = "step " + (e.takes.length >= e.min_takes && e.has_ambient ? "cur" : "");
-  $("trainbtn").disabled = busy || e.takes.length < e.min_takes || !e.has_ambient;
-  if (e.has_ambient && !$("ambmsg").textContent) msg($("ambmsg"), "записано", "ok");
-  if (e.speech_secs > 0 && !$("speechmsg").textContent) msg($("speechmsg"), "записано", "ok");
-  $("takes").innerHTML = e.takes.map((d, i) => `<span class="take">#${i + 1} ${d.toFixed(2)} с
-     <button title="Послушать" data-play="/api/enroll/take/${i}">▶</button>
-     <button title="Удалить" data-deltake="${i}">✕</button></span>`).join("");
-  for (const b of ["ambbtn", "takebtn", "speechbtn"]) $(b).disabled = busy;
-}
-
-function renderTrain(s) {
-  const t = s.train;
-  $("traincard").hidden = !t.active && !t.error;
-  if (!t.active && !t.error) return;
-  $("tword").textContent = t.name || t.word;
-  const stages = { load: [0, 0.02], embed: [0.02, 0.45], train: [0.45, 0.95], calibrate: [0.95, 1] };
-  const [a, b] = stages[t.stage] || [0, 1];
-  $("tbar").style.width = pct(a + (b - a) * t.frac);
-  const names = { load: "загрузка", embed: "обработка записей", train: "обучение", calibrate: "проверка" };
-  $("tstage").textContent = t.error ? "Ошибка: " + t.error : (names[t.stage] || t.stage) + "…";
-}
-
-
-const LED_FIELDS = [
-  ["volume_screen", "Громкость на экране", [["pulse", "Сток: пульс"], ["number", "Число"]]],
-  ["ai_ring", "Кольцо ИИ", [["carousel", "Карусель"], ["flow", "Перелив"], ["stock", "Как сток"]]],
-  ["ai_screen", "Экран ИИ", [["dots", "Четыре точки"], ["eq", "Эквалайзер"]]],
-  ["flash", "Вспышка команд", [["sweep", "Пробег"], ["white", "Белая"], ["color", "Цвет команды"]]],
-  ["music", "Музыка на экране", [["spectrum", "Спектр"], ["scope", "Осциллограф"], ["clockbar", "Часы + полоска"]]],
-];
-$("ledsel").innerHTML = LED_FIELDS.map(([k, label, opts]) => `<div class="row" style="margin-top:8px">
-  <span class="stats grow">${label}</span>
-  <select data-led="${k}">${opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></div>`).join("");
-function renderLED(l) {
-  msg($("ledmsg"), "");
-  for (const sel of document.querySelectorAll("select[data-led]")) {
-    if (document.activeElement !== sel) sel.value = l.settings[sel.dataset.led];
-  }
-  const b = l.settings.brightness || 0, slider = $("ledbright");
-  $("ledauto").checked = b === 0;
-  slider.disabled = b === 0;
-  if (document.activeElement !== slider) slider.value = b || 30;
-  $("ledbrightv").textContent = b ? slider.value + "%" : "";
-  $("ledai").textContent = l.ai ? "Выключить режим ИИ" : "Показать режим ИИ";
-  $("ledai").dataset.on = l.ai ? "1" : "";
-}
-async function refreshLED() {
-  try { renderLED(await api("GET", "/api/led")); }
-  catch (e) { msg($("ledmsg"), "ledd не отвечает", "bad"); }
-}
-// ledSettings collects the whole settings object from the card.
-function ledSettings() {
-  const settings = {};
-  for (const sel of document.querySelectorAll("select[data-led]")) settings[sel.dataset.led] = sel.value;
-  settings.brightness = $("ledauto").checked ? 0 : +$("ledbright").value;
-  return settings;
-}
-function saveLED(t) {
-  run(null, async () => { renderLED(await api("POST", "/api/led/settings", ledSettings())); if (t) t.blur(); });
-}
-$("ledsel").onchange = (ev) => {
-  const t = ev.target;
-  if (!t.dataset.led) return;
-  ev.stopPropagation();
-  saveLED(t);
-};
-$("ledauto").onchange = (ev) => { ev.stopPropagation(); saveLED($("ledauto")); };
-$("ledbright").oninput = () => { $("ledbrightv").textContent = $("ledbright").value + "%"; };
-$("ledbright").onchange = (ev) => { ev.stopPropagation(); saveLED($("ledbright")); };
-$("ledai").onclick = () => run($("ledai"), async () => renderLED(await api("POST", "/api/led/ai", { on: !$("ledai").dataset.on })));
-
-async function refresh() {
-  refreshLED();
-  try {
-    const s = await api("GET", "/api/state");
-    const prev = state; state = s;
-    if ($("station").textContent !== s.station) {
-      $("station").textContent = s.station;
-      document.title = s.station ? `${s.station} — голосовые команды` : "Голосовые команды";
-    }
-    $("adot").className = "dot" + (s.audio.ok ? " on" : "");
-    $("atext").textContent = s.audio.ok ? "звук есть" : "нет звука";
-    $("alevel").style.width = pct(Math.max(0, Math.min(1, (s.audio.level + 80) / 70)));
-    renderWords(s); renderHits(s); renderAssistant(s); renderQuick(s); renderEnroll(s); renderTrain(s);
-    const v = await api("GET", "/api/volume");
-    $("volnow").textContent = v.volume + "%";
-    if (document.activeElement !== $("knobstep")) $("knobstep").value = String(v.knob_step);
-    if (prev && prev.train.active && !s.train.active && !s.train.error) {
-      msg($("trainmsg"), "");
-    }
-  } catch (e) {
-    $("adot").className = "dot"; $("atext").textContent = "нет связи";
-  }
-}
-setInterval(refresh, 300);
-refresh();
-
 async function run(btn, fn) {
   if (busy) return;
   busy = true; if (btn) btn.disabled = true;
-  try { await fn(); } catch (e) { alert(e.message); }
-  finally { busy = false; if (btn) btn.disabled = false; refresh(); }
+  try { await fn(); } catch (e) { toast(e.message); if (state) render(); }
+  finally { busy = false; if (btn) btn.disabled = false; if (state) renderEnroll(state); }
 }
-$("knobstep").onchange = (e) => run(null, () => api("POST", "/api/volume", { knob_step: +e.target.value }));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-$("newbtn").onclick = () => run(null, async () => {
-  const name = prompt("Какое слово будет звать станцию? Например: Джарвис, Компьютер, Станция");
+// ---- ring
+const TICKS = 60;
+$("ticks").innerHTML = Array.from({length: TICKS}, (_, i) => {
+  const a = i * 2 * Math.PI / TICKS - Math.PI / 2, c = Math.cos(a), s = Math.sin(a);
+  return `<line x1="${(120 + 100 * c).toFixed(1)}" y1="${(120 + 100 * s).toFixed(1)}" x2="${(120 + 112 * c).toFixed(1)}" y2="${(120 + 112 * s).toFixed(1)}"/>`;
+}).join("");
+const tickEls = [...$("ticks").children];
+const ASST_STATES = { idle: "ждёт слова", listening: "слушает", thinking: "думает", speaking: "говорит", followup: "ждёт продолжения" };
+function renderVolume(v) {
+  if (v === $("volnum").dataset.v) return;
+  $("volnum").dataset.v = v;
+  $("volnum").textContent = v;
+  const on = Math.round(v * TICKS / 100);
+  tickEls.forEach((t, i) => t.classList.toggle("on", i < on));
+}
+function renderRing(audioOK, assistant) {
+  const st = audioOK ? (assistant || "idle") : "off";
+  $("ring").dataset.state = st;
+  $("ringstate").textContent = audioOK ? (ASST_STATES[st] || st) : "нет звука";
+}
+function renderLevel(level) {
+  const c = 2 * Math.PI * 88, x = Math.max(0, Math.min(1, (level + 80) / 70));
+  $("lvl").setAttribute("stroke-dasharray", `${(c * x).toFixed(1)} ${c.toFixed(1)}`);
+}
+
+// ---- home
+function renderHome(s) {
+  if (s.volume) renderVolume(s.volume.volume);
+  renderRing(s.audio.ok, s.assistant.available ? (s.assistant.status || {}).state : "");
+  renderLevel(s.audio.level);
+  $("audioerr").hidden = s.audio.ok || !s.audio.error;
+  $("audioerr").textContent = s.audio.error || "";
+  const playing = s.player.state === "playing";
+  const pp = $("playpause");
+  pp.textContent = playing ? "⏸" : "▶"; pp.dataset.player = playing ? "pause" : "play";
+  pp.setAttribute("aria-label", playing ? "Пауза" : "Продолжить");
+  $("hometrain").hidden = !s.train.active;
+  if (s.train.active) $("hometrain").textContent = `Идёт обучение слова «${s.train.name || s.train.word}»`;
+  const a = s.assistant, st = a.status || {};
+  const last = [];
+  if (st.last_heard) last.push(`<span class="muted small">инструменты: ${esc(st.last_heard)}</span>`);
+  if (st.last_reply) last.push(`«${esc(st.last_reply)}»`);
+  if (st.last_error) last.push(`<span class="bad">${esc(st.last_error)}</span>`);
+  $("homeassist").hidden = !a.available;
+  setHTML($("assistlast"), last.length ? `${st.at ? `<span class="muted small">${clockOrDate(st.at)}</span><br>` : ""}${last.join("<br>")}` :
+    `<span class="muted">Запросов пока не было. Скажите слово с действием «ассистент» и спросите что угодно.</span>`);
+  $("homequick").hidden = !s.quick.available;
+  document.querySelectorAll("[data-quickon]").forEach(c => setChecked(c, !s.quick.off));
+}
+function renderLastHit() {
+  const h = hits[0];
+  setHTML($("lasthit"), h ? hitRow(h) : `<div class="muted">Пока не было. Скажите своё слово, и запись появится здесь.</div>`);
+}
+
+// ---- words
+const ACTIONS = [["", "нет"], ["pause", "пауза"], ["play", "продолжить"], ["next", "следующий"], ["prev", "предыдущий"], ["louder", "громче"], ["quieter", "тише"], ["assistant", "ассистент"]];
+const actionOptions = (sel) => ACTIONS.map(([v, l]) => `<option value="${v}"${v === sel ? " selected" : ""}>${l}</option>`).join("");
+$("enrollaction").innerHTML = actionOptions("");
+
+function renderWords(s) {
+  const trainBlocks = s.enroll || s.train.active;
+  $("newword").hidden = !!trainBlocks;
+  setHTML($("words"), s.words.length ? s.words.map(w => {
+    const thr = Math.min(0.99, Math.max(0.05, w.threshold - w.sensitivity));
+    const facts = [`${w.takes} записей`, `узнаёт ${pct(w.recall)}`, `ложных около ${w.false_per_h.toFixed(1)} в час`];
+    if (w.false_clips) facts.push(`отмечено ложных: ${w.false_clips}`);
+    if (w.new_falses) facts.push(`новых ${w.new_falses} из 10, потом переобучится само`);
+    return `<div class="group"><div class="word">
+      <div class="row"><div class="wname grow">${esc(w.name)}</div>
+        <input type="checkbox" class="sw" aria-label="Включено" data-enable="${esc(w.id)}" ${w.enabled ? "checked" : ""}></div>
+      <div><div class="meter" title="Уверенность сейчас, черта это порог срабатывания"><i data-meter="${esc(w.id)}" style="width:${pct(w.score)}"></i><b style="left:${pct(thr)}"></b></div></div>
+      <p class="small muted">${facts.join(", ")}</p>
+      ${(w.notes || []).length ? `<p class="small warn">${w.notes.map(esc).join("<br>")}</p>` : ""}
+      <div class="sens small"><span class="muted">реже</span><input type="range" min="-0.3" max="0.3" step="0.05" value="${w.sensitivity}" aria-label="Чувствительность" data-sens="${esc(w.id)}"><span class="muted">чаще</span></div>
+      <label class="row small"><span class="grow">Действие</span><select data-action="${esc(w.id)}">${actionOptions(w.action)}</select></label>
+      <div class="row wrap">
+        <button data-more="${esc(w.name)}">Дозаписать</button>
+        <button data-retrain="${esc(w.id)}">Переобучить</button>
+        <span class="grow"></span>
+        <button class="danger" data-del="${esc(w.id)}" data-name="${esc(w.name)}">Удалить</button>
+      </div></div></div>`;
+  }).join("") : (s.enroll ? "" : `<div class="group"><div class="muted">Своих слов пока нет. Добавьте слово, которым будете звать станцию.</div></div>`));
+}
+function renderEnroll(s) {
+  const e = s.enroll;
+  $("wizard").hidden = !e;
+  if (!e) return;
+  $("wname").textContent = e.name;
+  $("mintakes").textContent = e.min_takes;
+  const enough = e.takes.length >= e.min_takes;
+  $("s-ambient").className = e.has_ambient ? "done" : "cur";
+  $("s-takes").className = enough ? "done" : (e.has_ambient ? "cur" : "");
+  $("s-speech").className = e.speech_secs > 0 ? "done" : "";
+  $("s-train").className = enough && e.has_ambient ? "cur" : "";
+  $("trainbtn").disabled = busy || !enough || !e.has_ambient;
+  if (e.has_ambient && !$("ambmsg").textContent) msg($("ambmsg"), "записано", "ok");
+  if (e.speech_secs > 0 && !$("speechmsg").textContent) msg($("speechmsg"), "записано", "ok");
+  setHTML($("takes"), e.takes.map((d, i) => `<span class="take">${i + 1}: ${d.toFixed(2)} с
+     <button aria-label="Послушать запись ${i + 1}" data-play="/api/v1/enroll/takes/${i}">▶</button>
+     <button aria-label="Удалить запись ${i + 1}" data-deltake="${i}">✕</button></span>`).join(""));
+  for (const b of ["ambbtn", "takebtn", "speechbtn"]) $(b).disabled = busy;
+}
+const STAGES = { load: [0, 0.02, "загрузка"], embed: [0.02, 0.45, "обработка записей"], train: [0.45, 0.95, "обучение"], calibrate: [0.95, 1, "проверка"] };
+function renderTrain(s) {
+  const t = s.train;
+  $("training").hidden = !t.active && !t.error;
+  if (!t.active && !t.error) return;
+  $("tword").textContent = t.name || t.word;
+  const [a, b, name] = STAGES[t.stage] || [0, 1, t.stage];
+  $("tbar").style.width = pct(a + (b - a) * t.frac);
+  $("tstage").textContent = t.error ? "Ошибка: " + t.error : name;
+  $("tstage").className = "small " + (t.error ? "bad" : "muted");
+}
+
+// ---- log
+function hitStatus(h) {
+  if (h.action === "hush" && h.fired && !h.error) return "ассистент замолчал";
+  if (h.error) return `<span class="bad">${esc(h.error)}</span>`;
+  if (h.undone) return `<span class="warn">отменено через ${h.undone.toFixed(1)} с</span>`;
+  if (h.fired) return "действие выполнено";
+  return h.debounced ? "повтор, действие уже было" : "";
+}
+function hitJudge(h) {
+  if (h.judge_error) return `<div class="bad" title="${esc(h.judge_error)}">Gemini не ответил <button data-rejudge="${h.id}">Ещё раз</button></div>`;
+  const j = h.judge;
+  if (!j) return "";
+  const heard = j.heard ? `, слышно «${esc(j.heard)}»` : "";
+  // probability is the chance it was a command; hits judged before it carry command + confidence
+  const call = j.command != null ? `${j.command ? "команда" : "ложное"}, ${Math.round(j.confidence * 100)}%` :
+    `${j.probability >= 0.7 ? "команда" : j.probability <= 0.3 ? "ложное" : "не уверен"}, вероятность команды ${Math.round(j.probability * 100)}%`;
+  return `<div>Gemini: ${call}${heard}${j.reason ? `. ${esc(j.reason)}` : ""}</div>`;
+}
+function hitActions(h) {
+  const play = `<button class="play" aria-label="Послушать" data-play="/api/v1/hits/${h.id}/audio">▶</button>`;
+  if (h.verdict === "false") return `${play}<span class="small warn">ложное${h.auto ? ", авто" : ""}</span><button data-verdict="ok" data-hit="${h.id}">Не ложное</button>`;
+  if (h.verdict === "ok") return `${play}<span class="small ok">верное</span><button data-verdict="false" data-hit="${h.id}">Ложное</button>`;
+  return `${play}<button data-verdict="false" data-hit="${h.id}">Ложное</button>${h.undone ? `<button data-verdict="ok" data-hit="${h.id}">Верно</button>` : ""}`;
+}
+function hitRow(h) {
+  const facts = [h.source === "yandex" ? "Яндекс" : "", `уверенность ${h.score.toFixed(2)}`, h.playback ? "играла музыка" : ""].filter(Boolean).join(", ");
+  return `<div class="hit${h.undone && !h.verdict ? " suspect" : ""}">
+    <div><time datetime="${esc(h.at)}">${clockOrDate(h.at)}</time><b>${esc(h.name)}</b><br><span class="small muted">${facts}</span></div>
+    <div class="acts">${hitActions(h)}</div>
+    <div class="more">${hitStatus(h)}${hitJudge(h)}</div></div>`;
+}
+function renderLog() {
+  setHTML($("hits"), hits.length ? hits.map(hitRow).join("") : `<div class="muted">Пока не было. Скажите своё слово, и запись появится здесь.</div>`);
+}
+
+// ---- settings
+function modelOptions(models, ids, first) {
+  return first + ids.map(id => {
+    const m = models.find(x => x.id === id);
+    return `<option value="${esc(id)}">${esc(id)}${m ? ": " + esc(m.note) : ""}</option>`;
+  }).join("");
+}
+function fillSelect(sel, opts, value) {
+  if (!editing(sel) && sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
+  setValue(sel, value);
+}
+function renderSettings(s) {
+  if (s.volume) setValue($("knobstep"), String(s.volume.knob_step));
+  const a = s.assistant;
+  $("asstoff").hidden = a.available;
+  document.querySelectorAll(".asst").forEach(el => { el.hidden = !a.available; });
+  $("asstspotifyrow").hidden = !a.available;
+  $("asstnopiper").hidden = !a.available || !a.piper_missing;
+  if (a.available) {
+    $("asstspotify").textContent = a.spotify_linked == null ? "проверяю" : a.spotify_linked ? "привязан" : "не привязан, запустите ./setup";
+    const ids = s.judge.models.map(m => m.id);
+    if (a.settings.model && !ids.includes(a.settings.model)) ids.push(a.settings.model);
+    fillSelect($("asstmodel"), modelOptions(s.judge.models, ids, `<option value="">как у проверки (${esc(a.default_model)})</option>`), a.settings.model || "");
+    setValue($("assttts"), a.settings.tts);
+    $("asstvoicerow").hidden = a.settings.tts !== "gemini";
+    setValue($("asstvoice"), a.settings.voice || "");
+    setValue($("asstcity"), a.settings.city || "");
+  }
+  const q = s.quick;
+  $("quickerr").hidden = q.available;
+  $("quickerr").textContent = q.available ? "" : "Недоступны: " + (q.error || "модель Яндекса не загружена");
+  $("quickoffrow").hidden = !q.available;
+  $("quickgroups").hidden = !q.available;
+  if (q.available) setHTML($("quickgroups"), q.groups.map(g => `<label class="row" style="margin:6px 0"><span class="grow">${esc(g.words)}</span><input type="checkbox" class="sw" data-quick="${esc(g.id)}"${g.on ? " checked" : ""}${q.off ? " disabled" : ""}></label>`).join(""));
+  const j = s.judge;
+  setChecked($("judge"), s.settings.judge);
+  setChecked($("autoundo"), s.settings.auto_false_undo);
+  $("judge").disabled = !j.available;
+  $("judgerow").hidden = !j.available;
+  const ids = j.models.map(m => m.id);
+  if (!ids.includes(j.model)) ids.push(j.model);
+  fillSelect($("judgemodel"), modelOptions(j.models, ids, ""), j.model);
+  $("judgestat").textContent = !j.available ? "Нет ключа, запустите ./setup" : !j.on ? "выключено" : (j.pending ? `в очереди ${j.pending}` : "");
+}
+
+const LED_FIELDS = [
+  ["volume_screen", "Громкость на экране", [["pulse", "пульс, как в стоке"], ["number", "число"]]],
+  ["ai_ring", "Кольцо ИИ", [["carousel", "карусель"], ["flow", "перелив"], ["stock", "как в стоке"]]],
+  ["ai_screen", "Экран ИИ", [["dots", "четыре точки"], ["eq", "эквалайзер"]]],
+  ["flash", "Вспышка команд", [["sweep", "пробег"], ["white", "белая"], ["color", "цвет команды"]]],
+  ["music", "Музыка на экране", [["spectrum", "спектр"], ["scope", "осциллограф"], ["clockbar", "часы и полоска"]]],
+];
+$("ledgroup").insertAdjacentHTML("afterbegin", LED_FIELDS.map(([k, label, opts]) =>
+  `<label class="field"><span>${label}</span><select data-led="${k}">${opts.map(([v, l]) => `<option value="${v}">${l}</option>`).join("")}</select></label>`).join(""));
+function renderLED(l) {
+  led = l;
+  $("ledmsg").hidden = true;
+  document.querySelectorAll("select[data-led]").forEach(sel => setValue(sel, l.settings[sel.dataset.led]));
+  const b = l.settings.brightness || 0, slider = $("ledbright");
+  $("ledauto").checked = b === 0;
+  slider.disabled = b === 0;
+  setValue(slider, b || 30);
+  $("ledbrightv").textContent = b ? slider.value + "%" : "подбирается сама";
+  $("ledai").textContent = l.ai ? "Выключить" : "Показать";
+}
+// The LED service is read only when its section opens and after a change.
+async function refreshLED() {
+  try { renderLED(await api("GET", "/led")); }
+  catch (e) { $("ledmsg").hidden = false; }
+}
+function saveLED() {
+  const settings = {};
+  document.querySelectorAll("select[data-led]").forEach(sel => { settings[sel.dataset.led] = sel.value; });
+  settings.brightness = $("ledauto").checked ? 0 : +$("ledbright").value;
+  run(null, async () => renderLED(await api("PUT", "/led/settings", settings)));
+}
+$("ledbright").oninput = () => { $("ledbrightv").textContent = $("ledbright").value + "%"; };
+$("ledai").onclick = () => run($("ledai"), async () => renderLED(await api("PUT", "/led/ai", { on: !(led && led.ai) })));
+
+// ---- what shows now
+function render() {
+  const s = state;
+  if (!s) return;
+  const name = s.station && s.station !== "localhost" ? s.station : "Станция";
+  $("brand").textContent = name; document.title = name;
+  renderHome(s);
+  if (tab === "words") { renderWords(s); renderEnroll(s); renderTrain(s); }
+  if (tab === "settings") renderSettings(s);
+}
+function renderHits() {
+  if (tab === "home") renderLastHit();
+  if (tab === "log") renderLog();
+}
+function route() {
+  const t = location.hash.slice(1);
+  tab = ["home", "words", "log", "settings"].includes(t) ? t : "home";
+  document.querySelectorAll("section").forEach(el => { el.hidden = el.id !== "tab-" + tab; });
+  document.querySelectorAll("nav a").forEach(a => {
+    const on = a.dataset.tab === tab;
+    a.classList.toggle("cur", on);
+    if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+  render(); renderHits();
+  if (tab === "settings") refreshLED();
+}
+window.addEventListener("hashchange", route);
+
+// ---- events: one stream, open only while the page is visible
+let es = null, retryT = null;
+function connect() {
+  clearTimeout(retryT);
+  if (es || document.hidden) return;
+  es = new EventSource(BASE + "/events?live=1");
+  es.addEventListener("state", ev => {
+    const prev = state;
+    state = JSON.parse(ev.data);
+    $("offline").hidden = true;
+    render();
+    if (prev && prev.train.active && !state.train.active && !state.train.error) msg($("trainmsg"), "");
+  });
+  es.addEventListener("hits", ev => { hits = JSON.parse(ev.data).hits; renderHits(); });
+  es.addEventListener("live", ev => {
+    const l = JSON.parse(ev.data);
+    $("offline").hidden = true;
+    if (l.volume != null) renderVolume(l.volume);
+    renderRing(l.audio_ok, l.assistant);
+    renderLevel(l.level);
+    if (tab === "words") for (const [id, v] of Object.entries(l.scores)) {
+      const m = document.querySelector(`[data-meter="${CSS.escape(id)}"]`);
+      if (m) m.style.width = pct(v);
+    }
+  });
+  es.onerror = () => {
+    $("offline").hidden = false;
+    // The browser retries by itself unless the server refused outright.
+    if (es.readyState === EventSource.CLOSED) { es = null; retryT = setTimeout(connect, 5000); }
+  };
+}
+function disconnect() {
+  clearTimeout(retryT);
+  if (es) { es.close(); es = null; }
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) disconnect(); else connect(); });
+window.addEventListener("pagehide", disconnect);
+window.addEventListener("pageshow", connect);
+
+// ---- actions
+$("newword").onclick = () => run(null, async () => {
+  const name = await ask("Какое слово будет звать станцию? Например: Джарвис, Компьютер.", { input: true, placeholder: "Джарвис", ok: "Начать запись" });
   if (!name) return;
-  msg($("ambmsg"), ""); msg($("speechmsg"), ""); msg($("takemsg"), ""); $("say").textContent = "";
-  await api("POST", "/api/enroll/start", { name: name.trim() });
+  for (const m of ["ambmsg", "speechmsg", "takemsg"]) msg($(m), "");
+  $("say").textContent = "";
+  await api("POST", "/enroll", { name });
   $("enrollaction").value = "";
 });
-$("wcancel").onclick = () => run(null, async () => { if (confirm("Бросить запись этого слова?")) await api("POST", "/api/enroll/cancel"); });
+$("wcancel").onclick = () => run(null, async () => {
+  if (await ask("Бросить запись этого слова?", { ok: "Бросить", danger: true })) await api("DELETE", "/enroll");
+});
 $("ambbtn").onclick = () => run($("ambbtn"), async () => {
-  msg($("ambmsg"), "тихо… 8 секунд");
-  const r = await api("POST", "/api/enroll/ambient");
-  msg($("ambmsg"), `записано (фон ${r.level.toFixed(0)} дБ)`, "ok");
+  msg($("ambmsg"), "тихо, 8 секунд");
+  const r = await api("POST", "/enroll/ambient");
+  msg($("ambmsg"), `записано, фон ${r.level.toFixed(0)} дБ`, "ok");
 });
 $("takebtn").onclick = () => run($("takebtn"), async () => {
   msg($("takemsg"), ""); $("lastbtn").hidden = true;
-  for (const n of ["3", "2", "1"]) { $("say").textContent = n + "…"; await sleep(500); }
+  for (const n of ["3", "2", "1"]) { $("say").textContent = n; await sleep(500); }
   $("say").textContent = "Говорите!";
   try {
-    const r = await api("POST", "/api/enroll/take");
-    msg($("takemsg"), r.ok ? `отлично: ${r.duration.toFixed(2)} с · всего ${r.takes}` : r.message, r.ok ? "ok" : "bad");
+    const r = await api("POST", "/enroll/takes");
+    msg($("takemsg"), r.ok ? `отлично: ${r.duration.toFixed(2)} с, всего ${r.takes}` : r.message, r.ok ? "ok" : "bad");
   } finally { $("say").textContent = ""; $("lastbtn").hidden = false; }
 });
 $("speechbtn").onclick = () => run($("speechbtn"), async () => {
-  msg($("speechmsg"), "читайте вслух… 20 секунд");
-  await api("POST", "/api/enroll/speech?secs=20");
+  msg($("speechmsg"), "читайте вслух, 20 секунд");
+  await api("POST", "/enroll/speech", { seconds: 20 });
   msg($("speechmsg"), "записано", "ok");
 });
 $("trainbtn").onclick = () => run($("trainbtn"), async () => {
-  await api("POST", "/api/enroll/train", { action: $("enrollaction").value });
+  await api("POST", "/enroll/train", { action: $("enrollaction").value });
   msg($("trainmsg"), "обучение началось");
 });
-$("enrollaction").innerHTML = actionOptions("");
 
+const settingsPatch = {
+  judge: t => ({ judge: t.checked }),
+  judgemodel: t => ({ judge_model: t.value }),
+  autoundo: t => ({ auto_false_undo: t.checked }),
+  asstmodel: t => ({ assistant: { model: t.value } }),
+  assttts: t => ({ assistant: { tts: t.value } }),
+  asstvoice: t => ({ assistant: { voice: t.value } }),
+  asstcity: t => ({ assistant: { city: t.value } }),
+};
 document.addEventListener("change", (ev) => {
-  const t = ev.target;
-  if (t.id === "judge") run(null, async () => { await api("POST", "/api/settings", { judge: t.checked }); t.blur(); });
-  if (t.id === "judgemodel") run(null, async () => { await api("POST", "/api/settings", { judge_model: t.value }); t.blur(); });
-  if (t.id === "asstmodel") run(null, async () => { await api("POST", "/api/settings", { assistant: { model: t.value } }); t.blur(); });
-  if (t.id === "assttts") run(null, async () => { await api("POST", "/api/settings", { assistant: { tts: t.value } }); t.blur(); });
-  if (t.id === "asstvoice") run(null, async () => { await api("POST", "/api/settings", { assistant: { voice: t.value } }); t.blur(); });
-  if (t.id === "asstcity") run(null, async () => { await api("POST", "/api/settings", { assistant: { city: t.value } }); t.blur(); });
-  if (t.id === "quickon") run(null, async () => { await api("POST", "/api/settings", { quick: { off: !t.checked } }); t.blur(); });
-  if (t.dataset.quick) run(null, async () => { await api("POST", "/api/settings", { quick: { group: t.dataset.quick, on: t.checked } }); t.blur(); });
-  if (t.id === "autoundo") run(null, async () => { await api("POST", "/api/settings", { auto_false_undo: t.checked }); t.blur(); });
-  if (t.dataset.enable) run(null, () => api("POST", "/api/words/" + t.dataset.enable, { enabled: t.checked }));
-  if (t.dataset.action !== undefined) run(null, async () => { await api("POST", "/api/words/" + t.dataset.action, { action: t.value || "none" }); t.blur(); });
-  if (t.dataset.sens) run(null, async () => { await api("POST", "/api/words/" + t.dataset.sens, { sensitivity: parseFloat(t.value) }); t.blur(); });
+  const t = ev.target, ds = t.dataset;
+  const done = () => { if (t.type !== "checkbox") t.blur(); };
+  if (settingsPatch[t.id]) run(null, async () => { await api("PATCH", "/settings", settingsPatch[t.id](t)); done(); });
+  if (t.id === "knobstep") run(null, async () => { await api("PATCH", "/volume", { knob_step: +t.value }); done(); });
+  if (t.id === "ledauto" || t.id === "ledbright" || ds.led) { saveLED(); done(); }
+  if ("quickon" in ds) run(null, () => api("PATCH", "/settings", { quick: { off: !t.checked } }));
+  if (ds.quick) run(null, () => api("PATCH", "/settings", { quick: { group: ds.quick, on: t.checked } }));
+  if (ds.enable) run(null, () => api("PATCH", "/words/" + ds.enable, { enabled: t.checked }));
+  if (ds.action !== undefined) run(null, async () => { await api("PATCH", "/words/" + ds.action, { action: t.value || "none" }); done(); });
+  if (ds.sens) run(null, async () => { await api("PATCH", "/words/" + ds.sens, { sensitivity: parseFloat(t.value) }); done(); });
 });
 document.addEventListener("click", (ev) => {
   const t = ev.target.closest("button");
   if (!t) return;
   const ds = t.dataset;
-  if (ds.play) new Audio(ds.play + "?t=" + Date.now()).play();
-  if (ds.deltake) run(null, () => api("DELETE", "/api/enroll/take/" + ds.deltake));
-  if (ds.verdict) run(null, () => api("POST", `/api/hits/${ds.hit}/${ds.verdict}`));
-  if (ds.rejudge) run(null, () => api("POST", `/api/hits/${ds.rejudge}/judge`));
-  if (ds.retrain) run(null, () => api("POST", `/api/words/${ds.retrain}/retrain`));
+  if (ds.play) new Audio(ds.play + "?t=" + Date.now()).play().catch(e => toast("Не получилось воспроизвести запись"));
+  if (ds.vol) api("PATCH", "/volume", { step: +ds.vol }).then(v => renderVolume(v.volume)).catch(e => toast(e.message));
+  if (ds.player) api("POST", "/player/" + ds.player).catch(e => toast(e.message));
+  if (ds.deltake) run(null, () => api("DELETE", "/enroll/takes/" + ds.deltake));
+  if (ds.verdict) run(null, () => api("PUT", `/hits/${ds.hit}/verdict`, { verdict: ds.verdict }));
+  if (ds.rejudge) run(null, () => api("POST", `/hits/${ds.rejudge}/judge`));
+  if (ds.retrain) run(null, () => api("POST", `/words/${ds.retrain}/retrain`));
   if (ds.more) run(null, async () => {
-    await api("POST", "/api/enroll/start", { name: ds.more });
+    await api("POST", "/enroll", { name: ds.more });
     const w = (state.words || []).find(x => x.name === ds.more);
     $("enrollaction").value = (w && w.action) || "";
   });
-  if (ds.del && confirm(`Удалить слово «${ds.name}» со всеми записями?`)) run(null, () => api("DELETE", "/api/words/" + ds.del));
+  if (ds.del) run(null, async () => {
+    if (await ask(`Удалить слово «${ds.name}» со всеми записями?`, { ok: "Удалить", danger: true })) await api("DELETE", "/words/" + ds.del);
+  });
 });
+
+route();
+connect();
 </script>
 </body>
 </html>

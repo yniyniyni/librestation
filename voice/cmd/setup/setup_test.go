@@ -544,3 +544,35 @@ func TestSoloistBinaryFromFolder(t *testing.T) {
 		t.Fatalf("file: %q, %v", got, err)
 	}
 }
+
+func TestJavaEnvFile(t *testing.T) {
+	got, err := javaEnvFile("/system/framework/core.jar:/system/framework/ext.jar\r\n/system\r\n/data\r\n")
+	want := "export BOOTCLASSPATH=\"/system/framework/core.jar:/system/framework/ext.jar\"\n" +
+		"export ANDROID_ROOT=\"/system\"\nexport ANDROID_DATA=\"/data\"\n"
+	if err != nil || string(got) != want {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	for _, bad := range []string{
+		"\n/system\n/data\n",                   // empty BOOTCLASSPATH
+		"/a.jar\n\n/data\n",                    // empty ANDROID_ROOT
+		"/a.jar\n/system\n",                    // a variable missing
+		"warning: x\n/a.jar\n/system\n/data\n", // stray output
+		"/a.jar\";reboot;\"\n/system\n/data\n", // shell metacharacters
+	} {
+		if _, err := javaEnvFile(bad); err == nil {
+			t.Errorf("%q: no error", bad)
+		}
+	}
+}
+
+func TestCheckJavaEnvReportsWhy(t *testing.T) {
+	e := &env{u: newUI(false), d: fakeDevice("javaenv.sh не задаёт ANDROID_ROOT\n__librestation_rc=1\n")}
+	ok, detail, err := checkJavaEnv(e)
+	if err != nil || ok || detail != "javaenv.sh не задаёт ANDROID_ROOT" {
+		t.Fatalf("ok=%v detail=%q err=%v", ok, detail, err)
+	}
+	e.d = fakeDevice("__librestation_rc=0\n")
+	if ok, _, err := checkJavaEnv(e); err != nil || !ok {
+		t.Fatalf("valid: ok=%v err=%v", ok, err)
+	}
+}

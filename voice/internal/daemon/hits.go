@@ -132,6 +132,7 @@ func (d *Daemon) saveHit(h *Hit) {
 			if err := wav.WriteFile(p, audio, kws.SampleRate); err != nil {
 				log.Printf("hits: false clip: %v", err)
 			} else {
+				d.refreshFalses(word)
 				go d.autoRetrain(word)
 			}
 		}
@@ -186,10 +187,11 @@ func (d *Daemon) setVerdict(h *Hit, verdict string) error {
 		d.mu.Unlock()
 		if ff != "" {
 			os.Remove(filepath.Join(d.wordDir(h.Word), ff))
+			d.refreshFalses(h.Word)
 		}
 		d.ioMu.Unlock()
 	default:
-		return fmt.Errorf("unknown verdict %q", verdict)
+		return badRequest(fmt.Sprintf("неизвестная оценка %q", verdict))
 	}
 	d.saveHit(h)
 	return nil

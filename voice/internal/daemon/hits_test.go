@@ -49,7 +49,7 @@ func TestHitsSurviveRestart(t *testing.T) {
 	}
 	srv := httptest.NewServer(d2.Handler())
 	defer srv.Close()
-	r, err := http.Get(srv.URL + "/api/hits/30")
+	r, err := http.Get(srv.URL + "/api/v1/hits/30/audio")
 	if err != nil || r.StatusCode != 200 {
 		t.Fatalf("audio of a reloaded hit: %v %v", err, r.Status)
 	}
@@ -69,16 +69,16 @@ func TestVerdictSavesAndTakesBackClip(t *testing.T) {
 		n, _ := filepath.Glob(filepath.Join(d.wordDir("x"), "false-*.wav"))
 		return len(n)
 	}
-	if r := post(t, srv.URL+"/api/hits/1/false", ""); r.StatusCode != 200 || falses() != 1 {
+	if r := put(t, srv.URL+"/api/v1/hits/1/verdict", `{"verdict":"false"}`); r.StatusCode != 200 || falses() != 1 {
 		t.Fatalf("false: status %d, %d clips", r.StatusCode, falses())
 	}
 	if h := d.state().Hits[0]; h.Verdict != "false" || h.Auto {
 		t.Fatalf("hit %+v", h)
 	}
-	if r := post(t, srv.URL+"/api/hits/1/ok", ""); r.StatusCode != 200 || falses() != 0 {
+	if r := put(t, srv.URL+"/api/v1/hits/1/verdict", `{"verdict":"ok"}`); r.StatusCode != 200 || falses() != 0 {
 		t.Fatalf("ok: status %d, %d clips", r.StatusCode, falses())
 	}
-	if r := post(t, srv.URL+"/api/hits/1/maybe", ""); r.StatusCode != 400 {
+	if r := put(t, srv.URL+"/api/v1/hits/1/verdict", `{"verdict":"maybe"}`); r.StatusCode != 400 {
 		t.Fatalf("unknown verdict: status %d", r.StatusCode)
 	}
 }
