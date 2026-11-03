@@ -145,6 +145,19 @@ func (d *Daemon) AssistantSettings() AssistantSettings {
 	return s
 }
 
+// WakeWords are the names of the enabled words that call the assistant.
+func (d *Daemon) WakeWords() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var names []string
+	for _, w := range d.words {
+		if s := d.settings.Words[w.ID]; s != nil && s.Enabled && s.Action == "assistant" {
+			names = append(names, w.Model.Name)
+		}
+	}
+	return names
+}
+
 // AssistantModel is the model for the assistant's next turn: its own choice,
 // or the judge's current one.
 func (d *Daemon) AssistantModel() string {

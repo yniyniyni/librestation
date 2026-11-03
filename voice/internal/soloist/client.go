@@ -19,6 +19,7 @@ type Event struct {
 	Type   string
 	Volume *int
 	Status string
+	Active *bool // whether this device is the active one, when the message says
 }
 
 // EventConnected is the Type of the event sent after each (re)connect: Soloist
@@ -109,6 +110,7 @@ type wireMsg struct {
 	Volume  *int   `json:"volume"`
 	Status  string `json:"status"`
 	Message string `json:"message"`
+	Active  *bool  `json:"is_active"`
 	Context *struct {
 		URI string `json:"uri"`
 	} `json:"context"`
@@ -137,7 +139,7 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 		}
 		c.note(m)
 		if c.onEvent != nil {
-			c.onEvent(Event{Type: m.Type, Volume: m.Volume, Status: m.Status})
+			c.onEvent(Event{Type: m.Type, Volume: m.Volume, Status: m.Status, Active: m.Active})
 		}
 	}
 }
@@ -220,9 +222,11 @@ const (
 	waitStep = 20 * time.Millisecond
 	// radioStart bounds the wait for a station to load, radioTrack and
 	// shuffleWait for the commands that follow.
-	radioStart  = 5 * time.Second
-	radioTrack  = 1500 * time.Millisecond
-	radioSkips  = 4
+	radioStart = 5 * time.Second
+	radioTrack = 1500 * time.Millisecond
+	radioSkips = 4
+	// rejoinWait bounds each step of Rejoin.
+	rejoinWait  = 5 * time.Second
 	shuffleWait = 1500 * time.Millisecond
 )
 

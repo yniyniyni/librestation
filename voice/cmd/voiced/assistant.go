@@ -51,7 +51,7 @@ type builtAssistant struct {
 // now, in the background) or Gemini speech, the reply speaker and ducking.
 // model is the model for each turn; judgeModel is the client's fallback.
 func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel string, model func() string,
-	settings func() daemon.AssistantSettings,
+	settings func() daemon.AssistantSettings, wakeWords func() []string,
 	act daemon.Actuator, sol *soloist.Client, vol *volume.Sync, out *output, led func(proto.Event)) builtAssistant {
 	sp := spotifyapi.New(c.spotifyToken, c.spotifyDevice)
 	link := newSpotifyLink(sp.Linked)
@@ -101,7 +101,7 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Live: func(lctx context.Context, handle string) (assistant.LiveSession, error) {
 			return geminilive.Dial(lctx, geminilive.Config{
 				Key: key, Model: c.liveModel, Voice: settings().Voice, Handle: handle,
-				Prompt: assistant.LivePrompt, Tools: assistant.LiveDeclarations(ag.Tools),
+				Prompt: assistant.LivePromptFor(wakeWords()), Tools: assistant.LiveDeclarations(ag.Tools),
 			})
 		},
 	})

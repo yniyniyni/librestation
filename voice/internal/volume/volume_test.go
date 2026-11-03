@@ -264,6 +264,37 @@ func TestSoloistRestartKeepsTheVolume(t *testing.T) {
 	}
 }
 
+// Taking the device back, Spotify reports the volume it last knew; that is not
+// the user's, while a slider moved later is.
+func TestBecomingActiveKeepsTheVolume(t *testing.T) {
+	s, f, _ := newSync(t, "38")
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	now = now.Add(time.Minute)
+	on, off := true, false
+	s.OnEvent(soloist.Event{Type: "playback_state", Active: &off})
+	stale := 31
+	s.OnEvent(soloist.Event{Type: "playback_state", Active: &on, Volume: &stale})
+	if s.Volume() != 38 {
+		t.Fatalf("volume %d, want 38", s.Volume())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(f.got()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.got(); len(got) != 2 || got[1] != 38 {
+		t.Errorf("sent %v, want 38 again", got)
+	}
+	now = now.Add(activeGrace)
+	s.OnEvent(vol(50))
+	if s.Volume() != 50 {
+		t.Errorf("slider: volume %d, want 50", s.Volume())
+	}
+}
+
 func TestRunRetriesUntilApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "volume")
 	f := &fakeSetter{err: soloist.ErrNotConnected}

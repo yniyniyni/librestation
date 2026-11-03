@@ -46,7 +46,10 @@ const (
 	MaxKnobStep = 10
 	// echoWindow is how long a value we sent is expected to come back from
 	// Soloist; reports that disagree with it meanwhile are stale.
-	echoWindow  = 2 * time.Second
+	echoWindow = 2 * time.Second
+	// activeGrace: a volume reported this soon after the device became active
+	// is what Spotify remembered for it, not anyone's wish.
+	activeGrace = 3 * time.Second
 	maxInflight = 16
 )
 
@@ -98,6 +101,8 @@ type Sync struct {
 	applied  bool
 	inflight []sent
 	paused   bool // playback stopped since it last played
+	active   bool // the device is the active one
+	activeAt time.Time
 }
 
 // New loads the saved volume from path (Default if missing or invalid).
@@ -200,6 +205,9 @@ func (s *Sync) OnEvent(e soloist.Event) {
 		s.reapply()
 		return
 	}
+	if e.Active != nil {
+		s.onActive(*e.Active)
+	}
 	if e.Status != "" {
 		s.onStatus(e.Status)
 	}
@@ -229,6 +237,13 @@ func (s *Sync) OnEvent(e soloist.Event) {
 	if len(s.inflight) > 0 || v == s.cur {
 		return // stale report from before our latest set
 	}
+	if now.Sub(s.activeAt) < activeGrace {
+		// Taking the device back, Spotify sets the volume it last knew.
+		log.Printf("volume: %d from Spotify on becoming active, keeping %d", v, s.cur)
+		cur := s.cur
+		go s.set.SetVolume(cur)
+		return
+	}
 	log.Printf("volume: %d from Spotify, was %d", v, s.cur)
 	s.cur = v
 	s.save()
@@ -245,6 +260,16 @@ func (s *Sync) reapply() {
 	if again {
 		go s.Run(context.Background()) // ends as soon as it is sent
 	}
+}
+
+// onActive notes when the device became the active one.
+func (s *Sync) onActive(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if on && !s.active {
+		s.activeAt = s.now()
+	}
+	s.active = on
 }
 
 // onStatus notes the playback status; buffering (track changes, seeks)

@@ -25,13 +25,13 @@ var shuffleDelay = time.Second
 func (PlayMusic) Decl() agent.FuncDecl {
 	return agent.FuncDecl{
 		Name:        "play_music",
-		Description: "Find and play music on the speaker through Spotify: an artist, a song, an album, a playlist, the user's Liked Songs, one of the user's own playlists or Spotify's DJ.",
+		Description: "Find and play music on the speaker through Spotify: an artist, a song, an album, a playlist, the user's Liked Songs or one of the user's own playlists.",
 		Params: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"query": map[string]any{"type": "string", "description": "What to play: a song with its artist, an artist, an album or a playlist's name, spelled as it is really written (foreign names in Latin letters). Not needed for liked and dj"},
 				"kind": map[string]any{"type": "string", "enum": []string{"track", "artist", "album", "playlist", "any", "liked", "my_playlist", "dj"},
-					"description": "What the query names; any if unsure. liked: the user's Liked Songs (favourites). my_playlist: one of the user's own playlists; if there is none by that name the error lists them, choose from it. dj: Spotify's DJ, no query needed"},
+					"description": "What the query names; any if unsure. liked: the user's Liked Songs (favourites). my_playlist: one of the user's own playlists; if there is none by that name the error lists them, choose from it. dj: a request for Spotify's DJ, which cannot start here; the error says what to do"},
 				"shuffle": map[string]any{"type": "boolean", "description": "Shuffle what is started, when asked to; to shuffle what already plays use playback"},
 			},
 		},
@@ -54,7 +54,10 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 	case "liked":
 		it = spotifyapi.Liked()
 	case "dj":
-		it = spotifyapi.DJ()
+		// Started from here the DJ loads no track and the speaker goes silent,
+		// by the Web API and by Soloist's own play alike; it only works handed
+		// over from another device, so playback is left alone.
+		return nil, fmt.Errorf("DJ отсюда не запустить: включи его на телефоне и переведи на колонку через Spotify Connect")
 	case "my_playlist":
 		it, err = p.S.MyPlaylist(ctx, q)
 	default:

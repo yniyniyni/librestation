@@ -23,9 +23,10 @@ var infoTools = map[string]bool{"get_weather": true, "get_time": true}
 // dialogTools keep the conversation open for the full window.
 var dialogTools = map[string]bool{"web_answer": true, "now_playing": true}
 
-// silentTools are plain commands: what they do is the answer, so the reply is
-// not waited for. Their failure is still told.
-var silentTools = map[string]bool{"playback": true, "like_track": true}
+// silentTools are plain commands: what they do is heard, so the reply is not
+// waited for. Their failure is still told. A like makes no sound of its own,
+// so it keeps its reply.
+var silentTools = map[string]bool{"playback": true}
 
 // toolResult is one tool call of a turn.
 type toolResult struct {

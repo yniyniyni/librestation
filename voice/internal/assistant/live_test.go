@@ -1175,6 +1175,30 @@ func TestBrief(t *testing.T) {
 	}
 }
 
+func TestLivePromptNamesTheWords(t *testing.T) {
+	if LivePromptFor(nil) != LivePrompt {
+		t.Error("no words: the plain prompt")
+	}
+	p := LivePromptFor([]string{"Alexa", "Джарвис"})
+	if !strings.Contains(p, "«Alexa» или «Джарвис»") {
+		t.Errorf("prompt %q", p)
+	}
+}
+
+// A like makes no sound: it is the one command that answers.
+func TestLiveLikeSpeaks(t *testing.T) {
+	g := newLiveRig(t, liveTool{name: "like_track"})
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("лайк"), mTool("t1", "like_track", `{}`))
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.send(f, mAudio(), mSaid("Лайкнула."), mDone())
+	g.ended()
+	if g.chunks() != 1 || g.finishes() != 1 {
+		t.Errorf("played %d chunks, %d replies", g.chunks(), g.finishes())
+	}
+}
+
 func TestEarconOnWake(t *testing.T) {
 	g := newLiveRig(t)
 	g.s.d.Earcon = Earcon
