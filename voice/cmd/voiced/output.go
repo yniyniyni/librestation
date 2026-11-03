@@ -35,8 +35,10 @@ type output struct {
 	gainMu sync.Mutex // serialises gain-file writes with the state they derive from
 
 	mu     sync.Mutex
-	duckF  float64 // gain factor from duck; 1 = not ducked
-	target int
+	duckF  float64   // gain factor from duck; 1 = not ducked
+	target int       // where the amplifier should be: held if held, else user
+	user   int       // the volume set last; -1 = none yet
+	held   int       // the volume hold keeps, for a ring; -1 = none
 	force  bool      // set the amplifier to target even if it seems there already
 	wrote  time.Time // when the helper was last given a value
 	wake   chan struct{}
@@ -46,7 +48,7 @@ type output struct {
 }
 
 func newOutput(hwCmd []string, gainFile string) *output {
-	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, prev: -1, duckF: 1, force: true, wake: make(chan struct{}, 1)}
+	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, user: -1, held: -1, prev: -1, duckF: 1, force: true, wake: make(chan struct{}, 1)}
 }
 
 // set is volume.Sync.Out: it must not block.
@@ -57,7 +59,10 @@ func (o *output) set(v int) {
 	o.mu.Unlock()
 	o.writeGain(v, f)
 	o.mu.Lock()
-	o.target = v
+	o.user = v
+	if o.held < 0 {
+		o.target = v
+	}
 	dir := 0
 	if o.prev >= 0 && v != o.prev {
 		dir = 1
@@ -109,11 +114,33 @@ func (o *output) writeGain(v int, f float64) {
 	}
 }
 
+// hold keeps the amplifier at v whatever the volume does, for a ring; a negative
+// v lets it go back to the volume. The volume itself is not touched: it is what
+// comes back, and what Spotify and the panel keep seeing.
+func (o *output) hold(v int) {
+	o.mu.Lock()
+	o.held = v
+	if v >= 0 {
+		o.target = v
+	} else if o.user >= 0 {
+		o.target = o.user
+	}
+	o.mu.Unlock()
+	select {
+	case o.wake <- struct{}{}:
+	default:
+	}
+}
+
 // refresh sets the amplifier to v again, for when something else (the audio
-// HAL waking from standby) may have changed it behind our back.
+// HAL waking from standby) may have changed it behind our back. While a ring
+// holds the amplifier, it is the held value that goes back.
 func (o *output) refresh(v int) {
 	o.mu.Lock()
-	o.target, o.force = v, true
+	if o.held < 0 {
+		o.target = v
+	}
+	o.force = true
 	o.mu.Unlock()
 	select {
 	case o.wake <- struct{}{}:

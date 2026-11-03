@@ -550,6 +550,13 @@ func (d *Daemon) wakeLocked(h *Hit) {
 	d.addHitLocked(h)
 }
 
+// Playing says whether music is playing as far as Soloist has told.
+func (d *Daemon) Playing() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.playback == "playing"
+}
+
 // sendAudioLED sends the level and the playback spectrum to ledd, at most
 // once per ledAudioEvery. It runs on the audio goroutine without d.mu.
 func (d *Daemon) sendAudioLED(dbfs float64) {

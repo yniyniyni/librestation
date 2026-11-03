@@ -153,3 +153,52 @@ func TestAmpWatchLearnsANewVolume(t *testing.T) {
 		t.Error("a volume change taken for the HAL's")
 	}
 }
+
+func TestHoldOverridesVolume(t *testing.T) {
+	o := newOutput(nil, "")
+	o.set(40)
+	o.wanted()
+	o.hold(10)
+	if v, _ := o.wanted(); v != 10 {
+		t.Fatalf("held: wanted %d", v)
+	}
+	o.set(55) // the user's volume moves on behind the ring
+	if v, _ := o.wanted(); v != 10 {
+		t.Errorf("after set: wanted %d", v)
+	}
+	o.refresh(55) // the HAL woke; the amplifier goes back to what is wanted now
+	if v, force := o.wanted(); v != 10 || !force {
+		t.Errorf("after refresh: wanted %d force %v", v, force)
+	}
+	o.hold(-1)
+	if v, _ := o.wanted(); v != 55 {
+		t.Errorf("released: wanted %d", v)
+	}
+}
+
+func TestHoldBeforeAnyVolume(t *testing.T) {
+	o := newOutput(nil, "")
+	o.hold(10)
+	o.hold(-1)
+	if v, _ := o.wanted(); v != 10 {
+		t.Errorf("wanted %d: no volume to go back to, stay", v)
+	}
+	o.set(30)
+	if v, _ := o.wanted(); v != 30 {
+		t.Errorf("wanted %d", v)
+	}
+}
+
+// The amplifier watch must keep the ring's level, not fight it.
+func TestAmpWatchKeepsHold(t *testing.T) {
+	o := newOutput(nil, "")
+	o.set(40)
+	o.hold(10)
+	o.wanted()
+	var w ampWatch
+	now := time.Now().Add(time.Second)
+	o.checkAmp(&w, 100, now)
+	if w.volume != 10 {
+		t.Errorf("watching volume %d", w.volume)
+	}
+}
