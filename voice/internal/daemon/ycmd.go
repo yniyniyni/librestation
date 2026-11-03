@@ -142,6 +142,7 @@ func (w *wakeSpot) push(pcm []float32, fire func(conf float64)) {
 
 // onStockWake calls the assistant for a stock trigger word; caller holds d.mu.
 func (d *Daemon) onStockWake(id, name string, conf float64) {
+	d.stopRingLocked()
 	now := d.now()
 	state := "idle"
 	if a := d.opt.Assistant; a != nil {
@@ -166,7 +167,25 @@ func (d *Daemon) onStockWake(id, name string, conf float64) {
 // caller holds d.mu.
 func (d *Daemon) onCommand(cmd string, conf float64) {
 	q, ok := quickCommands[cmd]
-	if !ok || d.settings.Quick.Off || d.settings.Quick.Disabled[q.group] {
+	if !ok {
+		return
+	}
+	// Before the switches: they are about the music, and an alarm must always
+	// be stoppable. The other words wait: nothing else is for a ringing speaker.
+	if d.opt.Ring != nil && d.opt.Ring.Ringing() {
+		h := &Hit{Word: cmd, Name: cmd, Score: float32(conf), At: d.now(), Source: "yandex", volBefore: d.volume}
+		h.audio = d.yring.last(hitSecs * kws.SampleRate)
+		if q.group == "pause" {
+			d.opt.Ring.Stop()
+			h.Action, h.Fired = "ring_stop", true
+		} else {
+			h.Debounced = true
+		}
+		d.addHitLocked(h)
+		log.Printf("yandex command %q conf %.3f during the ring: action %q", cmd, conf, h.Action)
+		return
+	}
+	if d.settings.Quick.Off || d.settings.Quick.Disabled[q.group] {
 		return
 	}
 	now := d.now()

@@ -174,6 +174,7 @@ func cmdRun(args []string) error {
 		ticks: newTicks,
 	}
 	alm := alarms.New(filepath.Join(opt.DataDir, "alarms.json"), rng, time.Now)
+	opt.Ring = alm
 	if knob != "" {
 		go readKnob(ctx, knob, func(code uint16) {
 			if alm.ConsumesKnob() {

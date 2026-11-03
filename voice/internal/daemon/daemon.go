@@ -35,6 +35,8 @@ type Options struct {
 	MicMuted  func() bool // reads the station's mic switch; nil = no switch
 	Soloist   string      // Soloist WebSocket URL (used by the real Actuator)
 	Actuator  Actuator    // runs word actions; nil = actions are only logged
+	// Ring is the alarm or timer ringing, which any word stops first; nil = none.
+	Ring RingControl
 	// Assistant runs the "assistant" word action and gets every audio block;
 	// nil = that action is only logged.
 	Assistant Assistant
@@ -72,6 +74,22 @@ type Options struct {
 type WakeModel struct {
 	ID, Name string
 	Model    *ycmd.Model
+}
+
+// RingControl is the ring as the words see it. Both calls run on the audio
+// goroutine, under d.mu: they must not block or call back into the daemon.
+type RingControl interface {
+	Ringing() bool
+	Stop()
+}
+
+// stopRingLocked ends the ring if one is on and says so; caller holds d.mu.
+func (d *Daemon) stopRingLocked() bool {
+	if d.opt.Ring == nil || !d.opt.Ring.Ringing() {
+		return false
+	}
+	d.opt.Ring.Stop()
+	return true
 }
 
 // VolumeControl is the volume behind the API. Its calls may wait for Soloist,
@@ -615,6 +633,12 @@ func (d *Daemon) onHit(id string, score float32) {
 	}
 	h.Action = action
 	asst := d.opt.Assistant
+	if d.stopRingLocked() && action != "assistant" {
+		h.Action, h.Fired = "ring_stop", true
+		d.addHitLocked(h)
+		log.Printf("hit %s score %.3f stopped the ring", id, score)
+		return
+	}
 	if action == "assistant" {
 		d.wakeLocked(h)
 		log.Printf("hit %s score %.3f action %q", id, score, action)
