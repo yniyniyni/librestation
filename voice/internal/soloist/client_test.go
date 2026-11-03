@@ -408,3 +408,18 @@ func TestSeekFollowsPlayback(t *testing.T) {
 		t.Errorf("position %d, want just past 60000", m.PositionMs)
 	}
 }
+
+// Soloist reports shuffle in an event of its own.
+func TestSetShuffleSeesOptionsChanged(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.SetShuffle(context.Background(), true) }()
+	f.msg(t)
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"options_changed","options":{"shuffle":true}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

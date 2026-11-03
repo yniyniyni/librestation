@@ -164,6 +164,10 @@ func (c *Client) note(m wireMsg) {
 	if p := m.Position; p != nil {
 		c.posMs, c.posSpeed, c.posAt, c.posKnown = p.Ms, p.Speed, time.Now(), true
 	}
+	// A change of options comes as options_changed, without a playback_state.
+	if m.Options != nil {
+		c.shuffle = m.Options.Shuffle
+	}
 	if m.Type != "playback_state" {
 		return
 	}
@@ -174,9 +178,6 @@ func (c *Client) note(m wireMsg) {
 	c.item = ""
 	if m.Item != nil {
 		c.item = m.Item.URI
-	}
-	if m.Options != nil {
-		c.shuffle = m.Options.Shuffle
 	}
 }
 
