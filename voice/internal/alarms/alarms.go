@@ -36,6 +36,9 @@ type Timer struct {
 	Paused   bool          `json:"paused,omitempty"`
 }
 
+// TimerSound is what a timer rings with.
+const TimerSound = "timer"
+
 const dateLayout = "2006-01-02"
 
 // Validate says what is wrong with the alarm, in the user's words.
