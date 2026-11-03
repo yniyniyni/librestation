@@ -106,7 +106,7 @@ func TestMicMutedRefusesRecordUntilAudioReturns(t *testing.T) {
 	d, _ := newTest(t, nil, "", false)
 	d.process(make([]int16, 320))
 	d.micMuted()
-	if _, err := d.record(context.Background(), 0.01, 0); err == nil || !strings.Contains(err.Error(), "muted") {
+	if _, err := d.record(context.Background(), 0.01, 0); err == nil || !strings.Contains(err.Error(), "кнопкой") {
 		t.Fatalf("record while muted: %v", err)
 	}
 	d.process(make([]int16, 320))

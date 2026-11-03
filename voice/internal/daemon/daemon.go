@@ -496,7 +496,7 @@ func (d *Daemon) Run(ctx context.Context) {
 // clears it.
 func (d *Daemon) micMuted() {
 	d.mu.Lock()
-	d.audioOK, d.audioErr = false, "mic muted by the switch"
+	d.audioOK, d.audioErr = false, "микрофон выключен кнопкой"
 	d.mu.Unlock()
 }
 
