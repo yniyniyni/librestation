@@ -32,7 +32,7 @@ func cmdRun(args []string) error {
 	exe, _ := os.Executable()
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var opt daemon.Options
-	var micCmd, hwCmd, gainFile, knob, ledSock, leddURL, judgeKey, judgeModel string
+	var micCmd, hwCmd, gainFile, knob, muteSw, ledSock, leddURL, judgeKey, judgeModel string
 	var ac assistantConfig
 	var ycmdDir string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
@@ -43,6 +43,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&hwCmd, "hw-cmd", "sh /data/local/tmp/voice/hwvol.sh -", "amplifier helper reading 0..100 per stdin line; empty = leave it")
 	fs.StringVar(&gainFile, "gain-file", "/data/local/tmp/soloist/gain", "aaudio_pipe gain that undoes Soloist's software volume; empty = none")
 	fs.StringVar(&knob, "knob", "/dev/input/event2", "volume knob evdev device; empty = none")
+	fs.StringVar(&muteSw, "mute-switch", "/dev/input/event0", "mic button evdev device; empty = none")
 	fs.StringVar(&ledSock, "led-sock", "/data/local/tmp/voice/ledd.sock", "ledd event socket; empty = no LED events")
 	fs.StringVar(&leddURL, "ledd", "http://127.0.0.1:8781", "ledd HTTP API behind /api/led")
 	fs.StringVar(&judgeKey, "judge-key", "/data/local/tmp/voice/gemini.key", "Gemini API key file; missing = hits are not judged")
@@ -58,6 +59,9 @@ func cmdRun(args []string) error {
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	opt.MicCmd = strings.Fields(micCmd)
+	if muteSw != "" {
+		opt.MicMuted = micSwitch(muteSw)
+	}
 	useAndroidNet()
 	key, err := judge.ReadKey(judgeKey)
 	if err != nil {
@@ -200,6 +204,20 @@ type actuator struct {
 var _ daemon.Actuator = actuator{}
 
 func (a actuator) Step(delta int) error { return a.vol.Step(delta) }
+
+// micSwitch returns a reader of the mic button. A failed read counts as not
+// muted, which leaves capture to its silence restarts; it is logged once.
+func micSwitch(path string) func() bool {
+	var failed bool
+	return func() bool {
+		on, err := input.SwitchOn(path, input.SwMuteDevice)
+		if err != nil && !failed {
+			failed = true
+			log.Printf("mic switch: %v", err)
+		}
+		return on
+	}
+}
 
 // readKnob reads knob presses, reopening the device after errors.
 func readKnob(ctx context.Context, path string, onKey func(uint16)) {

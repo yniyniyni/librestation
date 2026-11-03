@@ -174,7 +174,7 @@ func TestSilenceWatchdogTriggers(t *testing.T) {
 
 func TestSilenceRestartsHelper(t *testing.T) {
 	defer func(a, b time.Duration) { backoffMin, backoffMax = a, b }(backoffMin, backoffMax)
-	backoffMin, backoffMax = 10*time.Millisecond, time.Hour // growing backoff would stall the test
+	backoffMin, backoffMax = 10*time.Millisecond, 40*time.Millisecond
 	starts := filepath.Join(t.TempDir(), "starts")
 	var silence atomic.Int32
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -194,5 +194,133 @@ func TestSilenceRestartsHelper(t *testing.T) {
 	b, _ := os.ReadFile(starts)
 	if n := strings.Count(string(b), "x"); n < 2 {
 		t.Fatalf("helper started %d times, want >= 2", n)
+	}
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for end := time.Now().Add(10 * time.Second); !ok(); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+	}
+}
+
+func countStarts(path string) int {
+	b, _ := os.ReadFile(path)
+	return strings.Count(string(b), "x")
+}
+
+func TestMuteStopsHelperUntilUnmuted(t *testing.T) {
+	defer func(a, b, c time.Duration) { backoffMin, backoffMax, mutePoll = a, b, c }(backoffMin, backoffMax, mutePoll)
+	backoffMin, backoffMax, mutePoll = 10*time.Millisecond, 40*time.Millisecond, 5*time.Millisecond
+	starts := filepath.Join(t.TempDir(), "starts")
+	var muted atomic.Bool
+	var onMuted, silence atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	r := &Runner{
+		Cmd:       []string{"sh", "-c", "echo x >> " + starts + "; exec cat /dev/zero"},
+		Muted:     muted.Load,
+		OnMuted:   func() { onMuted.Add(1) },
+		OnSilence: func() { silence.Add(1) },
+	}
+	muted.Store(false)
+	go func() { done <- r.Run(ctx) }()
+	waitFor(t, "first start", func() bool { return countStarts(starts) == 1 })
+	muted.Store(true)
+	waitFor(t, "OnMuted", func() bool { return onMuted.Load() == 1 })
+
+	silenceBefore := silence.Load()
+	time.Sleep(200 * time.Millisecond) // many poll periods and silence windows
+	if n := countStarts(starts); n != 1 {
+		t.Fatalf("helper started %d times while muted, want 1", n)
+	}
+	if onMuted.Load() != 1 {
+		t.Fatalf("OnMuted called %d times, want 1", onMuted.Load())
+	}
+	if silence.Load() != silenceBefore {
+		t.Fatal("OnSilence called while muted")
+	}
+
+	muted.Store(false)
+	waitFor(t, "start after unmute", func() bool { return countStarts(starts) >= 2 })
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("Run should return ctx error")
+	}
+}
+
+func TestMutedAtStartDoesNotStartHelper(t *testing.T) {
+	defer func(c time.Duration) { mutePoll = c }(mutePoll)
+	mutePoll = 5 * time.Millisecond
+	starts := filepath.Join(t.TempDir(), "starts")
+	var onMuted atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	r := &Runner{
+		Cmd:     []string{"sh", "-c", "echo x >> " + starts + "; exec cat /dev/zero"},
+		Muted:   func() bool { return true },
+		OnMuted: func() { onMuted.Add(1) },
+	}
+	if err := r.Run(ctx); err == nil {
+		t.Fatal("Run should return ctx error")
+	}
+	if n := countStarts(starts); n != 0 {
+		t.Fatalf("helper started %d times, want 0", n)
+	}
+	if onMuted.Load() != 1 {
+		t.Fatalf("OnMuted called %d times, want 1", onMuted.Load())
+	}
+}
+
+// A mic that stays silent with the switch off (or no switch to read) still
+// gets restarted, but less and less often.
+func TestSilencePauseGrows(t *testing.T) {
+	defer func(a, b time.Duration) { backoffMin, backoffMax = a, b }(backoffMin, backoffMax)
+	backoffMin, backoffMax = 50*time.Millisecond, 200*time.Millisecond
+	var at []time.Time
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	r := &Runner{
+		Cmd: []string{"sh", "-c", "exec cat /dev/zero"},
+		OnSilence: func() { // one goroutine at a time: restarts are sequential
+			if at = append(at, time.Now()); len(at) == 5 {
+				cancel()
+			}
+		},
+	}
+	_ = r.Run(ctx)
+	if len(at) < 5 {
+		t.Fatalf("OnSilence called %d times, want 5", len(at))
+	}
+	for i, want := range []time.Duration{50, 100, 200, 200} {
+		want *= time.Millisecond
+		if gap := at[i+1].Sub(at[i]); gap < want {
+			t.Fatalf("gap %d = %s, want >= %s", i, gap, want)
+		}
+	}
+}
+
+// Hearing anything between silences means the mic works, so the pause restarts
+// from the minimum: with doubling this many silences would outlast the timeout.
+func TestHeardSoundResetsSilencePause(t *testing.T) {
+	defer func(a, b time.Duration) { backoffMin, backoffMax = a, b }(backoffMin, backoffMax)
+	backoffMin, backoffMax = 10*time.Millisecond, time.Hour
+	var silence atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	r := &Runner{
+		Cmd: []string{"sh", "-c", `printf '\001\000'; exec cat /dev/zero`},
+		OnSilence: func() {
+			if silence.Add(1) == 12 {
+				cancel()
+			}
+		},
+	}
+	_ = r.Run(ctx)
+	if n := silence.Load(); n < 12 {
+		t.Fatalf("OnSilence called %d times, want 12", n)
 	}
 }

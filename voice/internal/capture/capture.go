@@ -1,5 +1,6 @@
 // Package capture runs the mic helper process and frames its stdout into
 // 16-channel int16 blocks, restarting it on failure and watching for silence.
+// While the mic is muted by the station's switch the helper does not run.
 package capture
 
 import (
@@ -23,12 +24,17 @@ const (
 	silenceBlocks = 5 * Rate / BlockFrames
 )
 
-var errSilence = errors.New("capture: sustained silence")
+var (
+	errSilence = errors.New("capture: sustained silence")
+	errMuted   = errors.New("capture: muted")
+)
 
-// Backoff bounds between helper restarts; variables so tests can shrink them.
+// Backoff bounds between helper restarts and the mute switch's poll period;
+// variables so tests can shrink them.
 var (
 	backoffMin = 1 * time.Second
 	backoffMax = 30 * time.Second
+	mutePoll   = 500 * time.Millisecond
 )
 
 // ReadBlocks reads interleaved little-endian int16 data from r and calls fn
@@ -56,6 +62,7 @@ func ReadBlocks(r io.Reader, fn func(block []int16) error) error {
 
 type silenceDetector struct {
 	limit, count int
+	heard        bool // saw a non-zero sample
 }
 
 func newSilenceDetector(limit int) *silenceDetector { return &silenceDetector{limit: limit} }
@@ -64,7 +71,7 @@ func newSilenceDetector(limit int) *silenceDetector { return &silenceDetector{li
 func (d *silenceDetector) feed(block []int16) bool {
 	for _, s := range block {
 		if s != 0 {
-			d.count = 0
+			d.count, d.heard = 0, true
 			return false
 		}
 	}
@@ -82,29 +89,47 @@ type Runner struct {
 	Env       []string      // extra environment entries (appended to the current one); nil = inherit only
 	OnBlock   func([]int16) // slice is reused after return; called on the read goroutine
 	OnSilence func()
+	// Muted reads the station's mic switch; nil = no switch. A muted mic gives
+	// zeros faster than real time, so reading them costs more than a live mic.
+	Muted   func() bool
+	OnMuted func() // called once each time the helper stops for the switch
 }
 
 // Run runs the helper until ctx is cancelled, restarting it with exponential
-// backoff (1 s to 30 s) whenever it exits. It returns ctx.Err() on cancel.
+// backoff (1 s to 30 s) whenever it exits or stays silent. While Muted holds
+// the helper is not running; it starts as soon as the switch is back. It
+// returns ctx.Err() on cancel.
 func (r *Runner) Run(ctx context.Context) error {
 	if len(r.Cmd) == 0 {
 		return errors.New("capture: empty Cmd")
 	}
 	backoff := backoffMin
 	for {
+		if err := r.waitUnmuted(ctx); err != nil {
+			return err
+		}
 		started := time.Now()
-		got, err := r.runOnce(ctx)
+		got, heard, err := r.runOnce(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if errors.Is(err, errMuted) {
+			continue
+		}
 		if errors.Is(err, errSilence) {
-			// Mic was held by another app; reopen it promptly, not a failure.
-			log.Printf("capture: silence detected, restarting helper in %s", backoffMin)
-			backoff = backoffMin
+			// Mic was held by another app: reopen it, but the longer it stays
+			// silent the less often, and promptly again once it has worked.
+			if heard {
+				backoff = backoffMin
+			}
+			log.Printf("capture: silence detected, restarting helper in %s", backoff)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(backoffMin):
+			case <-time.After(backoff):
+			}
+			if backoff *= 2; backoff > backoffMax {
+				backoff = backoffMax
 			}
 			continue
 		}
@@ -123,7 +148,33 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-func (r *Runner) runOnce(ctx context.Context) (int, error) {
+// waitUnmuted returns once the switch is off, or ctx.Err() on cancel.
+func (r *Runner) waitUnmuted(ctx context.Context) error {
+	if r.Muted == nil || !r.Muted() {
+		return nil
+	}
+	log.Printf("capture: mic muted by the switch, helper stopped")
+	if r.OnMuted != nil {
+		r.OnMuted()
+	}
+	t := time.NewTicker(mutePoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-t.C:
+		}
+		if !r.Muted() {
+			log.Printf("capture: mic unmuted, starting helper")
+			return nil
+		}
+	}
+}
+
+// runOnce runs the helper once and returns how many blocks it gave, whether
+// any of them had sound, and why it ended.
+func (r *Runner) runOnce(ctx context.Context) (int, bool, error) {
 	cmd := exec.CommandContext(ctx, r.Cmd[0], r.Cmd[1:]...)
 	if len(r.Env) > 0 {
 		cmd.Env = append(cmd.Environ(), r.Env...)
@@ -131,12 +182,12 @@ func (r *Runner) runOnce(ctx context.Context) (int, error) {
 	cmd.WaitDelay = 2 * time.Second
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	lw := &lineLogger{}
 	cmd.Stderr = lw // exec copies it fully before Wait returns
 	if err := cmd.Start(); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	det := newSilenceDetector(silenceBlocks)
@@ -147,6 +198,9 @@ func (r *Runner) runOnce(ctx context.Context) (int, error) {
 			r.OnBlock(b)
 		}
 		if det.feed(b) {
+			if r.Muted != nil && r.Muted() {
+				return errMuted
+			}
 			if r.OnSilence != nil {
 				r.OnSilence()
 			}
@@ -162,7 +216,7 @@ func (r *Runner) runOnce(ctx context.Context) (int, error) {
 	if rerr == io.EOF && werr != nil {
 		rerr = fmt.Errorf("eof; %w", werr)
 	}
-	return blocks, rerr
+	return blocks, det.heard, rerr
 }
 
 // lineLogger forwards helper stderr to the log, line by line.

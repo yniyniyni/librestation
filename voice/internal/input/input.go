@@ -20,6 +20,8 @@ const (
 	EvKey       = 1
 	KeyPageUp   = 104 // knob turned clockwise: louder
 	KeyPageDown = 109 // knob turned counter-clockwise: quieter
+
+	SwMuteDevice = 14 // the station's mic button (gpio_keypad, /dev/input/event0)
 )
 
 // Event is one decoded input_event without its timestamp.
@@ -42,6 +44,27 @@ func ParseEvent(b []byte) (Event, bool) {
 		Code:  binary.LittleEndian.Uint16(b[18:]),
 		Value: int32(binary.LittleEndian.Uint32(b[20:])),
 	}, true
+}
+
+// SwitchOn reports the current state of switch code on the evdev device at
+// path. It takes no grab, so other readers keep seeing the events.
+func SwitchOn(path string, code uint) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	var state [8]byte
+	if err := readSwitches(f, state[:]); err != nil {
+		return false, fmt.Errorf("switches of %s: %w", path, err)
+	}
+	return switchBit(state[:], code), nil
+}
+
+// switchBit reads one switch from the kernel's little-endian bit array.
+func switchBit(state []byte, code uint) bool {
+	i := code / 8
+	return i < uint(len(state)) && state[i]&(1<<(code%8)) != 0
 }
 
 // ReadKeys opens the evdev device at path, grabs it for exclusive access

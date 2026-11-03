@@ -67,3 +67,17 @@ func TestReadKeysReportsPressesOnly(t *testing.T) {
 		t.Fatalf("keys = %v, want [104 109]", got)
 	}
 }
+
+func TestSwitchBit(t *testing.T) {
+	// What the station's gpio_keypad reports with the mic muted.
+	muted := []byte{0x00, 0x40, 0, 0, 0, 0, 0, 0}
+	if !switchBit(muted, SwMuteDevice) {
+		t.Fatal("mute bit not seen")
+	}
+	if switchBit(muted, SwMuteDevice-1) || switchBit(make([]byte, 8), SwMuteDevice) {
+		t.Fatal("wrong bit seen")
+	}
+	if switchBit(muted, 64) {
+		t.Fatal("code past the array must read off")
+	}
+}
