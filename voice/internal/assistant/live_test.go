@@ -462,6 +462,86 @@ func TestLiveBargeIn(t *testing.T) {
 	}
 }
 
+// The server must not hear the reply's echo: it would cut the reply off and
+// answer itself. A barge-in brings the microphone back, with the word's start.
+func TestLiveMicOffWhileSpeaking(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("расскажи"), mAudio())
+	g.untilState("speaking")
+	g.s.amu.Lock()
+	muted := g.s.mute
+	g.s.amu.Unlock()
+	if !muted {
+		t.Fatal("the microphone is on during the reply")
+	}
+	settled := f.streamed()
+	queued := func() int {
+		g.s.amu.Lock()
+		defer g.s.amu.Unlock()
+		return len(g.s.lq)
+	}
+	g.speak(tone(time.Second, bargeInDBFS-6))
+	if n := queued(); n != 0 || f.streamed() > settled+liveChunk {
+		t.Errorf("echo sent: queued %d, streamed %d after %d", n, f.streamed(), settled)
+	}
+	before := f.streamed()
+	g.speak(loudSpeech())
+	g.untilState("listening")
+	g.speak(userSpeech())
+	g.until("the word sent", func() bool { return f.streamed() >= before+samplesIn(bargeInSeed) })
+}
+
+func TestLiveMicBackAfterReply(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.reply(f, "привет", "Привет!")
+	g.s.amu.Lock()
+	muted, tail := g.s.mute, g.s.tail
+	g.s.amu.Unlock()
+	if muted || tail.IsZero() {
+		t.Fatalf("after the reply mute %v, tail %v", muted, tail)
+	}
+	g.s.amu.Lock()
+	g.s.tail = time.Time{}
+	g.s.amu.Unlock()
+	before := f.streamed()
+	g.speak(userSpeech())
+	g.until("speech sent", func() bool { return f.streamed() > before })
+}
+
+// The model answered an action with silence: the action is done, so nothing
+// went wrong and no stock phrase is said.
+func TestLiveSilentAfterEndConversation(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("стоп"), mTool("t1", "end_conversation", `{}`))
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.until("grace timer", func() bool { return g.clock.count(endGrace) == 1 })
+	g.clock.Advance(endGrace)
+	g.ended()
+	if s := g.stockLog(); len(s) != 0 {
+		t.Errorf("stock %v, want none", s)
+	}
+}
+
+func TestLiveSilentAfterAction(t *testing.T) {
+	g := newLiveRig(t, liveTool{name: "playback"})
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("пауза"), mTool("t1", "playback", `{}`))
+	g.until("tool answered", func() bool { return len(f.responses()) == 1 })
+	g.until("grace timer", func() bool { return g.clock.count(actionGrace) == 2 }) // startLimit is the other
+	g.clock.Advance(actionGrace)
+	g.ended()
+	if s := g.stockLog(); len(s) != 0 {
+		t.Errorf("stock %v, want none", s)
+	}
+}
+
 func TestLiveQuietSpeechDoesNotBargeIn(t *testing.T) {
 	g := newLiveRig(t)
 	f := g.conn()
@@ -523,6 +603,7 @@ func TestLiveGoAwayResumes(t *testing.T) {
 	if !f1.isClosed() {
 		t.Error("old connection not closed")
 	}
+	g.clock.Advance(micTail)
 	g.speak(userSpeech())
 	g.until("audio to the new connection", func() bool { return f2.streamed() > 0 })
 	g.reply(f2, "ещё", "Да.")

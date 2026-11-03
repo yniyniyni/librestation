@@ -115,6 +115,8 @@ type Session struct {
 
 	// Channel 0, for Live; also under amu.
 	live  bool       // a Live session takes LiveAudio
+	mute  bool       // the reply is playing: LiveAudio is not sent
+	tail  time.Time  // the reply's echo dies down: not sent until then
 	lq    []int16    // LiveAudio waiting to be sent
 	lraw  recent     // fed always, the pre-roll
 	watch voiceWatch // fed always, the local VAD
@@ -164,14 +166,14 @@ func (s *Session) Audio(pcm []int16) {
 
 // LiveAudio takes a 16 kHz block of channel 0 (already ×LiveGain) from the
 // audio goroutine. It never blocks: the voice watch always hears it, and
-// while a Live session is open it is queued for sending, the oldest audio
-// dropped when the queue is full.
+// while a Live session is open and no reply is playing it is queued for
+// sending, the oldest audio dropped when the queue is full.
 func (s *Session) LiveAudio(pcm []int16) {
 	s.amu.Lock()
 	s.lraw.push(pcm)
 	ev := s.watch.push(pcm)
 	on := s.live
-	if on {
+	if on && !s.mute && !s.d.Now().Before(s.tail) {
 		if over := len(s.lq) + len(pcm) - maxLiveQueued; over > 0 {
 			if over >= len(s.lq) {
 				pcm = pcm[min(over-len(s.lq), len(pcm)):]

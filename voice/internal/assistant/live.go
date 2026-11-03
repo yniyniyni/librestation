@@ -56,9 +56,20 @@ const (
 	// liveDialLimit bounds the first dial of a conversation: past it the
 	// agent takes over, with what the user said meanwhile.
 	liveDialLimit = 3 * time.Second
+	// micTail is how long the microphone stays unsent after a reply: the room's
+	// echo of its last word.
+	micTail = 200 * time.Millisecond
+	// bargeInSeed is the audio sent from before a barge-in was noticed: the
+	// beginning of the user's word.
+	bargeInSeed = 300 * time.Millisecond
+	// actionGrace and endGrace are how long the model may stay silent after a
+	// done action or end_conversation: the conversation then just ends, there
+	// is nothing wrong.
+	actionGrace = 4 * time.Second
+	endGrace    = 1500 * time.Millisecond
 )
 
-const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation. Если в услышанном нет обращения к тебе — музыка, телевизор, разговор не с тобой — вызови no_request и ничего не говори. Если ты отвечал и тебя перебили словом «стоп», «хватит» или «пауза», это значит замолчать: вызови end_conversation, музыку не трогай.`
+const LivePrompt = `Ты голосовой помощник умной колонки. Отвечай по-русски коротко и естественно. Используй объявленные инструменты для музыки, громкости, погоды и времени. Не утверждай, что действие выполнено без успешного результата. Если пользователь просит закончить разговор, вызови end_conversation. Если в услышанном нет обращения к тебе — музыка, телевизор, разговор не с тобой — вызови no_request и ничего не говори. Если ты отвечал и тебя перебили словом «стоп», «хватит» или «пауза», это значит замолчать: вызови end_conversation, музыку не трогай. Названия песен и исполнителей передавай в инструменты так, как они пишутся на самом деле: иностранные — латиницей, а не русскими буквами. Если просят включить любимое, лайкнутое, «мою музыку» или мой плейлист, это play_music с kind liked или my_playlist.`
 
 func LiveDeclarations(tools []agent.Tool) []geminilive.Declaration {
 	out := make([]geminilive.Declaration, 0, len(tools)+1)
@@ -91,7 +102,7 @@ func pcm24(blob *geminilive.Blob) ([]int16, error) {
 // seed is set, and arms the voice watch. It returns the pre-roll's length.
 func (s *Session) liveOn(seed bool) int {
 	s.amu.Lock()
-	s.live, s.lq = true, s.lq[:0]
+	s.live, s.mute, s.tail, s.lq = true, false, time.Time{}, s.lq[:0]
 	if seed {
 		s.lq = s.lraw.appendTo(s.lq)
 	}
@@ -123,8 +134,47 @@ func (s *Session) liveTake(seeded int) liveLeft {
 
 func (s *Session) liveOff() {
 	s.amu.Lock()
-	s.live, s.lq = false, s.lq[:0]
+	s.live, s.mute, s.lq = false, false, s.lq[:0]
 	s.amu.Unlock()
+}
+
+// micOff stops sending LiveAudio while the reply plays. The channel 0 that
+// the chip cleans still holds the reply's echo, and the server's voice
+// detection, hearing it, would cut the reply off and answer itself. Only the
+// local voice watch listens meanwhile, and it knows the echo's level.
+func (s *Session) micOff() {
+	s.amu.Lock()
+	s.mute = true
+	s.watch.peak = silentDB
+	s.amu.Unlock()
+}
+
+// micOn sends LiveAudio again, the reply having ended on its own.
+func (s *Session) micOn() {
+	s.amu.Lock()
+	if s.mute {
+		s.mute, s.tail = false, s.d.Now().Add(micTail)
+	}
+	s.amu.Unlock()
+}
+
+// micBargeIn sends LiveAudio again at once, from just before the barge-in.
+func (s *Session) micBargeIn() {
+	s.amu.Lock()
+	if s.mute {
+		s.mute, s.tail = false, time.Time{}
+		q := s.lraw.appendTo(nil)
+		s.lq = append(s.lq, q[max(0, len(q)-samplesIn(bargeInSeed)):]...)
+	}
+	s.amu.Unlock()
+	poke(s.lnote)
+}
+
+// echoPeak is the loudest channel 0 frame since the reply began.
+func (s *Session) echoPeak() float64 {
+	s.amu.Lock()
+	defer s.amu.Unlock()
+	return s.watch.peak
 }
 
 // rearm re-arms the voice watch, for a floor without the reply in it.
@@ -340,6 +390,10 @@ func (r *liveRun) loop() {
 			}
 			return
 		case <-r.stall:
+			if r.actionDone() {
+				r.turnComplete() // the model has nothing to add
+				continue
+			}
 			r.err = fmt.Errorf("assistant: Live sent nothing for %v: %w", liveStall, context.DeadlineExceeded)
 			r.why = "no answer"
 			return
@@ -353,6 +407,12 @@ func (r *liveRun) loop() {
 // to moves the conversation to state and shows it on the ring.
 func (r *liveRun) to(state string) {
 	if r.state != state {
+		switch {
+		case state == "speaking":
+			r.s.micOff()
+		case r.state == "speaking":
+			r.s.micOn()
+		}
 		r.state = state
 		led := state
 		if state == "followup" {
@@ -422,8 +482,12 @@ func (r *liveRun) endTurn(close string) {
 	if t.first >= 0 {
 		first = fmt.Sprintf("%d ms", t.first.Milliseconds())
 	}
-	log.Printf("assistant: Live turn: heard %s, tools %s, reply %s, first audio %s, close %s",
-		brief(t.heard), tools, brief(t.reply), first, close)
+	echo := "-"
+	if t.first >= 0 {
+		echo = fmt.Sprintf("%.0f dBFS", r.s.echoPeak())
+	}
+	log.Printf("assistant: Live turn: heard %s, tools %s, reply %s, first audio %s, mic peak %s, close %s",
+		brief(t.heard), tools, brief(t.reply), first, echo, close)
 }
 
 func (r *liveRun) message(lm liveMsg) bool {
@@ -571,6 +635,7 @@ func (r *liveRun) noRequest() bool {
 
 // bargeIn cuts the reply off: the user spoke over it.
 func (r *liveRun) bargeIn() {
+	r.s.micBargeIn()
 	r.out.flush()
 	r.drop = !r.finishing // the server may still be sending it
 	r.finishing = false
@@ -738,9 +803,32 @@ func (r *liveRun) toolsDone(b toolBatch) bool {
 		}
 	}
 	if r.tools == 0 && !r.finishing && (r.state == "thinking" || r.state == "speaking") {
-		r.stall = r.s.after(liveStall)
+		r.stall = r.s.after(r.stallLimit())
 	}
 	return true
+}
+
+// actionDone reports whether the open turn did what was asked: the model may
+// then say nothing more, and often does.
+func (r *liveRun) actionDone() bool {
+	if r.turn == nil || r.tools > 0 {
+		return false
+	}
+	return slices.ContainsFunc(r.turn.summary().Tools, func(t toolResult) bool { return t.OK && closingTools[t.Name] })
+}
+
+// stallLimit is how long the server may stay silent after the tools' answers.
+func (r *liveRun) stallLimit() time.Duration {
+	if r.turn == nil {
+		return liveStall
+	}
+	switch {
+	case slices.ContainsFunc(r.turn.summary().Tools, func(t toolResult) bool { return t.OK && t.Name == "end_conversation" }):
+		return endGrace
+	case r.actionDone():
+		return actionGrace
+	}
+	return liveStall
 }
 
 // recordLive shows the turn so far on the panel.
