@@ -97,12 +97,24 @@ func TestAssistantActionWakes(t *testing.T) {
 	}
 }
 
-func TestAssistantWakesWhileBusy(t *testing.T) {
+func TestAssistantSuppressedWhileSpeaking(t *testing.T) {
 	d, a := newAsst(t, &fakeAct{}, "assistant")
-	a.setBusy(true)
+	a.setBusy(true) // State() returns "speaking"
+	hit(d)
+	if a.wakes != 0 {
+		t.Fatalf("speaking: wakes %d, want 0 (echo suppression)", a.wakes)
+	}
+	if h := d.state().Hits[0]; h.Fired {
+		t.Fatalf("hit should not fire during speaking: %+v", h)
+	}
+}
+
+func TestAssistantWakesDuringFollowup(t *testing.T) {
+	d, a := newAsst(t, &fakeAct{}, "assistant")
+	a.setState("followup")
 	hit(d)
 	if a.wakes != 1 {
-		t.Fatalf("barge-in: wakes %d", a.wakes)
+		t.Fatalf("followup: wakes %d, want 1", a.wakes)
 	}
 }
 
