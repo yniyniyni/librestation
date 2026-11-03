@@ -161,9 +161,8 @@ func TestAssistantLiveAudio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2.spotCommands(blk)
-	if d2.yin != nil {
-		t.Fatal("channel 0 computed without assistant and model")
+	if clip := d2.spotCommands(blk); len(clip) == 0 {
+		t.Fatal("our words need channel 0 without assistant and model too")
 	}
 }
 

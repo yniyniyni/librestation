@@ -566,3 +566,27 @@ func TestWakeWordsNameTheStockOnes(t *testing.T) {
 		t.Errorf("words %v", g)
 	}
 }
+
+// Our words listen to channel 0 at its own level, as the commands do.
+func TestSpotCommandsReturnsChannelZero(t *testing.T) {
+	d, _, _, _, _ := cmdTest(t)
+	block := make([]int16, miccap.BlockFrames*miccap.Channels)
+	for i := range miccap.BlockFrames {
+		block[i*miccap.Channels] = int16(8000 * math.Sin(2*math.Pi*300*float64(i)/miccap.Rate))
+		block[i*miccap.Channels+3] = 30000 // a microphone: not this
+	}
+	var clip []int16
+	for range 20 {
+		clip = d.spotCommands(block)
+	}
+	if len(clip) != miccap.BlockFrames/3 {
+		t.Fatalf("%d samples", len(clip))
+	}
+	peak := 0
+	for _, v := range clip {
+		peak = max(peak, int(v), -int(v))
+	}
+	if peak < 4000 || peak > 12000 {
+		t.Errorf("peak %d, want about 8000: channel 0 at its own level", peak)
+	}
+}

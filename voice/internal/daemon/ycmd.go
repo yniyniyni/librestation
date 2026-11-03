@@ -61,13 +61,13 @@ const LiveGain = 2
 
 // spotCommands takes one raw capture block's channel 0 at 16 kHz, once, and
 // shares it: the Yandex spotters (those loaded and switched on) and the
-// assistant's Live session (when there is one). It runs on the audio goroutine
-// without d.mu.
-func (d *Daemon) spotCommands(block []int16) {
+// assistant's Live session (when there is one). It returns it at its own level
+// for our words and everything else that listens: the chip has taken the music
+// and the speaker's voice out of this channel, and it recognised far better
+// than our own mix of the microphones (9 of 9 commands against 0 to 4). It runs
+// on the audio goroutine without d.mu.
+func (d *Daemon) spotCommands(block []int16) []int16 {
 	asst := d.opt.Assistant
-	if d.spot == nil && asst == nil && len(d.wakes) == 0 {
-		return
-	}
 	if d.yin == nil {
 		d.yin = ycmd.NewInput()
 	}
@@ -81,15 +81,13 @@ func (d *Daemon) spotCommands(block []int16) {
 		}
 		return out
 	}
-	if d.spot != nil || len(d.wakes) > 0 {
-		clip := level(1)
-		d.mu.Lock()
-		d.yring.write(clip)
-		for _, w := range d.wakes {
-			w.on = d.settings.StockWake[w.id]
-		}
-		d.mu.Unlock()
+	clip := level(1)
+	d.mu.Lock()
+	d.yring.write(clip)
+	for _, w := range d.wakes {
+		w.on = d.settings.StockWake[w.id]
 	}
+	d.mu.Unlock()
 	if d.spot != nil {
 		d.spot.Push(pcm, func(cmd string, conf float64) {
 			d.mu.Lock()
@@ -111,6 +109,7 @@ func (d *Daemon) spotCommands(block []int16) {
 	if asst != nil {
 		asst.LiveAudio(level(LiveGain))
 	}
+	return clip
 }
 
 // wakeDither is the noise the stock trigger words listen through, the size

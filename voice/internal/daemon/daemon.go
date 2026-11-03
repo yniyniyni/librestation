@@ -20,7 +20,6 @@ import (
 
 	miccap "voice/internal/capture"
 	"voice/internal/dsp"
-	"voice/internal/frontend"
 	"voice/internal/judge"
 	"voice/internal/kws"
 	"voice/internal/led/proto"
@@ -110,7 +109,6 @@ type Assistant interface {
 
 // Settings is persisted in <data>/settings.json.
 type Settings struct {
-	Gain   float64                  `json:"gain"`    // frontend output gain
 	DryRun bool                     `json:"dry_run"` // log hits without acting
 	Words  map[string]*WordSettings `json:"words"`
 	// JudgeOff stops sending hits to the audio model even with a key.
@@ -345,7 +343,7 @@ func New(opt Options) (*Daemon, error) {
 		sp.Dither(wakeDither)
 		d.wakes = append(d.wakes, &wakeSpot{id: m.ID, name: m.Name, spot: sp, reset: sp.Reset})
 	}
-	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
+	d.settings = Settings{Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
 			return nil, fmt.Errorf("settings: %w", err)
@@ -507,17 +505,10 @@ func (d *Daemon) Run(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
-	cfg := frontend.DefaultConfig()
-	d.mu.Lock()
-	if d.settings.Gain > 0 {
-		cfg.Gain = d.settings.Gain
-	}
-	d.mu.Unlock()
-	fe := frontend.New(cfg)
 	killYandex()
 	r := &miccap.Runner{
 		Cmd:       d.opt.MicCmd,
-		OnBlock:   func(b []int16) { d.onRaw(b); d.spotCommands(b); d.onAudio(fe.Process(b)) },
+		OnBlock:   func(b []int16) { d.onRaw(b); d.onAudio(d.spotCommands(b)) },
 		OnSilence: killYandex,
 		Muted:     d.opt.MicMuted,
 		OnMuted:   d.micMuted,
