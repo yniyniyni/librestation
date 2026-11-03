@@ -16,8 +16,6 @@ type PlayMusic struct {
 	S       *spotifyapi.Client
 	Radio   func(ctx context.Context, track string) error // nil = no station
 	Shuffle func(ctx context.Context, on bool) error
-	// Context plays a playlist or Liked Songs keeping their Smart Shuffle; nil = no.
-	Context func(ctx context.Context, uri string) error
 }
 
 // shuffleDelay lets a context started through the Web API reach the speaker:
@@ -100,8 +98,8 @@ func (p PlayMusic) currentAlbum(ctx context.Context) (spotifyapi.Item, error) {
 	return spotifyapi.Item{Kind: "album", URI: cur.Album, Name: cur.AlbumName, Artist: cur.Artist, FromStart: true}, nil
 }
 
-// setShuffle sets shuffle once what was started has reached the speaker: set on
-// what played before, it would also forget that context's Smart Shuffle.
+// setShuffle sets shuffle once what was started has reached the speaker; set
+// earlier it goes to what played before.
 func (p PlayMusic) setShuffle(ctx context.Context, on bool) {
 	select {
 	case <-ctx.Done():
@@ -113,8 +111,9 @@ func (p PlayMusic) setShuffle(ctx context.Context, on bool) {
 }
 
 // play starts it: a track with its station after it, so what follows is a mix
-// of its kind (without one, in its album, then Spotify's autoplay); a playlist
-// or Liked Songs through Soloist where it can.
+// of its kind (without one, in its album, then Spotify's autoplay). The rest goes
+// through the Web API. Not Soloist's own play: with Smart Shuffle on for a context
+// it reports the mode, loads no track and stays silent, as with the DJ.
 func (p PlayMusic) play(ctx context.Context, it spotifyapi.Item) error {
 	if it.Kind == "track" && p.Radio != nil {
 		err := p.Radio(ctx, it.URI)
@@ -123,25 +122,7 @@ func (p PlayMusic) play(ctx context.Context, it spotifyapi.Item) error {
 		}
 		log.Printf("spotify: station of %s: %v", it.URI, err)
 	}
-	if (it.Kind == "liked" || it.Kind == "playlist") && p.Context != nil {
-		err := p.playContext(ctx, it)
-		if err == nil {
-			return nil
-		}
-		log.Printf("spotify: %s through Soloist: %v", it.URI, err)
-	}
 	return p.S.Play(ctx, it)
-}
-
-func (p PlayMusic) playContext(ctx context.Context, it spotifyapi.Item) error {
-	uri := it.URI
-	if it.Kind == "liked" {
-		var err error
-		if uri, err = p.S.LikedURI(ctx); err != nil {
-			return err
-		}
-	}
-	return p.Context(ctx, uri)
 }
 
 // LikeTrack saves the playing track to the library or removes it.

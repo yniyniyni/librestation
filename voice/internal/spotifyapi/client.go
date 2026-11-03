@@ -63,7 +63,6 @@ type Client struct {
 	revokedMod time.Time // token file mtime at that moment
 	lists      []Item    // the user's playlists, as of listsAt
 	listsAt    time.Time
-	userID     string
 }
 
 // New returns a client with default hosts and a 10 s timeout.
@@ -453,30 +452,6 @@ func pick(r searchResp, q, kind string) (Item, bool) {
 // it goes on to its autoplay at the end.
 func Liked() Item {
 	return Item{Kind: "liked", URI: "spotify:collection", Name: "Любимые треки"}
-}
-
-// LikedURI is Liked Songs by the name Soloist's play takes: it refuses the short
-// spotify:collection.
-func (c *Client) LikedURI(ctx context.Context) (string, error) {
-	c.mu.Lock()
-	id := c.userID
-	c.mu.Unlock()
-	if id == "" {
-		var me struct {
-			ID string `json:"id"`
-		}
-		if _, err := c.call(ctx, http.MethodGet, "/v1/me", nil, nil, &me); err != nil {
-			return "", err
-		}
-		if me.ID == "" {
-			return "", errors.New("spotify: нет id пользователя")
-		}
-		id = me.ID
-		c.mu.Lock()
-		c.userID = id
-		c.mu.Unlock()
-	}
-	return "spotify:user:" + id + ":collection", nil
 }
 
 // ErrNoPlaylistAccess is the answer to asking for the user's playlists on a

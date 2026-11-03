@@ -324,41 +324,6 @@ func (c *Client) PlayRadio(ctx context.Context, track string) error {
 	return fmt.Errorf("soloist: трек не начался")
 }
 
-// sameContext says whether a reported context is the one asked for; Liked Songs
-// go by two names.
-func sameContext(reported, asked string) bool {
-	if strings.HasSuffix(asked, ":collection") {
-		return strings.HasSuffix(reported, ":collection") || reported == "spotify:collection"
-	}
-	return reported == asked
-}
-
-// PlayContext starts a playlist or Liked Songs through Soloist's own play. Unlike
-// the Web API's, it brings back the Smart Shuffle the user turned on for it in
-// the app: Spotify remembers that per context.
-func (c *Client) PlayContext(ctx context.Context, uri string) error {
-	c.clearErr()
-	if err := c.send(struct {
-		Type    string `json:"type"`
-		Command string `json:"command"`
-		URI     string `json:"uri"`
-	}{"command", "play", uri}); err != nil {
-		return err
-	}
-	var failed string
-	started := c.wait(ctx, radioStart, func() bool {
-		failed = c.lastErr
-		return sameContext(c.context, uri) || failed != ""
-	})
-	if failed != "" {
-		return fmt.Errorf("soloist: %s", failed)
-	}
-	if !started {
-		return fmt.Errorf("soloist: %s не запустился", uri)
-	}
-	return nil
-}
-
 // Seek moves playback to position, or by it from where playback is now when
 // relative is set; a move before the start goes to the start, and one past the
 // end is Soloist's to handle.

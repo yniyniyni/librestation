@@ -36,7 +36,7 @@ func (Playback) Decl() agent.FuncDecl {
 			"seek_by moves by value seconds, negative for back: \"перемотай на 30 секунд вперёд\" is 30, \"назад на минуту\" is -60. " +
 			"seek_to goes to value seconds from the track's start: 0 for its start. " +
 			"Use shuffle_on for any request to shuffle what plays now, without asking what to play. " +
-			"Smart Shuffle can only be turned on in the Spotify app, where it is remembered per playlist: if asked for it, use shuffle_on and say so. " +
+			"Smart Shuffle cannot be started from here: it works only when started on a phone and moved to the speaker. If asked for it, use shuffle_on and say so. " +
 			"play continues whatever played last: use it for \"turn on the music\" with no title, artist or genre; " +
 			"to start something specific use play_music instead.",
 		Params: map[string]any{
