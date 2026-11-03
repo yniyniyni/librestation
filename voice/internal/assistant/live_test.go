@@ -1114,7 +1114,8 @@ func TestEarconOnWake(t *testing.T) {
 
 func TestEarconIsShortAndQuiet(t *testing.T) {
 	pcm, rate := Earcon()
-	if d := float64(len(pcm)) / float64(rate); d < 0.15 || d > 0.4 {
+	// Long enough to fill the output's 8192 frames, or it would not start.
+	if d := float64(len(pcm)) / float64(rate); d <= 8192.0/24000 || d > 0.5 {
 		t.Errorf("%.2f s long", d)
 	}
 	peak := 0

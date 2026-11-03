@@ -23,12 +23,15 @@ const volumeStep = 5
 type Playback struct {
 	A         Actuator
 	SetVolume func(int) error // the unified volume
+	Shuffle   func(ctx context.Context, on bool) error
 }
 
 func (Playback) Decl() agent.FuncDecl {
 	return agent.FuncDecl{
 		Name: "playback",
-		Description: "Control music playback and volume: pause, play, next or previous track, louder, quieter, or set the volume to a value. " +
+		Description: "Control music playback and volume: pause, play, next or previous track, louder, quieter, set the volume to a value, shuffle what is playing or stop shuffling. " +
+			"Use shuffle_on for any request to shuffle what plays now, without asking what to play. " +
+			"Smart Shuffle can only be turned on in the Spotify app: if asked for it, use shuffle_on and say so. " +
 			"play continues whatever played last: use it for \"turn on the music\" with no title, artist or genre; " +
 			"to start something specific use play_music instead.",
 		Params: map[string]any{
@@ -36,7 +39,7 @@ func (Playback) Decl() agent.FuncDecl {
 			"properties": map[string]any{
 				"action": map[string]any{
 					"type": "string",
-					"enum": []string{"pause", "play", "next", "prev", "louder", "quieter", "set_volume"},
+					"enum": []string{"pause", "play", "next", "prev", "louder", "quieter", "set_volume", "shuffle_on", "shuffle_off"},
 				},
 				"value": map[string]any{"type": "integer", "description": "Volume 0..100, for set_volume"},
 			},
@@ -45,7 +48,7 @@ func (Playback) Decl() agent.FuncDecl {
 	}
 }
 
-func (p Playback) Run(_ context.Context, args map[string]any) (map[string]any, error) {
+func (p Playback) Run(ctx context.Context, args map[string]any) (map[string]any, error) {
 	action, _ := args["action"].(string)
 	var err error
 	switch action {
@@ -61,6 +64,11 @@ func (p Playback) Run(_ context.Context, args map[string]any) (map[string]any, e
 		err = p.A.Step(volumeStep)
 	case "quieter":
 		err = p.A.Step(-volumeStep)
+	case "shuffle_on", "shuffle_off":
+		if p.Shuffle == nil {
+			return nil, fmt.Errorf("перемешивание недоступно")
+		}
+		err = p.Shuffle(ctx, action == "shuffle_on")
 	case "set_volume":
 		v, ok := args["value"].(float64)
 		if !ok || v < 0 || v > 100 {

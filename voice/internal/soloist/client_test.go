@@ -255,3 +255,64 @@ func TestConnectEvent(t *testing.T) {
 		t.Fatal("no connect event")
 	}
 }
+
+func TestPlayRadioPutsTheTrackFirst(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayRadio(context.Background(), "spotify:track:x") }()
+	if got := f.msg(t); got != `{"type":"command","command":"play","uri":"spotify:station:track:x"}` {
+		t.Fatalf("got %s", got)
+	}
+	ctx := context.Background()
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:other"}}`))
+	if got := f.msg(t); got != `{"type":"command","command":"add_to_queue","uri":"spotify:track:x"}` {
+		t.Fatalf("got %s", got)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"skip_next"}` {
+		t.Fatalf("got %s", got)
+	}
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:x"}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlayRadioRefused(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayRadio(context.Background(), "spotify:track:x") }()
+	f.msg(t)
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"error","message":"play requires a valid playable Spotify URI"}`))
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "playable") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPlayRadioNeedsATrack(t *testing.T) {
+	c := dial(t, newFake(t).url(), nil)
+	if err := c.PlayRadio(context.Background(), "spotify:album:x"); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+func TestSetShuffleWaitsForTheState(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.SetShuffle(context.Background(), true) }()
+	if got := f.msg(t); got != `{"type":"command","command":"set_shuffle","enabled":true}` {
+		t.Fatalf("got %s", got)
+	}
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"playback_state","options":{"shuffle":true}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

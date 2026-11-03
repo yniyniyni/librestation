@@ -170,3 +170,19 @@ func TestPlaybackDescriptionSaysWhenToPlay(t *testing.T) {
 		t.Errorf("description does not steer bare \"play music\" to play: %q", d)
 	}
 }
+
+func TestPlaybackShuffle(t *testing.T) {
+	var got []bool
+	p := Playback{Shuffle: func(_ context.Context, on bool) error { got = append(got, on); return nil }}
+	for _, a := range []string{"shuffle_on", "shuffle_off"} {
+		if _, err := p.Run(context.Background(), map[string]any{"action": a}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || !got[0] || got[1] {
+		t.Errorf("got %v", got)
+	}
+	if _, err := (Playback{}).Run(context.Background(), map[string]any{"action": "shuffle_on"}); err == nil {
+		t.Error("no shuffle: want an error")
+	}
+}

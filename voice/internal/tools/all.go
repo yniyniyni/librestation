@@ -20,6 +20,9 @@ type Deps struct {
 	Model func() string
 	// Music wraps each Spotify tool (nil = as is).
 	Music func(agent.Tool) agent.Tool
+	// Radio plays a track followed by its station; Shuffle turns shuffle on or off.
+	Radio   func(ctx context.Context, track string) error
+	Shuffle func(ctx context.Context, on bool) error
 }
 
 // All is the one list of the assistant's tools.
@@ -32,8 +35,8 @@ func All(d Deps) []agent.Tool {
 		Clock{},
 		Weather{DefaultCity: d.DefaultCity},
 		Web{LLM: d.LLM, Model: d.Model},
-		Playback{A: d.Actuator, SetVolume: d.SetVolume},
-		music(PlayMusic{S: d.Spotify}),
+		Playback{A: d.Actuator, SetVolume: d.SetVolume, Shuffle: d.Shuffle},
+		music(PlayMusic{S: d.Spotify, Radio: d.Radio, Shuffle: d.Shuffle}),
 		music(LikeTrack{S: d.Spotify}),
 		music(NowPlaying{S: d.Spotify}),
 	}

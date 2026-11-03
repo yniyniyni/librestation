@@ -160,7 +160,7 @@ func cmdRun(args []string) error {
 			}
 			return judgeModel
 		}
-		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, opt.Actuator, vol, out, ledSend)
+		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, opt.Actuator, sol, vol, out, ledSend)
 		defer a.speaker.Close()
 		opt.Assistant = a.session
 		opt.AssistantStatus = func() any { return a.session.Status() }

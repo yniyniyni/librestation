@@ -105,7 +105,8 @@ func TestMusicNotLinked(t *testing.T) {
 
 func TestPlayLikedNeedsNoQuery(t *testing.T) {
 	var ctxURI string
-	var shuffled string
+	var shuffled []bool
+	shuffleDelay = 0
 	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/me/player/devices":
@@ -116,17 +117,61 @@ func TestPlayLikedNeedsNoQuery(t *testing.T) {
 			}
 			json.NewDecoder(r.Body).Decode(&b)
 			ctxURI = b.URI
-		case "/v1/me/player/shuffle":
-			shuffled = r.URL.Query().Get("state")
 		default:
 			t.Errorf("unexpected %s", r.URL)
 		}
 	})
-	res, err := PlayMusic{S: c}.Run(context.Background(), map[string]any{"kind": "liked", "shuffle": true})
+	res, err := PlayMusic{S: c, Shuffle: func(_ context.Context, on bool) error {
+		shuffled = append(shuffled, on)
+		return nil
+	}}.Run(context.Background(), map[string]any{"kind": "liked", "shuffle": true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ctxURI != "spotify:collection" || shuffled != "true" || res["kind"] != "liked" {
-		t.Errorf("context %q, shuffle %q, res %v", ctxURI, shuffled, res)
+	if ctxURI != "spotify:collection" || len(shuffled) != 1 || !shuffled[0] || res["kind"] != "liked" {
+		t.Errorf("context %q, shuffle %v, res %v", ctxURI, shuffled, res)
+	}
+}
+
+const oneTrackJSON = `{"tracks":{"items":[{"uri":"spotify:track:s","name":"Starboy","artists":[{"name":"The Weeknd"}],"album":{"uri":"spotify:album:a"}}]}}`
+
+func TestPlayTrackThroughItsStation(t *testing.T) {
+	var played int
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/search" {
+			w.Write([]byte(oneTrackJSON))
+			return
+		}
+		played++
+	})
+	var track string
+	_, err := PlayMusic{S: c, Radio: func(_ context.Context, u string) error { track = u; return nil }}.
+		Run(context.Background(), map[string]any{"query": "starboy the weeknd", "kind": "track"})
+	if err != nil || track != "spotify:track:s" || played != 0 {
+		t.Errorf("err %v, station of %q, %d Web API calls", err, track, played)
+	}
+}
+
+// No station: the album and its autoplay still follow the track.
+func TestPlayTrackWithoutStationUsesItsAlbum(t *testing.T) {
+	var album string
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/search":
+			w.Write([]byte(oneTrackJSON))
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			var b struct {
+				URI string `json:"context_uri"`
+			}
+			json.NewDecoder(r.Body).Decode(&b)
+			album = b.URI
+		}
+	})
+	_, err := PlayMusic{S: c, Radio: func(context.Context, string) error { return errors.New("no") }}.
+		Run(context.Background(), map[string]any{"query": "starboy the weeknd", "kind": "track"})
+	if err != nil || album != "spotify:album:a" {
+		t.Errorf("err %v, album %q", err, album)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +46,11 @@ type Client struct {
 	gen    uint64 // number of connections established so far
 	vol    int
 	volSet bool
+
+	context string // what Soloist last reported playing
+	item    string
+	shuffle bool
+	lastErr string // its last error message, since clearErr
 }
 
 // Dial starts connecting in the background and returns immediately. The
@@ -97,9 +104,19 @@ func (c *Client) run(ctx context.Context) {
 }
 
 type wireMsg struct {
-	Type   string `json:"type"`
-	Volume *int   `json:"volume"`
-	Status string `json:"status"`
+	Type    string `json:"type"`
+	Volume  *int   `json:"volume"`
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Context *struct {
+		URI string `json:"uri"`
+	} `json:"context"`
+	Item *struct {
+		URI string `json:"uri"`
+	} `json:"item"`
+	Options *struct {
+		Shuffle bool `json:"shuffle"`
+	} `json:"options"`
 }
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
@@ -117,9 +134,31 @@ func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
 			c.vol, c.volSet = *m.Volume, true
 			c.mu.Unlock()
 		}
+		c.note(m)
 		if c.onEvent != nil {
 			c.onEvent(Event{Type: m.Type, Volume: m.Volume, Status: m.Status})
 		}
+	}
+}
+
+// note keeps what the commands below wait for.
+func (c *Client) note(m wireMsg) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if m.Type == "error" {
+		c.lastErr = m.Message
+	}
+	if m.Type != "playback_state" {
+		return
+	}
+	if m.Context != nil {
+		c.context = m.Context.URI
+	}
+	if m.Item != nil {
+		c.item = m.Item.URI
+	}
+	if m.Options != nil {
+		c.shuffle = m.Options.Shuffle
 	}
 }
 
@@ -171,6 +210,107 @@ func (c *Client) SetVolume(v int) error {
 		Command string `json:"command"`
 		Volume  int    `json:"volume"`
 	}{"command", "set_volume", v})
+}
+
+const (
+	// waitStep is how often a command's effect is looked for.
+	waitStep = 20 * time.Millisecond
+	// radioStart bounds the wait for a station to load, radioTrack and
+	// shuffleWait for the commands that follow.
+	radioStart  = 5 * time.Second
+	radioTrack  = 3 * time.Second
+	shuffleWait = 1500 * time.Millisecond
+)
+
+// wait polls ok until it holds or d or ctx ends. Reports whether it held; ok
+// runs under c.mu.
+func (c *Client) wait(ctx context.Context, d time.Duration, ok func() bool) bool {
+	end := time.Now().Add(d)
+	for {
+		c.mu.Lock()
+		done := ok()
+		c.mu.Unlock()
+		if done {
+			return true
+		}
+		if time.Now().After(end) || ctx.Err() != nil {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(waitStep):
+		}
+	}
+}
+
+func (c *Client) clearErr() {
+	c.mu.Lock()
+	c.lastErr = ""
+	c.mu.Unlock()
+}
+
+// PlayRadio plays a track and then Spotify's station of it. A station only
+// exists as a context of its own, and Soloist's play takes it where the Web API
+// does not; it starts on a track of its choosing, so the one asked for goes
+// through the queue, in front of the rest.
+func (c *Client) PlayRadio(ctx context.Context, track string) error {
+	id, ok := strings.CutPrefix(track, "spotify:track:")
+	if !ok || id == "" {
+		return fmt.Errorf("soloist: не трек: %q", track)
+	}
+	station := "spotify:station:track:" + id
+	c.clearErr()
+	if err := c.send(struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		URI     string `json:"uri"`
+	}{"command", "play", station}); err != nil {
+		return err
+	}
+	var failed string
+	c.wait(ctx, radioStart, func() bool {
+		failed = c.lastErr
+		return c.context == station || failed != ""
+	})
+	if failed != "" {
+		return fmt.Errorf("soloist: %s", failed)
+	}
+	c.mu.Lock()
+	started := c.context == station
+	c.mu.Unlock()
+	if !started {
+		return fmt.Errorf("soloist: станция не запустилась")
+	}
+	if err := c.send(struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		URI     string `json:"uri"`
+	}{"command", "add_to_queue", track}); err != nil {
+		return err
+	}
+	if err := c.Next(); err != nil {
+		return err
+	}
+	if !c.wait(ctx, radioTrack, func() bool { return c.item == track }) {
+		return fmt.Errorf("soloist: трек не начался")
+	}
+	return nil
+}
+
+// SetShuffle turns shuffle on or off and waits for Soloist to report it: what
+// is playing may not allow it, a station does not.
+func (c *Client) SetShuffle(ctx context.Context, on bool) error {
+	if err := c.send(struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Enabled bool   `json:"enabled"`
+	}{"command", "set_shuffle", on}); err != nil {
+		return err
+	}
+	if !c.wait(ctx, shuffleWait, func() bool { return c.shuffle == on }) {
+		return fmt.Errorf("то, что сейчас играет, нельзя перемешать")
+	}
+	return nil
 }
 
 // Volume returns the last volume reported by Soloist.

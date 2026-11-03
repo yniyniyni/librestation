@@ -619,16 +619,6 @@ func (c *Client) Play(ctx context.Context, it Item) error {
 	return err
 }
 
-// SetShuffle turns shuffle on or off for what is playing on the speaker.
-func (c *Client) SetShuffle(ctx context.Context, on bool) error {
-	d, err := c.findDevice(ctx)
-	if err != nil {
-		return err
-	}
-	_, err = c.call(ctx, http.MethodPut, "/v1/me/player/shuffle", url.Values{"state": {strconv.FormatBool(on)}, "device_id": {d.ID}}, nil, nil)
-	return err
-}
-
 // Current returns what is playing now; false when nothing is.
 func (c *Client) Current(ctx context.Context) (Item, bool, error) {
 	var r struct {

@@ -6,8 +6,12 @@ const (
 	earconRate = 24000
 	// earconLead is silence for the output to wake up in, so the first note is
 	// not clipped.
-	earconLead = 0.08
+	earconLead = 0.05
 	earconPeak = 0.25
+	// earconMin is how long the sound is with the silence after it. Android does
+	// not start an output until its buffer (8192 frames, 341 ms) is full, and a
+	// shorter sound would wait there for the reply.
+	earconMin = 0.4
 )
 
 // earconNotes are the two rising notes heard after the trigger word: frequency
@@ -26,6 +30,9 @@ func Earcon() ([]int16, int) {
 			env := min(t/0.008, 1) * math.Pow(1-float64(i)/float64(total), 1.5)
 			pcm = append(pcm, int16(earconPeak*32767*env*math.Sin(2*math.Pi*n.hz*t)))
 		}
+	}
+	for len(pcm) < earconMin*earconRate {
+		pcm = append(pcm, 0)
 	}
 	return pcm, earconRate
 }

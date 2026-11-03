@@ -5,13 +5,22 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"voice/internal/agent"
 	"voice/internal/spotifyapi"
 )
 
 // PlayMusic plays something from Spotify on the speaker.
-type PlayMusic struct{ S *spotifyapi.Client }
+type PlayMusic struct {
+	S       *spotifyapi.Client
+	Radio   func(ctx context.Context, track string) error // nil = no station
+	Shuffle func(ctx context.Context, on bool) error
+}
+
+// shuffleDelay lets a context started through the Web API reach the speaker:
+// shuffle set before that goes to what was playing.
+var shuffleDelay = time.Second
 
 func (PlayMusic) Decl() agent.FuncDecl {
 	return agent.FuncDecl{
@@ -23,7 +32,7 @@ func (PlayMusic) Decl() agent.FuncDecl {
 				"query": map[string]any{"type": "string", "description": "What to play: a song with its artist, an artist, an album or a playlist's name, spelled as it is really written (foreign names in Latin letters). Not needed for liked"},
 				"kind": map[string]any{"type": "string", "enum": []string{"track", "artist", "album", "playlist", "any", "liked", "my_playlist"},
 					"description": "What the query names; any if unsure. liked: the user's Liked Songs (favourites). my_playlist: one of the user's own playlists; if there is none by that name the error lists them, choose from it"},
-				"shuffle": map[string]any{"type": "boolean", "description": "Shuffle, when asked to"},
+				"shuffle": map[string]any{"type": "boolean", "description": "Shuffle what is started, when asked to; to shuffle what already plays use playback"},
 			},
 		},
 	}
@@ -52,11 +61,15 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 	if err != nil {
 		return nil, err
 	}
-	if err := p.S.Play(ctx, it); err != nil {
+	if err := p.play(ctx, it); err != nil {
 		return nil, err
 	}
-	if on, _ := args["shuffle"].(bool); on {
-		if err := p.S.SetShuffle(ctx, true); err != nil {
+	if on, _ := args["shuffle"].(bool); on && p.Shuffle != nil && it.Kind != "track" {
+		select {
+		case <-ctx.Done():
+		case <-time.After(shuffleDelay):
+		}
+		if err := p.Shuffle(ctx, true); err != nil {
 			log.Printf("spotify: shuffle: %v", err)
 		}
 	}
@@ -65,6 +78,19 @@ func (p PlayMusic) Run(ctx context.Context, args map[string]any) (map[string]any
 		res["artist"] = it.Artist
 	}
 	return res, nil
+}
+
+// play starts it: a track with its station after it, so what follows is a mix
+// of its kind. Without one the track plays in its album, then Spotify's autoplay.
+func (p PlayMusic) play(ctx context.Context, it spotifyapi.Item) error {
+	if it.Kind == "track" && p.Radio != nil {
+		err := p.Radio(ctx, it.URI)
+		if err == nil {
+			return nil
+		}
+		log.Printf("spotify: station of %s: %v", it.URI, err)
+	}
+	return p.S.Play(ctx, it)
 }
 
 // LikeTrack saves the playing track to the library or removes it.
