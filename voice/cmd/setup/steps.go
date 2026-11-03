@@ -93,6 +93,8 @@ func steps() []step {
 			ask: "Достать модель быстрых команд из прошивки колонки?"},
 		{name: "Готовые слова «Алиса» и «Яндекс»", optional: true, check: checkWake, fix: fixWake,
 			ask: "Достать модели этих слов из прошивки колонки? Включаются в панели, в разделе «Слова»"},
+		{name: "Мелодии будильника", optional: true, check: checkAlarmSounds, fix: fixAlarmSounds,
+			ask: "Достать мелодии будильника и таймера из прошивки колонки? Без них звенит простой встроенный сигнал."},
 		{name: "Яндекс: лишние приложения удалены", optional: true, check: checkYandexApps, fix: fixYandexApps,
 			ask: "Удалить их? Проверено на Станции Макс: звук, сеть и команды работают; обратимо: " + restoreApp},
 		{name: "Старые файлы прежних версий", optional: true, check: checkLeftovers, fix: fixLeftovers,
@@ -626,6 +628,58 @@ func checkWake(e *env) (bool, string, error) {
 		}
 	}
 	return true, "", nil
+}
+
+// The ringtones, like the models, are taken from the user's own speaker and not
+// kept in the repository.
+const (
+	alarmSoundDir = voiceDir + "/sounds/alarm"
+	alarmSoundAPK = "assets/quark/sounds/common"
+)
+
+// alarmSoundFiles are the ones alarms.Sounds and alarms.TimerSound name.
+var alarmSoundFiles = []string{"alarm.mp3", "alarm_from_alice.mp3", "birds.wav", "kids.wav", "timer.wav"}
+
+func checkAlarmSounds(e *env) (bool, string, error) {
+	var tests []string
+	for _, f := range alarmSoundFiles {
+		tests = append(tests, "test -s "+alarmSoundDir+"/"+f)
+	}
+	ok, err := e.d.RootOK(strings.Join(tests, "\n"))
+	return ok, "", err
+}
+
+func fixAlarmSounds(e *env) error {
+	have, err := e.d.RootOK("test -f " + ycmdAPK)
+	if err != nil {
+		return err
+	}
+	if !have {
+		return fmt.Errorf("в прошивке нет ServicesIosdk.apk — мелодии будильника недоступны")
+	}
+	var names, mvs strings.Builder
+	for _, f := range alarmSoundFiles {
+		fmt.Fprintf(&names, " '%s/%s'", alarmSoundAPK, f)
+		fmt.Fprintf(&mvs, " && mv %s/%s/%s %s/", ycmdTmp, alarmSoundAPK, f, alarmSoundDir)
+	}
+	// As fixYcmd: unzip's status says nothing on this busybox, the files do.
+	script := fmt.Sprintf(`rm -rf %[1]s
+mkdir -p %[1]s %[2]s
+rc=0
+{ /vendor/xbin/busybox unzip -o %[3]s%[4]s -d %[1]s || true; }
+{ true%[5]s; } || rc=1
+rm -rf %[1]s
+chmod -R a+rX %[2]s
+[ $rc -eq 0 ]`, ycmdTmp, alarmSoundDir, ycmdAPK, names.String(), mvs.String())
+	if _, err := e.d.Root(script); err != nil {
+		return err
+	}
+	if ok, _, err := checkAlarmSounds(e); err != nil {
+		return err
+	} else if !ok {
+		return fmt.Errorf("в APK нет мелодий будильника — другая версия прошивки?")
+	}
+	return nil
 }
 
 func fixWake(e *env) error {
