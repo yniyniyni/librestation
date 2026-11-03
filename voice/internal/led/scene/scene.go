@@ -65,6 +65,9 @@ type Assets struct {
 	Font  *asset.Font
 	Pulse map[string][11]*asset.Anim // "up", "down", indexed by round(volume/10)
 	Icons map[string]*asset.Anim     // pause, play, next, prev
+
+	AlarmScreen, TimerBell, TimerLoop *asset.Anim
+	AlarmRing, TimerRing              *asset.RingPattern
 }
 
 const (
@@ -80,6 +83,11 @@ const (
 	// speakTau is how fast the speaking ring follows the voice: without it the
 	// ring flickers with every syllable.
 	speakTau = 120 * time.Millisecond
+	// eventHold ends a ring or a timer that voiced stopped telling about: its
+	// events are sent each second and may be lost, voiced may be gone.
+	eventHold = 3 * time.Second
+	// timerSwap is how long a running timer shows its animation, then the time.
+	timerSwap = 5 * time.Second
 )
 
 type overlayKind int
@@ -97,6 +105,13 @@ type Scene struct {
 	font   *asset.Font
 	now    func() time.Time
 	set    Settings
+
+	ringKind  string // alarm, timer; "" = none
+	ringOn    time.Time
+	ringSeen  time.Time
+	timerSecs int // time left on the nearest timer; 0 = none
+	timerOn   time.Time
+	timerSeen time.Time
 
 	ai        bool
 	aiState   string    // listening, thinking, speaking, error
@@ -160,6 +175,28 @@ func (s *Scene) Audio(level float64, bands [12]float64) {
 	s.mu.Lock()
 	s.level, s.bands = level, bands
 	s.mu.Unlock()
+}
+
+// Ring shows an alarm or a timer ringing; "" ends it.
+func (s *Scene) Ring(kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	if kind != s.ringKind {
+		s.ringOn = now
+	}
+	s.ringKind, s.ringSeen = kind, now
+}
+
+// Timer shows the time left on a running timer in place of the clock; 0 ends it.
+func (s *Scene) Timer(secs int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	if s.timerSecs == 0 {
+		s.timerOn = now
+	}
+	s.timerSecs, s.timerSeen = secs, now
 }
 
 // AI switches the assistant layer and its state: "listening" (also ""),
@@ -240,6 +277,10 @@ func (s *Scene) Frame() (anim.Screen, anim.Ring) {
 func fadeFor(from, to string) time.Duration {
 	fromAI, toAI := strings.HasPrefix(from, "ai:"), strings.HasPrefix(to, "ai:")
 	switch {
+	case strings.HasPrefix(to, "ring:"):
+		return 0 // it should be seen at once
+	case strings.HasPrefix(from, "ring:"):
+		return aiFade
 	case to == "volume" || to == "command":
 		return 0
 	case fromAI && toAI:
@@ -270,6 +311,13 @@ func mixRing(a, b anim.Ring, p float64) anim.Ring {
 
 // compose draws the layer on top now and names it.
 func (s *Scene) compose(now time.Time, dt time.Duration) (anim.Screen, anim.Ring, string) {
+	if s.ringKind != "" && now.Sub(s.ringSeen) >= eventHold {
+		s.ringKind = ""
+	}
+	if s.ringKind != "" {
+		scr, ring := s.ringFrame(now.Sub(s.ringOn), now)
+		return scr, ring, "ring:" + s.ringKind
+	}
 	switch s.overlay {
 	case overlayVolume:
 		if t := now.Sub(s.ovStart); t < volumeHold {
@@ -304,7 +352,33 @@ func (s *Scene) compose(now time.Time, dt time.Duration) (anim.Screen, anim.Ring
 	if s.playing {
 		return s.musicScreen(now, dt), anim.Ring{}, "music"
 	}
+	if s.timerSecs > 0 && now.Sub(s.timerSeen) >= eventHold {
+		s.timerSecs = 0
+	}
+	if s.timerSecs > 0 {
+		t := now.Sub(s.timerOn)
+		if s.assets.TimerLoop != nil && t/timerSwap%2 == 0 {
+			return anim.Anim(s.assets.TimerLoop, t), anim.Ring{}, "timer"
+		}
+		return anim.TimeLeft(s.font, s.timerSecs), anim.Ring{}, "timer"
+	}
 	return anim.Clock(s.font, now, 3), anim.Ring{}, "clock"
+}
+
+// ringFrame draws a ring t into it. With the stock files gone it still shows.
+func (s *Scene) ringFrame(t time.Duration, now time.Time) (anim.Screen, anim.Ring) {
+	pattern, shot, color := s.assets.AlarmRing, s.assets.AlarmScreen, asset.RGB{R: 255, G: 90}
+	if s.ringKind == "timer" {
+		pattern, shot, color = s.assets.TimerRing, s.assets.TimerBell, asset.RGB{G: 255, B: 70}
+	}
+	ring := anim.RingBlink(color, t)
+	if pattern != nil {
+		ring = anim.Pattern(pattern, t)
+	}
+	if shot != nil {
+		return anim.Anim(shot, t), ring
+	}
+	return anim.Clock(s.font, now, 3), ring
 }
 
 // aiRing draws the ring for the current assistant state; t is the time since

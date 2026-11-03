@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// Event is one datagram. T selects the kind: "volume", "cmd", "audio", "ai".
+// Event is one datagram. T selects the kind: "volume", "cmd", "audio", "ai", "ring"
+// (A: alarm, timer, "" = over), "timer" (V: seconds left, 0 = none).
 type Event struct {
 	T     string    `json:"t"`
 	V     int       `json:"v,omitempty"`

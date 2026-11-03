@@ -174,3 +174,39 @@ func FlashRing(style, action string, t time.Duration) (Ring, bool) {
 	}
 	return r, true
 }
+
+// Pattern is the frame of a stock ring pattern at t; a pattern that does not
+// loop stays on its last frame.
+func Pattern(p *asset.RingPattern, t time.Duration) Ring {
+	var total time.Duration
+	for _, d := range p.Delays {
+		total += d
+	}
+	if total <= 0 {
+		return Ring(p.Frames[0])
+	}
+	if t >= total {
+		if !p.Loop {
+			return Ring(p.Frames[len(p.Frames)-1])
+		}
+		t %= total
+	}
+	for i, d := range p.Delays {
+		if t < d {
+			return Ring(p.Frames[i])
+		}
+		t -= d
+	}
+	return Ring(p.Frames[len(p.Frames)-1])
+}
+
+// RingBlink lights the whole ring in c, twice a second.
+func RingBlink(c asset.RGB, t time.Duration) Ring {
+	var r Ring
+	if t%(500*time.Millisecond) < 250*time.Millisecond {
+		for i := range r {
+			r[i] = c
+		}
+	}
+	return r
+}

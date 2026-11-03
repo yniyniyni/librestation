@@ -197,3 +197,22 @@ func (r *ringer) loopSound(ctx context.Context, name string) {
 		}
 	}
 }
+
+// showTimers keeps ledd told what is left on the nearest timer.
+func showTimers(ctx context.Context, m *alarms.Manager, led func(proto.Event)) {
+	t := time.NewTicker(ringEvery)
+	defer t.Stop()
+	shown := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			secs, ok := m.NearestTimer()
+			if ok || shown {
+				led(proto.Event{T: "timer", V: secs})
+			}
+			shown = ok
+		}
+	}
+}

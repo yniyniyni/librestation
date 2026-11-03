@@ -434,3 +434,25 @@ func TestRingLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestNearestTimer(t *testing.T) {
+	g := newRig(t)
+	if _, ok := g.m.NearestTimer(); ok {
+		t.Error("no timers")
+	}
+	long, _ := g.m.AddTimer(time.Hour, "")
+	short, _ := g.m.AddTimer(90*time.Second, "")
+	g.now = g.now.Add(500 * time.Millisecond)
+	if secs, ok := g.m.NearestTimer(); !ok || secs != 90 {
+		t.Errorf("rounds up: %d, %v", secs, ok)
+	}
+	// One that is running comes before one on hold, however short.
+	g.m.PauseTimer(short.ID)
+	if secs, _ := g.m.NearestTimer(); secs != 3600 {
+		t.Errorf("%d", secs)
+	}
+	g.m.CancelTimer(long.ID)
+	if secs, ok := g.m.NearestTimer(); !ok || secs != 90 {
+		t.Errorf("a paused one is still shown: %d, %v", secs, ok)
+	}
+}

@@ -412,3 +412,127 @@ func TestAIEmptyStateIsListening(t *testing.T) {
 		t.Fatal("empty state must equal listening")
 	}
 }
+
+func pattern(c asset.RGB) *asset.RingPattern {
+	var fr [24]asset.RGB
+	for i := range fr {
+		fr[i] = c
+	}
+	return &asset.RingPattern{Frames: [][24]asset.RGB{fr}, Delays: []time.Duration{time.Second}, Loop: true}
+}
+
+func ringAssets() Assets {
+	return Assets{AlarmScreen: flat(10), TimerBell: flat(20), TimerLoop: flat(30),
+		AlarmRing: pattern(asset.RGB{R: 200}), TimerRing: pattern(asset.RGB{G: 200})}
+}
+
+func TestRingIsOnTop(t *testing.T) {
+	s, c := newScene(ringAssets())
+	s.Playing(true)
+	s.AI(true, "speaking")
+	s.Volume(50, 1)
+	s.Ring("alarm")
+	c.add(40 * time.Millisecond)
+	scr, ring := s.Frame()
+	if scr[0] != 10 || ring[0] != (asset.RGB{R: 200}) {
+		t.Errorf("alarm: screen %d, ring %+v", scr[0], ring[0])
+	}
+	s.Ring("timer")
+	c.add(40 * time.Millisecond)
+	scr, ring = s.Frame()
+	if scr[0] != 20 || ring[0] != (asset.RGB{G: 200}) {
+		t.Errorf("timer: screen %d, ring %+v", scr[0], ring[0])
+	}
+}
+
+func TestRingEndFadesBack(t *testing.T) {
+	s, c := newScene(ringAssets())
+	s.Ring("alarm")
+	s.Frame()
+	s.Ring("")
+	c.add(40 * time.Millisecond)
+	if _, ring := s.Frame(); !lit(ring) {
+		t.Error("the ring went dark at once")
+	}
+	c.add(aiFade)
+	if _, ring := s.Frame(); lit(ring) {
+		t.Error("the ring is still on")
+	}
+}
+
+func TestRingWithoutFiles(t *testing.T) {
+	s, c := newScene(Assets{})
+	s.Ring("alarm")
+	lights := map[bool]bool{}
+	for range 20 {
+		c.add(50 * time.Millisecond)
+		s.Ring("alarm")
+		_, ring := s.Frame()
+		lights[lit(ring)] = true
+	}
+	if !lights[true] || !lights[false] {
+		t.Errorf("no blink: %v", lights)
+	}
+}
+
+// ledd must not keep ringing when voiced has gone away.
+func TestRingEndsWithoutEvents(t *testing.T) {
+	s, c := newScene(ringAssets())
+	s.Ring("alarm")
+	c.add(eventHold - time.Millisecond)
+	if _, ring := s.Frame(); ring[0] != (asset.RGB{R: 200}) {
+		t.Error("ended early")
+	}
+	c.add(time.Millisecond + aiFade)
+	s.Frame()
+	c.add(aiFade)
+	if _, ring := s.Frame(); lit(ring) {
+		t.Error("still ringing")
+	}
+}
+
+func TestTimerAlternatesWithClockSpot(t *testing.T) {
+	s, c := newScene(ringAssets())
+	s.Timer(65)
+	scr, _ := s.Frame()
+	if scr[0] != 30 {
+		t.Errorf("first the animation: %d", scr[0])
+	}
+	c.add(timerSwap)
+	s.Timer(60)
+	scr, _ = s.Frame()
+	if want := anim.Clock(asset.BuiltinFont(), time.Date(2000, 1, 1, 1, 0, 0, 0, time.UTC), 3); scr != want {
+		t.Error("then the time left")
+	}
+}
+
+func TestTimerLeavesMusicAndAssistant(t *testing.T) {
+	s, _ := newScene(ringAssets())
+	s.AI(true, "listening")
+	s.Timer(65)
+	scr, _ := s.Frame()
+	if scr[0] == 30 {
+		t.Error("over the assistant")
+	}
+	s.AI(false, "")
+	s.Playing(true)
+	scr, _ = s.Frame()
+	if scr[0] == 30 {
+		t.Error("over the music")
+	}
+}
+
+func TestTimerGoesWithoutEvents(t *testing.T) {
+	s, c := newScene(ringAssets())
+	s.Timer(65)
+	c.add(eventHold)
+	scr, _ := s.Frame()
+	if scr[0] == 30 {
+		t.Error("still shown")
+	}
+	s.Timer(65)
+	s.Timer(0)
+	if scr, _ := s.Frame(); scr[0] == 30 {
+		t.Error("shown after the end")
+	}
+}

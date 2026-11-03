@@ -228,6 +228,9 @@ func cmdRun(args []string) error {
 	}
 	dmn.Store(d)
 	go alm.Run(ctx)
+	if ledSend != nil {
+		go showTimers(ctx, alm, ledSend)
+	}
 
 	srv := &http.Server{Addr: opt.Listen, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

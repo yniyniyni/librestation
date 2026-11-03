@@ -192,8 +192,49 @@ type RingPattern struct {
 	Loop   bool
 }
 
+// parseGradient reads "P C P C ... ms".
+func parseGradient(f []string) (fr [ringLEDs]RGB, d time.Duration, ok bool) {
+	if len(f) < 5 || len(f)%2 != 1 {
+		return fr, 0, false
+	}
+	type stop struct {
+		at float64
+		c  RGB
+	}
+	var stops []stop
+	for i := 0; i+1 < len(f); i += 2 {
+		at, err := strconv.ParseFloat(f[i], 64)
+		v, err2 := strconv.ParseUint(f[i+1], 16, 32)
+		if err != nil || err2 != nil || len(f[i+1]) != 6 {
+			return fr, 0, false
+		}
+		stops = append(stops, stop{at, RGB{uint8(v >> 16), uint8(v >> 8), uint8(v)}})
+	}
+	ms, err := strconv.Atoi(f[len(f)-1])
+	if err != nil || ms < 0 {
+		return fr, 0, false
+	}
+	for i := range fr {
+		x := float64(i) / (ringLEDs - 1)
+		j := 0
+		for j+2 < len(stops) && x > stops[j+1].at {
+			j++
+		}
+		a, b := stops[j], stops[j+1]
+		t := 0.0
+		if b.at > a.at {
+			t = max(0, min(1, (x-a.at)/(b.at-a.at)))
+		}
+		mix := func(p, q uint8) uint8 { return uint8(float64(p) + (float64(q)-float64(p))*t + 0.5) }
+		fr[i] = RGB{mix(a.c.R, b.c.R), mix(a.c.G, b.c.G), mix(a.c.B, b.c.B)}
+	}
+	return fr, time.Duration(ms) * time.Millisecond, true
+}
+
 // ParseLED parses a .led pattern. Blank lines, '#' comments, "smooth N" and
-// "gammacorrection" are skipped, as are the unsupported "gradient" and "rotate" directives; "loop" sets Loop; every other line is 24 hex
+// "gammacorrection" are skipped, as is the unsupported "rotate" directive and a
+// "gradient" of another form; "gradient P C P C ms" is a frame of colors C at
+// positions P along the ring; "loop" sets Loop; every other line is 24 hex
 // colors followed by a duration in ms.
 func ParseLED(r io.Reader) (*RingPattern, error) {
 	p := &RingPattern{}
@@ -210,8 +251,14 @@ func ParseLED(r io.Reader) (*RingPattern, error) {
 			continue
 		case "smooth", "gammacorrection":
 			continue
-		case "gradient", "rotate":
-			continue // generator directives in some stock files; not frames, not supported
+		case "gradient":
+			if fr, d, ok := parseGradient(fields[1:]); ok {
+				p.Frames = append(p.Frames, fr)
+				p.Delays = append(p.Delays, d)
+			}
+			continue
+		case "rotate":
+			continue // a generator directive in some stock files; not a frame, not supported
 		}
 		if len(fields) != ringLEDs+1 {
 			return nil, fmt.Errorf("line %d: want %d colors and a duration, got %d fields", n, ringLEDs, len(fields))

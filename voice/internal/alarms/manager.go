@@ -375,6 +375,26 @@ func (t Timer) Remaining(now time.Time) time.Duration {
 	return max(t.EndsAt.Sub(now), 0)
 }
 
+// NearestTimer is the seconds left on the timer to show, rounded up: the running
+// one nearest its end, else the one on hold nearest it.
+func (m *Manager) NearestTimer() (int, bool) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var best time.Duration
+	bestPaused, found := false, false
+	for _, t := range m.st.Timers {
+		left := t.Remaining(now)
+		if !found || (bestPaused && !t.Paused) || (bestPaused == t.Paused && left < best) {
+			best, bestPaused, found = left, t.Paused, true
+		}
+	}
+	if !found {
+		return 0, false
+	}
+	return max(int((best+time.Second-1)/time.Second), 1), true
+}
+
 // AddTimer starts a timer.
 func (m *Manager) AddTimer(d time.Duration, title string) (Timer, error) {
 	if d <= 0 {

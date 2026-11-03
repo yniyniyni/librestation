@@ -106,6 +106,10 @@ func handleEvent(sc *scene.Scene, a *api, e proto.Event) {
 		sc.Volume(e.V, e.Dir)
 	case "cmd":
 		sc.Command(e.A)
+	case "ring":
+		sc.Ring(e.A)
+	case "timer":
+		sc.Timer(e.V)
 	case "audio":
 		sc.Audio(e.Level, bands12(e.Bands))
 	case "ai":
@@ -152,6 +156,33 @@ func loadAssets(dir string) scene.Assets {
 		}
 		as.Pulse[dir2] = set
 	}
+	gif := func(path ...string) *asset.Anim {
+		an, err := asset.LoadGIF(filepath.Join(append([]string{dir, "25x16"}, path...)...))
+		if err != nil {
+			return nil
+		}
+		n++
+		return an
+	}
+	led := func(name string) *asset.RingPattern {
+		f, err := os.Open(filepath.Join(dir, "ledpatterns", name))
+		if err != nil {
+			return nil
+		}
+		defer f.Close()
+		p, err := asset.ParseLED(f)
+		if err != nil {
+			log.Printf("ledd: %s: %v", name, err)
+			return nil
+		}
+		n++
+		return p
+	}
+	as.AlarmScreen = gif("alarm", "25x16_alarm_loop.gif")
+	as.TimerBell = gif("timer", "25x16_timer_bell.gif")
+	as.TimerLoop = gif("timer", "25x16_timer_loop.gif")
+	as.AlarmRing = led("budilnik-12.led")
+	as.TimerRing = led("timer.led")
 	log.Printf("ledd: loaded %d assets from %s", n, dir)
 	return as
 }
