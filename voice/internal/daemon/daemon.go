@@ -60,6 +60,8 @@ type Options struct {
 	// capture (nil = none); CommandsErr says why there is none.
 	Commands    *ycmd.Model
 	CommandsErr string
+	// LiveModel names the Gemini Live model for the panel.
+	LiveModel string
 	// Wake are Yandex's stock trigger words, run on channel 0 when switched on
 	// in the panel; WakeErr says why there are none.
 	Wake    []WakeModel
@@ -135,7 +137,7 @@ type QuickSettings struct {
 
 // AssistantSettings are the assistant's choices in the panel.
 type AssistantSettings struct {
-	Model string `json:"model,omitempty"` // "" = the judge's current model
+	Model string `json:"model,omitempty"` // the agent's, when Live is out; "" = the judge's current model
 	TTS   string `json:"tts"`             // "gemini" (default) or "piper"
 	Voice string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
 	City  string `json:"city,omitempty"`  // weather's default city

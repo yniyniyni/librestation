@@ -172,6 +172,7 @@ func cmdRun(args []string) error {
 		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, wakeWords, opt.Actuator, sol, vol, out, ledSend)
 		defer a.speaker.Close()
 		opt.Assistant = a.session
+		opt.LiveModel = ac.liveModel
 		opt.AssistantStatus = func() any { return a.session.Status() }
 		opt.SpotifyLinked = a.link.Linked
 		opt.PiperMissing = a.piperDown.Load

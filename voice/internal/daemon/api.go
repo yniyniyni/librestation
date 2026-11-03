@@ -162,6 +162,7 @@ type assistantView struct {
 	SpotifyLinked *bool             `json:"spotify_linked"` // null until checked
 	PiperMissing  bool              `json:"piper_missing"`  // Piper did not start: replies use Gemini's voice
 	Settings      AssistantSettings `json:"settings"`
+	LiveModel     string            `json:"live_model"`    // the model conversations run on
 	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's current model
 }
 
@@ -263,7 +264,7 @@ func (d *Daemon) live() liveView {
 // callbacks return at once (they read cached values).
 func (d *Daemon) assistantViewLocked() assistantView {
 	v := assistantView{Available: d.opt.Assistant != nil, Settings: d.settings.Assistant,
-		DefaultModel: d.assistantDefaultModelLocked()}
+		LiveModel: d.opt.LiveModel, DefaultModel: d.assistantDefaultModelLocked()}
 	if v.Settings.TTS == "" {
 		v.Settings.TTS = "gemini"
 	}
