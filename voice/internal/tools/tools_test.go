@@ -170,3 +170,41 @@ func TestPlaybackDescriptionSaysWhenToPlay(t *testing.T) {
 		t.Errorf("description does not steer bare \"play music\" to play: %q", d)
 	}
 }
+
+func TestPlaybackShuffle(t *testing.T) {
+	var got []bool
+	p := Playback{Shuffle: func(_ context.Context, on bool) error { got = append(got, on); return nil }}
+	for _, a := range []string{"shuffle_on", "shuffle_off"} {
+		if _, err := p.Run(context.Background(), map[string]any{"action": a}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(got) != 2 || !got[0] || got[1] {
+		t.Errorf("got %v", got)
+	}
+	if _, err := (Playback{}).Run(context.Background(), map[string]any{"action": "shuffle_on"}); err == nil {
+		t.Error("no shuffle: want an error")
+	}
+}
+
+func TestPlaybackSeek(t *testing.T) {
+	var pos time.Duration
+	var rel bool
+	p := Playback{Seek: func(d time.Duration, r bool) error { pos, rel = d, r; return nil }}
+	run := func(a string, v any) error {
+		_, err := p.Run(context.Background(), map[string]any{"action": a, "value": v})
+		return err
+	}
+	if err := run("seek_by", -30.0); err != nil || pos != -30*time.Second || !rel {
+		t.Errorf("by: %v %v %v", err, pos, rel)
+	}
+	if err := run("seek_to", 0.0); err != nil || pos != 0 || rel {
+		t.Errorf("to: %v %v %v", err, pos, rel)
+	}
+	if run("seek_to", -1.0) == nil || run("seek_by", nil) == nil {
+		t.Error("a bad value: want an error")
+	}
+	if _, err := (Playback{}).Run(context.Background(), map[string]any{"action": "seek_by", "value": 5.0}); err == nil {
+		t.Error("no seek: want an error")
+	}
+}

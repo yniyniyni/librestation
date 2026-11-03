@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +28,7 @@ func musicClient(t *testing.T, api http.HandlerFunc) *spotifyapi.Client {
 	return c
 }
 
-const currentJSON = `{"item":{"type":"track","uri":"spotify:track:t1","name":"Starboy","artists":[{"name":"The Weeknd"}]}}`
+const currentJSON = `{"item":{"type":"track","uri":"spotify:track:t1","name":"Starboy","artists":[{"name":"The Weeknd"}],"album":{"uri":"spotify:album:a","name":"Starboy LP"}}}`
 
 func TestLikeCurrentTrack(t *testing.T) {
 	var method, uris string
@@ -56,7 +57,7 @@ func TestLikeCurrentTrack(t *testing.T) {
 func TestNowPlaying(t *testing.T) {
 	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(currentJSON)) })
 	res, err := NowPlaying{S: c}.Run(context.Background(), nil)
-	if err != nil || res["track"] != "Starboy" || res["artist"] != "The Weeknd" {
+	if err != nil || res["track"] != "Starboy" || res["artist"] != "The Weeknd" || res["album"] != "Starboy LP" {
 		t.Errorf("res=%v err=%v", res, err)
 	}
 	idle := musicClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -99,5 +100,132 @@ func TestMusicNotLinked(t *testing.T) {
 		if err := run(); !errors.Is(err, spotifyapi.ErrNotLinked) {
 			t.Errorf("err = %v", err)
 		}
+	}
+}
+
+func TestPlayLikedNeedsNoQuery(t *testing.T) {
+	var ctxURI string
+	var shuffled []bool
+	shuffleDelay = 0
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			var b struct {
+				URI string `json:"context_uri"`
+			}
+			json.NewDecoder(r.Body).Decode(&b)
+			ctxURI = b.URI
+		default:
+			t.Errorf("unexpected %s", r.URL)
+		}
+	})
+	res, err := PlayMusic{S: c, Shuffle: func(_ context.Context, on bool) error {
+		shuffled = append(shuffled, on)
+		return nil
+	}}.Run(context.Background(), map[string]any{"kind": "liked", "shuffle": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctxURI != "spotify:collection" || len(shuffled) != 1 || !shuffled[0] || res["kind"] != "liked" {
+		t.Errorf("context %q, shuffle %v, res %v", ctxURI, shuffled, res)
+	}
+}
+
+const oneTrackJSON = `{"tracks":{"items":[{"uri":"spotify:track:s","name":"Starboy","artists":[{"name":"The Weeknd"}],"album":{"uri":"spotify:album:a"}}]}}`
+
+func TestPlayTrackThroughItsStation(t *testing.T) {
+	var played int
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/search" {
+			w.Write([]byte(oneTrackJSON))
+			return
+		}
+		played++
+	})
+	var track string
+	_, err := PlayMusic{S: c, Radio: func(_ context.Context, u string) error { track = u; return nil }}.
+		Run(context.Background(), map[string]any{"query": "starboy the weeknd", "kind": "track"})
+	if err != nil || track != "spotify:track:s" || played != 0 {
+		t.Errorf("err %v, station of %q, %d Web API calls", err, track, played)
+	}
+}
+
+// No station: the album and its autoplay still follow the track.
+func TestPlayTrackWithoutStationUsesItsAlbum(t *testing.T) {
+	var album string
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/search":
+			w.Write([]byte(oneTrackJSON))
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			var b struct {
+				URI string `json:"context_uri"`
+			}
+			json.NewDecoder(r.Body).Decode(&b)
+			album = b.URI
+		}
+	})
+	_, err := PlayMusic{S: c, Radio: func(context.Context, string) error { return errors.New("no") }}.
+		Run(context.Background(), map[string]any{"query": "starboy the weeknd", "kind": "track"})
+	if err != nil || album != "spotify:album:a" {
+		t.Errorf("err %v, album %q", err, album)
+	}
+}
+
+// The DJ started from here breaks playback, so it does not touch it.
+func TestDJLeavesPlaybackAlone(t *testing.T) {
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) { t.Errorf("unexpected %s", r.URL) })
+	if _, err := (PlayMusic{S: c}).Run(context.Background(), map[string]any{"kind": "dj"}); err == nil {
+		t.Fatal("want an error telling what to do")
+	}
+}
+
+func TestPlayCurrentAlbumFromStart(t *testing.T) {
+	shuffleDelay = 0
+	var body struct {
+		URI    string `json:"context_uri"`
+		Offset struct {
+			Position *int `json:"position"`
+		} `json:"offset"`
+	}
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/me/player/currently-playing":
+			w.Write([]byte(`{"item":{"type":"track","uri":"spotify:track:t","name":"T","artists":[{"name":"A"}],"album":{"uri":"spotify:album:b","name":"B"}}}`))
+		case "/v1/me/player/devices":
+			w.Write([]byte(`{"devices":[{"id":"D1","name":"Станция","is_active":true}]}`))
+		case "/v1/me/player/play":
+			json.NewDecoder(r.Body).Decode(&body)
+		default:
+			t.Errorf("unexpected %s", r.URL)
+		}
+	})
+	var shuffled []bool
+	res, err := PlayMusic{S: c, Shuffle: func(_ context.Context, on bool) error {
+		shuffled = append(shuffled, on)
+		return nil
+	}}.Run(context.Background(), map[string]any{"kind": "current_album"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body.URI != "spotify:album:b" || body.Offset.Position == nil || *body.Offset.Position != 0 {
+		t.Errorf("body %+v", body)
+	}
+	if len(shuffled) != 1 || shuffled[0] {
+		t.Errorf("shuffle %v, want off", shuffled)
+	}
+	if res["playing"] != "B" || res["kind"] != "album" {
+		t.Errorf("res %v", res)
+	}
+}
+
+func TestPlayCurrentAlbumNothingPlaying(t *testing.T) {
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	if _, err := (PlayMusic{S: c}).Run(context.Background(), map[string]any{"kind": "current_album"}); err == nil {
+		t.Error("want an error")
 	}
 }

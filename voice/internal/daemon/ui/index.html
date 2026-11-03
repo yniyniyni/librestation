@@ -239,11 +239,16 @@
           <div id="asstoff" class="muted" hidden>Нет ключа Gemini. Запустите ./setup, он спросит ключ.</div>
           <div class="field" id="asstspotifyrow"><span>Spotify</span><span id="asstspotify" class="muted"></span></div>
           <div id="asstnopiper" class="warn small" hidden>Piper не запустился, ответы идут голосом Gemini.</div>
-          <label class="field asst"><span>Модель</span><select id="asstmodel"></select></label>
-          <label class="field asst"><span>Озвучка</span><select id="assttts"><option value="gemini">Gemini: живее, через интернет</option><option value="piper">Piper: на колонке, без интернета</option></select></label>
-          <label class="field asst" id="asstvoicerow"><span>Голос Gemini</span><input type="text" id="asstvoice" maxlength="64" placeholder="Kore"></label>
+          <div class="field asst"><span>Модель разговора</span><span id="asstlive" class="muted"></span></div>
+          <label class="field asst"><span>Запасная модель<br><span class="muted small">если Live недоступен</span></span><select id="asstmodel"></select></label>
+          <label class="field asst"><span>Озвучка запасной модели</span><select id="assttts"><option value="gemini">Gemini: живее, через интернет</option><option value="piper">Piper: на колонке, без интернета</option></select></label>
+          <label class="field asst" id="asstvoicerow"><span>Голос</span><input type="text" id="asstvoice" maxlength="64" placeholder="Kore"></label>
           <label class="field asst"><span>Город для погоды</span><input type="text" id="asstcity" maxlength="64" placeholder="Москва"></label>
         </div>
+      </div>
+      <div id="stockwakegroup" hidden>
+        <h2 class="gtitle">Слова-триггеры</h2>
+        <div class="group" id="stockwake"></div>
       </div>
       <div>
         <h2 class="gtitle">Быстрые команды</h2>
@@ -512,10 +517,15 @@ function renderSettings(s) {
     if (a.settings.model && !ids.includes(a.settings.model)) ids.push(a.settings.model);
     fillSelect($("asstmodel"), modelOptions(s.judge.models, ids, `<option value="">как у проверки (${esc(a.default_model)})</option>`), a.settings.model || "");
     setValue($("assttts"), a.settings.tts);
-    $("asstvoicerow").hidden = a.settings.tts !== "gemini";
+    $("asstlive").textContent = a.live_model || "";
     setValue($("asstvoice"), a.settings.voice || "");
     setValue($("asstcity"), a.settings.city || "");
   }
+  const sw = s.stock_wake;
+  $("stockwakegroup").hidden = !sw.words.length && !sw.error;
+  setHTML($("stockwake"), sw.words.length
+    ? sw.words.map(w => `<label class="field"><span>${esc(w.name)}<br><span class="muted small">Готовое слово Яндекса, запись не нужна</span></span><input type="checkbox" class="sw" data-stockwake="${esc(w.id)}" ${w.on ? "checked" : ""}></label>`).join("")
+    : `<div class="muted">Готовые слова «Алиса» и «Яндекс»: ${esc(sw.error)}</div>`);
   const q = s.quick;
   $("quickerr").hidden = q.available;
   $("quickerr").textContent = q.available ? "" : "Недоступны: " + (q.error || "модель Яндекса не загружена");
@@ -687,6 +697,7 @@ document.addEventListener("change", (ev) => {
   if (t.id === "ledauto" || t.id === "ledbright" || ds.led) { saveLED(); done(); }
   if ("quickon" in ds) run(null, () => api("PATCH", "/settings", { quick: { off: !t.checked } }));
   if (ds.quick) run(null, () => api("PATCH", "/settings", { quick: { group: ds.quick, on: t.checked } }));
+  if (ds.stockwake) run(null, () => api("PATCH", "/settings", { stock_wake: { [ds.stockwake]: t.checked } }));
   if (ds.enable) run(null, () => api("PATCH", "/words/" + ds.enable, { enabled: t.checked }));
   if (ds.action !== undefined) run(null, async () => { await api("PATCH", "/words/" + ds.action, { action: t.value || "none" }); done(); });
   if (ds.sens) run(null, async () => { await api("PATCH", "/words/" + ds.sens, { sensitivity: parseFloat(t.value) }); done(); });

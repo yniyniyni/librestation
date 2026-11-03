@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,10 +34,15 @@ const (
 
 // Item is something playable.
 type Item struct {
-	Kind   string // track, artist, album, playlist
+	Kind   string // track, artist, album, playlist, liked
 	URI    string
 	Name   string
 	Artist string // for tracks and albums
+	Album  string // a track's album URI
+	// AlbumName is the name of a track's album, when it is known.
+	AlbumName string
+	// FromStart plays a context from its first track.
+	FromStart bool
 }
 
 // Client talks to the Web API as the user whose refresh token is in TokenFile.
@@ -55,6 +61,8 @@ type Client struct {
 	expires    time.Time
 	revokedAt  time.Time // when invalid_grant was seen; zero = not revoked
 	revokedMod time.Time // token file mtime at that moment
+	lists      []Item    // the user's playlists, as of listsAt
+	listsAt    time.Time
 }
 
 // New returns a client with default hosts and a 10 s timeout.
@@ -297,12 +305,17 @@ type artistRef struct {
 	Name string `json:"name"`
 }
 
+type albumRef struct {
+	URI string `json:"uri"`
+}
+
 type searchResp struct {
 	Tracks struct {
 		Items []struct {
 			URI     string      `json:"uri"`
 			Name    string      `json:"name"`
 			Artists []artistRef `json:"artists"`
+			Album   albumRef    `json:"album"`
 		} `json:"items"`
 	} `json:"tracks"`
 	Artists struct {
@@ -334,60 +347,192 @@ func firstArtist(a []artistRef) string {
 	return a[0].Name
 }
 
-// Search finds one item. kind is track, artist, album, playlist or any.
+const (
+	// searchLimit is how many results of each type are weighed; 10 is the most
+	// Spotify gives a development app.
+	searchLimit = "10"
+	// rankStep is how much each place in Spotify's own order costs: its order
+	// decides between names that sound alike.
+	rankStep = 0.01
+	// albumCost and playlistCost: asked for by name alone, a song or an artist
+	// is meant before an album of that name, and that before someone's playlist.
+	albumCost    = 0.05
+	playlistCost = 0.1
+	// minMatch is the similarity below which the names found say nothing about
+	// the query: Spotify's first track goes, it searches more than names.
+	minMatch = 0.5
+)
+
+// best keeps the highest-scoring item.
+type best struct {
+	it    Item
+	score float64
+}
+
+func (b *best) offer(it Item, score float64) {
+	if b.it.URI == "" || score > b.score {
+		b.it, b.score = it, score
+	}
+}
+
+// Search finds one item. kind is track, artist, album, playlist or any. The
+// results are weighed against the query by how the names sound: Spotify's
+// first answer to a name spelled in the wrong alphabet is often a stranger.
 func (c *Client) Search(ctx context.Context, q, kind string) (Item, error) {
-	typ, limit := kind, "1"
+	typ := kind
 	switch kind {
 	case "track", "artist", "album", "playlist":
 	case "any", "":
-		kind, typ, limit = "any", "track,artist,album,playlist", "5"
+		kind, typ = "any", "track,artist,album,playlist"
 	default:
 		return Item{}, fmt.Errorf("spotify: неизвестный тип %q", kind)
 	}
 	var r searchResp
-	_, err := c.call(ctx, http.MethodGet, "/v1/search", url.Values{"q": {q}, "type": {typ}, "limit": {limit}}, nil, &r)
+	_, err := c.call(ctx, http.MethodGet, "/v1/search", url.Values{"q": {q}, "type": {typ}, "limit": {searchLimit}}, nil, &r)
 	if err != nil {
 		return Item{}, err
 	}
-	if kind == "any" {
-		for _, a := range r.Artists.Items {
-			if strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(q)) {
-				return Item{Kind: "artist", URI: a.URI, Name: a.Name}, nil
-			}
+	it, ok := pick(r, q, kind)
+	if !ok && hasCyrillic(q) {
+		// Nothing at all: a foreign name spelled in Russian letters.
+		var l searchResp
+		if _, err := c.call(ctx, http.MethodGet, "/v1/search", url.Values{"q": {toLatin(q)}, "type": {typ}, "limit": {searchLimit}}, nil, &l); err != nil {
+			return Item{}, err
 		}
-		if len(r.Tracks.Items) > 0 {
-			t := r.Tracks.Items[0]
-			return Item{Kind: "track", URI: t.URI, Name: t.Name, Artist: firstArtist(t.Artists)}, nil
-		}
-		// Nothing as a track: fall through to the other kinds in order.
-		kind = ""
+		it, ok = pick(l, q, kind)
 	}
-	if kind == "track" || kind == "" {
-		if len(r.Tracks.Items) > 0 {
-			t := r.Tracks.Items[0]
-			return Item{Kind: "track", URI: t.URI, Name: t.Name, Artist: firstArtist(t.Artists)}, nil
+	if !ok {
+		return Item{}, fmt.Errorf("spotify: ничего не найдено по запросу %q", q)
+	}
+	return it, nil
+}
+
+// pick chooses from the results what the query most likely names.
+func pick(r searchResp, q, kind string) (Item, bool) {
+	want := func(k string) bool { return kind == "any" || kind == k }
+	var b best
+	for i, t := range r.Tracks.Items {
+		if !want("track") {
+			break
+		}
+		artist := firstArtist(t.Artists)
+		s := max(similar(q, t.Name), similar(q, artist+" "+t.Name), similar(q, t.Name+" "+artist))
+		b.offer(Item{Kind: "track", URI: t.URI, Name: t.Name, Artist: artist, Album: t.Album.URI}, s-float64(i)*rankStep)
+	}
+	for i, a := range r.Artists.Items {
+		if !want("artist") {
+			break
+		}
+		b.offer(Item{Kind: "artist", URI: a.URI, Name: a.Name}, similar(q, a.Name)-float64(i)*rankStep)
+	}
+	for i, a := range r.Albums.Items {
+		if !want("album") {
+			break
+		}
+		artist := firstArtist(a.Artists)
+		s := max(similar(q, a.Name), similar(q, artist+" "+a.Name))
+		b.offer(Item{Kind: "album", URI: a.URI, Name: a.Name, Artist: artist}, s-albumCost-float64(i)*rankStep)
+	}
+	for i, p := range r.Playlists.Items {
+		if p != nil && want("playlist") {
+			b.offer(Item{Kind: "playlist", URI: p.URI, Name: p.Name}, similar(q, p.Name)-playlistCost-float64(i)*rankStep)
 		}
 	}
-	if kind == "artist" || kind == "" {
-		if len(r.Artists.Items) > 0 {
-			a := r.Artists.Items[0]
-			return Item{Kind: "artist", URI: a.URI, Name: a.Name}, nil
-		}
+	if b.it.URI == "" {
+		return Item{}, false
 	}
-	if kind == "album" || kind == "" {
-		if len(r.Albums.Items) > 0 {
-			a := r.Albums.Items[0]
-			return Item{Kind: "album", URI: a.URI, Name: a.Name, Artist: firstArtist(a.Artists)}, nil
-		}
+	if b.score < minMatch && kind == "any" && len(r.Tracks.Items) > 0 {
+		t := r.Tracks.Items[0]
+		return Item{Kind: "track", URI: t.URI, Name: t.Name, Artist: firstArtist(t.Artists), Album: t.Album.URI}, true
 	}
-	if kind == "playlist" || kind == "" {
-		for _, p := range r.Playlists.Items {
+	return b.it, true
+}
+
+// Liked is the user's Liked Songs: a context Spotify plays like an album, and
+// it goes on to its autoplay at the end.
+func Liked() Item {
+	return Item{Kind: "liked", URI: "spotify:collection", Name: "Любимые треки"}
+}
+
+// ErrNoPlaylistAccess is the answer to asking for the user's playlists on a
+// token linked before that permission was asked for.
+var ErrNoPlaylistAccess = errors.New("spotify: нет доступа к плейлистам, привяжи Spotify заново через ./setup")
+
+const (
+	// playlistsTTL is how long the user's playlists are kept: they change
+	// rarely, and a request should not wait for the list.
+	playlistsTTL = 10 * time.Minute
+	// maxPlaylistPages bounds the list, 50 to a page.
+	maxPlaylistPages = 4
+	// minPlaylistMatch is the similarity at which a name is the playlist meant.
+	minPlaylistMatch = 0.4
+	// namesInError is how many playlist names a miss lists, for the model to
+	// choose from.
+	namesInError = 30
+)
+
+// playlists returns the user's own and followed playlists.
+func (c *Client) playlists(ctx context.Context) ([]Item, error) {
+	c.mu.Lock()
+	if c.lists != nil && c.clock().Sub(c.listsAt) < playlistsTTL {
+		defer c.mu.Unlock()
+		return c.lists, nil
+	}
+	c.mu.Unlock()
+	lists := []Item{}
+	for page := 0; page < maxPlaylistPages; page++ {
+		var r struct {
+			Items []*struct {
+				URI  string `json:"uri"`
+				Name string `json:"name"`
+			} `json:"items"`
+			Next string `json:"next"`
+		}
+		q := url.Values{"limit": {"50"}, "offset": {strconv.Itoa(page * 50)}}
+		status, err := c.call(ctx, http.MethodGet, "/v1/me/playlists", q, nil, &r)
+		if status == http.StatusForbidden {
+			return nil, ErrNoPlaylistAccess
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range r.Items {
 			if p != nil {
-				return Item{Kind: "playlist", URI: p.URI, Name: p.Name}, nil
+				lists = append(lists, Item{Kind: "playlist", URI: p.URI, Name: p.Name})
 			}
 		}
+		if r.Next == "" {
+			break
+		}
 	}
-	return Item{}, fmt.Errorf("spotify: ничего не найдено по запросу %q", q)
+	c.mu.Lock()
+	c.lists, c.listsAt = lists, c.clock()
+	c.mu.Unlock()
+	return lists, nil
+}
+
+// MyPlaylist finds the user's playlist by name. A miss lists the names, so the
+// model can pick the one the user meant, which a comparison of sounds cannot.
+func (c *Client) MyPlaylist(ctx context.Context, q string) (Item, error) {
+	lists, err := c.playlists(ctx)
+	if err != nil {
+		return Item{}, err
+	}
+	var b best
+	names := make([]string, 0, namesInError)
+	for _, p := range lists {
+		b.offer(p, similar(q, p.Name))
+		if len(names) < namesInError {
+			names = append(names, p.Name)
+		}
+	}
+	if b.it.URI == "" {
+		return Item{}, errors.New("spotify: плейлистов нет")
+	}
+	if b.score < minPlaylistMatch {
+		return Item{}, fmt.Errorf("spotify: нет плейлиста %q; есть: %s", q, strings.Join(names, "; "))
+	}
+	return b.it, nil
 }
 
 type device struct {
@@ -449,10 +594,19 @@ func (c *Client) Play(ctx context.Context, it Item) error {
 		return err
 	}
 	body := map[string]any{}
-	if it.Kind == "track" {
+	switch {
+	case it.Kind == "track" && it.Album != "":
+		// In its album's context, not alone: a lone track stops at its end,
+		// while a context goes on to Spotify's autoplay.
+		body["context_uri"] = it.Album
+		body["offset"] = map[string]any{"uri": it.URI}
+	case it.Kind == "track":
 		body["uris"] = []string{it.URI}
-	} else {
+	default:
 		body["context_uri"] = it.URI
+		if it.FromStart {
+			body["offset"] = map[string]any{"position": 0}
+		}
 	}
 	play := func() (int, error) {
 		return c.call(ctx, http.MethodPut, "/v1/me/player/play", url.Values{"device_id": {d.ID}}, body, nil)
@@ -480,6 +634,10 @@ func (c *Client) Current(ctx context.Context) (Item, bool, error) {
 			URI     string      `json:"uri"`
 			Name    string      `json:"name"`
 			Artists []artistRef `json:"artists"`
+			Album   struct {
+				URI  string `json:"uri"`
+				Name string `json:"name"`
+			} `json:"album"`
 		} `json:"item"`
 	}
 	status, err := c.call(ctx, http.MethodGet, "/v1/me/player/currently-playing", nil, nil, &r)
@@ -493,7 +651,8 @@ func (c *Client) Current(ctx context.Context) (Item, bool, error) {
 	if kind == "" {
 		kind = "track"
 	}
-	return Item{Kind: kind, URI: r.Item.URI, Name: r.Item.Name, Artist: firstArtist(r.Item.Artists)}, true, nil
+	return Item{Kind: kind, URI: r.Item.URI, Name: r.Item.Name, Artist: firstArtist(r.Item.Artists),
+		Album: r.Item.Album.URI, AlbumName: r.Item.Album.Name}, true, nil
 }
 
 // SetLiked saves a track to (or removes it from) the user's library.

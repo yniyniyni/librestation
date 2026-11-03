@@ -243,6 +243,78 @@ func TestEventsBeforeApplyIgnored(t *testing.T) {
 	}
 }
 
+// Soloist restarted: it reports its --initial-volume, which must not become
+// the user's volume, and gets ours back.
+func TestSoloistRestartKeepsTheVolume(t *testing.T) {
+	s, f, _ := newSync(t, "40")
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	s.OnEvent(soloist.Event{Type: soloist.EventConnected})
+	s.OnEvent(vol(15))
+	deadline := time.Now().Add(2 * time.Second)
+	for len(f.got()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.got(); len(got) != 2 || got[1] != 40 {
+		t.Errorf("sent %v, want 40 twice", got)
+	}
+	if s.Volume() != 40 {
+		t.Errorf("volume %d, want 40", s.Volume())
+	}
+}
+
+// Taking the device back, Spotify reports the volume it last knew; that is not
+// the user's, while a slider moved later is.
+func TestBecomingActiveKeepsTheVolume(t *testing.T) {
+	s, f, _ := newSync(t, "38")
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	now = now.Add(time.Minute)
+	on, off := true, false
+	s.OnEvent(soloist.Event{Type: "playback_state", Active: &off})
+	stale := 31
+	s.OnEvent(soloist.Event{Type: "playback_state", Active: &on, Volume: &stale})
+	if s.Volume() != 38 {
+		t.Fatalf("volume %d, want 38", s.Volume())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for len(f.got()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.got(); len(got) != 2 || got[1] != 38 {
+		t.Errorf("sent %v, want 38 again", got)
+	}
+	now = now.Add(activeGrace)
+	s.OnEvent(vol(50))
+	if s.Volume() != 50 {
+		t.Errorf("slider: volume %d, want 50", s.Volume())
+	}
+}
+
+func TestStepAtTheLimitStillShows(t *testing.T) {
+	s, f, _ := newSync(t, "100")
+	var out []int
+	s.Out = func(v int) { out = append(out, v) }
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	sent := len(f.got())
+	out = nil
+	if err := s.Step(5); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.got()) != sent {
+		t.Errorf("sent %v at the limit", f.got())
+	}
+	if len(out) != 1 || out[0] != 100 {
+		t.Errorf("out %v, want the limit shown again", out)
+	}
+}
+
 func TestRunRetriesUntilApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "volume")
 	f := &fakeSetter{err: soloist.ErrNotConnected}

@@ -2,6 +2,7 @@ package soloist
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -159,7 +160,11 @@ func TestNotConnectedErrors(t *testing.T) {
 func TestVolumeFromEvents(t *testing.T) {
 	f := newFake(t)
 	evs := make(chan Event, 8)
-	c := dial(t, f.url(), func(e Event) { evs <- e })
+	c := dial(t, f.url(), func(e Event) {
+		if e.Type != EventConnected {
+			evs <- e
+		}
+	})
 	sc := f.conn(t)
 	if _, ok := c.Volume(); ok {
 		t.Fatal("volume known too early")
@@ -214,7 +219,11 @@ func TestClientReconnects(t *testing.T) {
 func TestErrorEventIsNotFatal(t *testing.T) {
 	f := newFake(t)
 	evs := make(chan Event, 8)
-	c := dial(t, f.url(), func(e Event) { evs <- e })
+	c := dial(t, f.url(), func(e Event) {
+		if e.Type != EventConnected {
+			evs <- e
+		}
+	})
 	sc := f.conn(t)
 	waitConnected(t, c)
 	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"error","message":"not logged in"}`))
@@ -230,5 +239,187 @@ func TestErrorEventIsNotFatal(t *testing.T) {
 	case <-f.conns:
 		t.Fatal("reconnected after error event")
 	case <-time.After(1500 * time.Millisecond):
+	}
+}
+
+func TestConnectEvent(t *testing.T) {
+	f := newFake(t)
+	evs := make(chan Event, 8)
+	dial(t, f.url(), func(e Event) { evs <- e })
+	f.conn(t)
+	select {
+	case e := <-evs:
+		if e.Type != EventConnected {
+			t.Errorf("event %+v, want the connect first", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no connect event")
+	}
+}
+
+func TestPlayRadioPutsTheTrackFirst(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayRadio(context.Background(), "spotify:track:x") }()
+	if got := f.msg(t); got != `{"type":"command","command":"play","uri":"spotify:station:track:x"}` {
+		t.Fatalf("got %s", got)
+	}
+	ctx := context.Background()
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"}}`))
+	if got := f.msg(t); got != `{"type":"command","command":"add_to_queue","uri":"spotify:track:x"}` {
+		t.Fatalf("got %s", got)
+	}
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"buffering","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:other"}}`))
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:other"}}`))
+	if got := f.msg(t); got != `{"type":"command","command":"skip_next"}` {
+		t.Fatalf("got %s", got)
+	}
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"spotify:track:x"}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlayRadioRefused(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayRadio(context.Background(), "spotify:track:x") }()
+	f.msg(t)
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"error","message":"play requires a valid playable Spotify URI"}`))
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "playable") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPlayRadioNeedsATrack(t *testing.T) {
+	c := dial(t, newFake(t).url(), nil)
+	if err := c.PlayRadio(context.Background(), "spotify:album:x"); err == nil {
+		t.Fatal("want an error")
+	}
+}
+
+func TestSetShuffleWaitsForTheState(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.SetShuffle(context.Background(), true) }()
+	if got := f.msg(t); got != `{"type":"command","command":"set_shuffle","enabled":true}` {
+		t.Fatalf("got %s", got)
+	}
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"playback_state","options":{"shuffle":true}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A track queued earlier plays first: skip on to the one asked for.
+func TestPlayRadioSkipsEarlierQueue(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.PlayRadio(context.Background(), "spotify:track:x") }()
+	f.msg(t)
+	ctx := context.Background()
+	state := func(item string) {
+		sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","context":{"uri":"spotify:station:track:x"},"item":{"uri":"`+item+`"}}`))
+	}
+	state("spotify:track:first")
+	f.msg(t) // add_to_queue
+	f.msg(t) // skip_next
+	state("spotify:track:queued")
+	if got := f.msg(t); got != `{"type":"command","command":"skip_next"}` {
+		t.Fatalf("got %s", got)
+	}
+	state("spotify:track:x")
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSeekRelative(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	if err := c.Seek(30*time.Second, true); err == nil {
+		t.Fatal("nothing playing: want an error")
+	}
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"playback_state","status":"paused","item":{"uri":"spotify:track:t"},"position":{"position_ms":100000,"speed":0}}`))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := c.Seek(30*time.Second, true)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"seek","position_ms":130000}` {
+		t.Fatalf("got %s", got)
+	}
+	if err := c.Seek(-5*time.Minute, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"seek","position_ms":0}` {
+		t.Fatalf("before the start: got %s", got)
+	}
+	if err := c.Seek(time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"seek","position_ms":60000}` {
+		t.Fatalf("absolute: got %s", got)
+	}
+}
+
+// A position_sync moves the position while playing, between the states.
+func TestSeekFollowsPlayback(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	ctx := context.Background()
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:t"},"position":{"position_ms":0,"speed":1}}`))
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"position_sync","position":{"position_ms":50000,"speed":1}}`))
+	if !c.wait(ctx, 5*time.Second, func() bool { return c.posMs == 50000 }) {
+		t.Fatal("position_sync not taken")
+	}
+	if err := c.Seek(10*time.Second, true); err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		PositionMs int64 `json:"position_ms"`
+	}
+	if err := json.Unmarshal([]byte(f.msg(t)), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.PositionMs < 60000 || m.PositionMs > 62000 {
+		t.Errorf("position %d, want just past 60000", m.PositionMs)
+	}
+}
+
+// Soloist reports shuffle in an event of its own.
+func TestSetShuffleSeesOptionsChanged(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	done := make(chan error, 1)
+	go func() { done <- c.SetShuffle(context.Background(), true) }()
+	f.msg(t)
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"options_changed","options":{"shuffle":true}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

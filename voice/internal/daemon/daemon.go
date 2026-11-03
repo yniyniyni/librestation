@@ -20,7 +20,6 @@ import (
 
 	miccap "voice/internal/capture"
 	"voice/internal/dsp"
-	"voice/internal/frontend"
 	"voice/internal/judge"
 	"voice/internal/kws"
 	"voice/internal/led/proto"
@@ -61,6 +60,18 @@ type Options struct {
 	// capture (nil = none); CommandsErr says why there is none.
 	Commands    *ycmd.Model
 	CommandsErr string
+	// LiveModel names the Gemini Live model for the panel.
+	LiveModel string
+	// Wake are Yandex's stock trigger words, run on channel 0 when switched on
+	// in the panel; WakeErr says why there are none.
+	Wake    []WakeModel
+	WakeErr string
+}
+
+// WakeModel is one stock trigger word.
+type WakeModel struct {
+	ID, Name string
+	Model    *ycmd.Model
 }
 
 // VolumeControl is the volume behind the API. Its calls may wait for Soloist,
@@ -100,7 +111,6 @@ type Assistant interface {
 
 // Settings is persisted in <data>/settings.json.
 type Settings struct {
-	Gain   float64                  `json:"gain"`    // frontend output gain
 	DryRun bool                     `json:"dry_run"` // log hits without acting
 	Words  map[string]*WordSettings `json:"words"`
 	// JudgeOff stops sending hits to the audio model even with a key.
@@ -114,6 +124,8 @@ type Settings struct {
 	Assistant AssistantSettings `json:"assistant"`
 	// Quick switches Yandex's quick commands.
 	Quick QuickSettings `json:"quick"`
+	// StockWake are the stock trigger words switched on, by id.
+	StockWake map[string]bool `json:"stock_wake,omitempty"`
 }
 
 // QuickSettings turn Yandex's quick commands off, all or by group (pause,
@@ -125,7 +137,7 @@ type QuickSettings struct {
 
 // AssistantSettings are the assistant's choices in the panel.
 type AssistantSettings struct {
-	Model string `json:"model,omitempty"` // "" = the judge's current model
+	Model string `json:"model,omitempty"` // the agent's, when Live is out; "" = the judge's current model
 	TTS   string `json:"tts"`             // "gemini" (default) or "piper"
 	Voice string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
 	City  string `json:"city,omitempty"`  // weather's default city
@@ -143,6 +155,24 @@ func (d *Daemon) AssistantSettings() AssistantSettings {
 		s.TTS = "gemini"
 	}
 	return s
+}
+
+// WakeWords are the names of the enabled words that call the assistant.
+func (d *Daemon) WakeWords() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var names []string
+	for _, m := range d.opt.Wake {
+		if d.settings.StockWake[m.ID] {
+			names = append(names, m.Name)
+		}
+	}
+	for _, w := range d.words {
+		if s := d.settings.Words[w.ID]; s != nil && s.Enabled && s.Action == "assistant" {
+			names = append(names, w.Model.Name)
+		}
+	}
+	return names
 }
 
 // AssistantModel is the model for the assistant's next turn: its own choice,
@@ -256,6 +286,8 @@ type Daemon struct {
 
 	spot        spotter     // nil without Options.Commands (audio goroutine only)
 	yin         *ycmd.Input // the spotter's input (audio goroutine only)
+	wakes       []*wakeSpot // the stock trigger words (audio goroutine only)
+	lastWake    time.Time   // when one of them last fired; under mu
 	yring       *ring       // channel 0 at 16 kHz (x1), for hit clips
 	started     time.Time   // when New ran
 	lastPlaying time.Time   // when music was last seen playing
@@ -308,7 +340,12 @@ func New(opt Options) (*Daemon, error) {
 	if opt.Commands != nil {
 		d.spot, d.yin = ycmd.NewSpotter(opt.Commands), ycmd.NewInput()
 	}
-	d.settings = Settings{Gain: 32, Words: map[string]*WordSettings{}}
+	for _, m := range opt.Wake {
+		sp := ycmd.NewSpotter(m.Model)
+		sp.Dither(wakeDither)
+		d.wakes = append(d.wakes, &wakeSpot{id: m.ID, name: m.Name, spot: sp, reset: sp.Reset})
+	}
+	d.settings = Settings{Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
 			return nil, fmt.Errorf("settings: %w", err)
@@ -470,17 +507,10 @@ func (d *Daemon) Run(ctx context.Context) {
 		<-ctx.Done()
 		return
 	}
-	cfg := frontend.DefaultConfig()
-	d.mu.Lock()
-	if d.settings.Gain > 0 {
-		cfg.Gain = d.settings.Gain
-	}
-	d.mu.Unlock()
-	fe := frontend.New(cfg)
 	killYandex()
 	r := &miccap.Runner{
 		Cmd:       d.opt.MicCmd,
-		OnBlock:   func(b []int16) { d.onRaw(b); d.spotCommands(b); d.onAudio(fe.Process(b)) },
+		OnBlock:   func(b []int16) { d.onRaw(b); d.onAudio(d.spotCommands(b)) },
 		OnSilence: killYandex,
 		Muted:     d.opt.MicMuted,
 		OnMuted:   d.micMuted,
@@ -504,6 +534,20 @@ func (d *Daemon) micMuted() {
 func (d *Daemon) onAudio(pcm []int16) {
 	level := d.process(pcm)
 	d.sendAudioLED(level)
+}
+
+// wakeLocked calls the assistant for hit h. The session drives the LEDs; the
+// hit is neither judged nor debounced.
+func (d *Daemon) wakeLocked(h *Hit) {
+	if asst := d.opt.Assistant; asst != nil && !d.settings.DryRun {
+		h.Fired = true
+		ctx := d.ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		asst.Wake(ctx, func() { d.assistantNoRequest(h) })
+	}
+	d.addHitLocked(h)
 }
 
 // sendAudioLED sends the level and the playback spectrum to ledd, at most
@@ -565,16 +609,7 @@ func (d *Daemon) onHit(id string, score float32) {
 	h.Action = action
 	asst := d.opt.Assistant
 	if action == "assistant" {
-		// The session drives the LEDs; the hit is neither judged nor debounced.
-		if asst != nil && !d.settings.DryRun {
-			h.Fired = true
-			ctx := d.ctx
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			asst.Wake(ctx, func() { d.assistantNoRequest(h) })
-		}
-		d.addHitLocked(h)
+		d.wakeLocked(h)
 		log.Printf("hit %s score %.3f action %q", id, score, action)
 		return
 	}

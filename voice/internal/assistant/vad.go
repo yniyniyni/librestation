@@ -224,6 +224,9 @@ const (
 	bargeInFor  = 150 * time.Millisecond
 )
 
+// silentDB is below any frame: the peak of nothing heard yet.
+const silentDB = -120.0
+
 // voiceEvent is what the voice watch saw since it was last read.
 type voiceEvent uint8
 
@@ -244,6 +247,7 @@ type voiceWatch struct {
 	run, quiet, loud int
 	speaking         bool
 	ev               voiceEvent
+	peak             float64 // the loudest frame since the last readPeak
 }
 
 // arm takes a new noise floor from the recent audio and forgets the past.
@@ -264,6 +268,7 @@ func (w *voiceWatch) push(pcm []int16) bool {
 }
 
 func (w *voiceWatch) frame(db float64) {
+	w.peak = max(w.peak, db)
 	if db < bargeInDBFS {
 		w.loud = 0
 	} else if w.loud++; w.loud == int(bargeInFor/frameDur) {

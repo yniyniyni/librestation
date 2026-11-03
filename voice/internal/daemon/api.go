@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +70,19 @@ type stateView struct {
 	Settings  settingsView  `json:"settings"`
 	Assistant assistantView `json:"assistant"`
 	Quick     quickView     `json:"quick"`
+	StockWake stockWakeView `json:"stock_wake"`
+}
+
+// stockWakeView is the stock trigger words' card.
+type stockWakeView struct {
+	Error string          `json:"error,omitempty"`
+	Words []stockWakeWord `json:"words"`
+}
+
+type stockWakeWord struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	On   bool   `json:"on"`
 }
 
 // volumeView is the one volume of Spotify, ring and voice.
@@ -148,6 +162,7 @@ type assistantView struct {
 	SpotifyLinked *bool             `json:"spotify_linked"` // null until checked
 	PiperMissing  bool              `json:"piper_missing"`  // Piper did not start: replies use Gemini's voice
 	Settings      AssistantSettings `json:"settings"`
+	LiveModel     string            `json:"live_model"`    // the model conversations run on
 	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's current model
 }
 
@@ -211,6 +226,10 @@ func (d *Daemon) state() stateView {
 	}
 	v.Train = d.train
 	v.Assistant = d.assistantViewLocked()
+	v.StockWake = stockWakeView{Error: d.opt.WakeErr, Words: make([]stockWakeWord, 0, len(d.opt.Wake))}
+	for _, m := range d.opt.Wake {
+		v.StockWake.Words = append(v.StockWake.Words, stockWakeWord{m.ID, m.Name, d.settings.StockWake[m.ID]})
+	}
 	v.Quick = quickView{Available: d.opt.Commands != nil, Error: d.opt.CommandsErr, Off: d.settings.Quick.Off,
 		Groups: make([]quickGroup, 0, len(quickGroups))}
 	for _, g := range quickGroups {
@@ -245,7 +264,7 @@ func (d *Daemon) live() liveView {
 // callbacks return at once (they read cached values).
 func (d *Daemon) assistantViewLocked() assistantView {
 	v := assistantView{Available: d.opt.Assistant != nil, Settings: d.settings.Assistant,
-		DefaultModel: d.assistantDefaultModelLocked()}
+		LiveModel: d.opt.LiveModel, DefaultModel: d.assistantDefaultModelLocked()}
 	if v.Settings.TTS == "" {
 		v.Settings.TTS = "gemini"
 	}
@@ -452,12 +471,18 @@ func (d *Daemon) Handler() http.Handler {
 			AutoFalseUndo *bool           `json:"auto_false_undo"`
 			Assistant     *assistantPatch `json:"assistant"`
 			Quick         *quickPatch     `json:"quick"`
+			StockWake     map[string]bool `json:"stock_wake"`
 		}
 		if err := decode(r, &req); err != nil {
 			return err
 		}
 		if m := req.JudgeModel; m != nil && !judge.ValidModel(*m) {
 			return badRequest(fmt.Sprintf("неверное имя модели %q", *m))
+		}
+		for id := range req.StockWake {
+			if !slices.ContainsFunc(d.opt.Wake, func(m WakeModel) bool { return m.ID == id }) {
+				return badRequest(fmt.Sprintf("нет такого слова %q", id))
+			}
 		}
 		d.mu.Lock()
 		asst, quick := d.settings.Assistant, d.settings.Quick
@@ -482,6 +507,12 @@ func (d *Daemon) Handler() http.Handler {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo
 		}
 		d.settings.Assistant, d.settings.Quick = asst, quick
+		for id, on := range req.StockWake {
+			if d.settings.StockWake == nil {
+				d.settings.StockWake = map[string]bool{}
+			}
+			d.settings.StockWake[id] = on
+		}
 		d.mu.Unlock()
 		if err := d.persistSettings(); err != nil {
 			return internal(err)

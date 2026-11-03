@@ -91,6 +91,8 @@ func steps() []step {
 			ask: "Удалить com.yandex.io.sdk? Он держит микрофон и рисует на кольце; обратимо: " + restoreIOSDK},
 		{name: "Быстрые команды Яндекса", optional: true, check: checkYcmd, fix: fixYcmd,
 			ask: "Достать модель быстрых команд из прошивки колонки?"},
+		{name: "Готовые слова «Алиса» и «Яндекс»", optional: true, check: checkWake, fix: fixWake,
+			ask: "Достать модели этих слов из прошивки колонки? Включаются в панели, в разделе «Слова»"},
 		{name: "Яндекс: лишние приложения удалены", optional: true, check: checkYandexApps, fix: fixYandexApps,
 			ask: "Удалить их? Проверено на Станции Макс: звук, сеть и команды работают; обратимо: " + restoreApp},
 		{name: "Старые файлы прежних версий", optional: true, check: checkLeftovers, fix: fixLeftovers,
@@ -579,6 +581,89 @@ chmod -R a+rX %[5]s/yandex
 	// voiced reads the model at start, like the keys.
 	if up, _, _ := checkServices(e); up {
 		e.u.say("  Перезапускаю сервисы, чтобы подхватить модель…")
+		return fixServices(e)
+	}
+	return nil
+}
+
+// The stock trigger words ship in the same APK; like the commands they are
+// taken from the user's own speaker and not kept in the repository.
+const (
+	wakeDir = voiceDir + "/yandex/activation"
+	wakeAPK = "assets/quark/spotter_models/activation"
+)
+
+// wakeFiles are each word's files.
+var wakeFiles = map[string][]string{
+	"alisa":  {"acoustic_model.nnet", "flags.txt", "words.txt", "lda.mat"},
+	"yandex": {"acoustic_model.nnet", "flags.txt", "words.txt"},
+}
+
+// checkWake: the words' files are on the speaker and read, as checkYcmd.
+func checkWake(e *env) (bool, string, error) {
+	var tests []string
+	for w, files := range wakeFiles {
+		for _, f := range files {
+			tests = append(tests, "test -s "+wakeDir+"/"+w+"/"+f)
+		}
+	}
+	if ok, err := e.d.RootOK(strings.Join(tests, "\n")); !ok || err != nil {
+		return ok, "", err
+	}
+	for w, files := range wakeFiles {
+		tmp, err := os.MkdirTemp("", "wake")
+		if err != nil {
+			return false, "", err
+		}
+		defer os.RemoveAll(tmp)
+		for _, f := range files {
+			if err := e.d.Pull(wakeDir+"/"+w+"/"+f, filepath.Join(tmp, f)); err != nil {
+				return false, "не удалось скачать модель с колонки: " + err.Error(), nil
+			}
+		}
+		if err := loadYcmd(tmp); err != nil {
+			return false, w + ": модель не читается: " + err.Error(), nil
+		}
+	}
+	return true, "", nil
+}
+
+func fixWake(e *env) error {
+	have, err := e.d.RootOK("test -f " + ycmdAPK)
+	if err != nil {
+		return err
+	}
+	if !have {
+		return fmt.Errorf("в прошивке нет ServicesIosdk.apk — готовые слова недоступны")
+	}
+	// As fixYcmd: unzip's status says nothing on this busybox, the files do.
+	var mvs strings.Builder
+	for w, files := range wakeFiles {
+		fmt.Fprintf(&mvs, " && mkdir -p %s/%s", wakeDir, w)
+		for _, f := range files {
+			fmt.Fprintf(&mvs, " && mv %s/%s/%s/%s %s/%s/", ycmdTmp, wakeAPK, w, f, wakeDir, w)
+		}
+	}
+	script := fmt.Sprintf(`rm -rf %[1]s
+mkdir -p %[1]s
+rc=0
+{ /vendor/xbin/busybox unzip -o %[2]s '%[3]s/*' -d %[1]s || true; }
+{ true%[4]s; } || rc=1
+rm -rf %[1]s
+chmod -R a+rX %[5]s/yandex
+[ $rc -eq 0 ]`, ycmdTmp, ycmdAPK, wakeAPK, mvs.String(), voiceDir)
+	if _, err := e.d.Root(script); err != nil {
+		return err
+	}
+	if ok, detail, err := checkWake(e); err != nil {
+		return err
+	} else if !ok && detail != "" {
+		return fmt.Errorf("%s — другая версия прошивки?", detail)
+	} else if !ok {
+		return fmt.Errorf("в APK нет моделей готовых слов — другая версия прошивки?")
+	}
+	if up, _, _ := checkServices(e); up {
+		e.u.say("  Перезапускаю сервисы, чтобы подхватить модели…")
 		return fixServices(e)
 	}
 	return nil

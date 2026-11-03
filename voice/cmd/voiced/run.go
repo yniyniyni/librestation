@@ -34,7 +34,7 @@ func cmdRun(args []string) error {
 	var opt daemon.Options
 	var micCmd, hwCmd, gainFile, knob, muteSw, ledSock, leddURL, judgeKey, judgeModel string
 	var ac assistantConfig
-	var ycmdDir string
+	var ycmdDir, wakeDir string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
 	fs.StringVar(&micCmd, "mic-cmd", "sh /data/local/tmp/voice/mic.sh", "mic capture helper command")
 	fs.StringVar(&opt.Soloist, "soloist", "ws://127.0.0.1:9771", "Soloist WebSocket URL")
@@ -55,6 +55,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&ac.piperCmd, "piper-cmd", "sh /data/local/tmp/soloist/chroot.sh /opt/piper/piper --model /opt/piper/voice.onnx --json-input", "resident Piper command")
 	fs.StringVar(&ac.piperOut, "piper-out", "/data/local/tmp/soloist/rootfs/tmp/tts", "where Piper writes, as voiced sees it (inside the chroot's rootfs)")
 	fs.StringVar(&ac.sounds, "sounds", "/data/local/tmp/voice/sounds", "stock phrases <name>.wav")
+	fs.StringVar(&wakeDir, "wake-dir", "/data/local/tmp/voice/yandex/activation", "Yandex's stock trigger words extracted from the firmware, one directory each")
 	fs.StringVar(&ycmdDir, "ycmd-dir", "/data/local/tmp/voice/yandex/command", "Yandex quick-command model extracted from the firmware by setup")
 	fs.Parse(args)
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -92,6 +93,8 @@ func cmdRun(args []string) error {
 		}
 	}
 
+	opt.Wake, opt.WakeErr = loadStockWake(wakeDir)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -106,6 +109,13 @@ func cmdRun(args []string) error {
 		opt.OnLED = sender.Send
 	}
 	go out.run(ctx)
+	if hwCmd != "" {
+		if m, err := openMixerControl(mixerDevice, ampControl); err != nil {
+			log.Printf("amplifier watch: %v", err)
+		} else {
+			go out.watchAmp(ctx, m.read)
+		}
+	}
 	// The daemon watches playback and volume changes from every source to
 	// tell when the user takes a voice command back; it is created last.
 	var dmn atomic.Pointer[daemon.Daemon]
@@ -153,9 +163,16 @@ func cmdRun(args []string) error {
 			}
 			return judgeModel
 		}
-		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, opt.Actuator, vol, out, ledSend)
+		wakeWords := func() []string {
+			if d := dmn.Load(); d != nil {
+				return d.WakeWords()
+			}
+			return nil
+		}
+		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, wakeWords, opt.Actuator, sol, vol, out, ledSend)
 		defer a.speaker.Close()
 		opt.Assistant = a.session
+		opt.LiveModel = ac.liveModel
 		opt.AssistantStatus = func() any { return a.session.Status() }
 		opt.SpotifyLinked = a.link.Linked
 		opt.PiperMissing = a.piperDown.Load
@@ -192,6 +209,30 @@ func cmdRun(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// stockWakeWords are the firmware's trigger words, in the panel's order.
+var stockWakeWords = []struct{ id, name string }{{"alisa", "Алиса"}, {"yandex", "Яндекс"}}
+
+// loadStockWake loads the stock trigger words; a missing or broken one only
+// leaves that word out.
+func loadStockWake(dir string) ([]daemon.WakeModel, string) {
+	var out []daemon.WakeModel
+	msg := ""
+	for _, w := range stockWakeWords {
+		m, err := ycmd.Load(filepath.Join(dir, w.id))
+		if err != nil {
+			log.Printf("ycmd: stock word %s: %v", w.id, err)
+			msg = "не удалось загрузить модель: " + err.Error()
+			if errors.Is(err, iofs.ErrNotExist) {
+				msg = "модели не найдены — запусти ./setup"
+			}
+			continue
+		}
+		log.Printf("ycmd: stock word %s, model %s", w.id, m.Version)
+		out = append(out, daemon.WakeModel{ID: w.id, Name: w.name, Model: m})
+	}
+	return out, msg
 }
 
 // actuator sends transport commands to Soloist and volume steps to the

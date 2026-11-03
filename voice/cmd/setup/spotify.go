@@ -23,7 +23,7 @@ const (
 	spotifyRedirectURI  = "http://" + spotifyRedirectHost + "/callback"
 	spotifyAuthURL      = "https://accounts.spotify.com/authorize"
 	spotifyTokenURL     = "https://accounts.spotify.com/api/token"
-	spotifyScopes       = "user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read user-library-modify"
+	spotifyScopes       = "user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read user-library-modify playlist-read-private playlist-read-collaborative"
 	spotifyTokenFile    = voiceDir + "/spotify.json"
 )
 

@@ -37,7 +37,8 @@ type output struct {
 	mu     sync.Mutex
 	duckF  float64 // gain factor from duck; 1 = not ducked
 	target int
-	force  bool // set the amplifier to target even if it seems there already
+	force  bool      // set the amplifier to target even if it seems there already
+	wrote  time.Time // when the helper was last given a value
 	wake   chan struct{}
 
 	led  func(proto.Event) // optional; must not block
@@ -45,7 +46,7 @@ type output struct {
 }
 
 func newOutput(hwCmd []string, gainFile string) *output {
-	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, prev: -1, duckF: 1, wake: make(chan struct{}, 1)}
+	return &output{hwCmd: hwCmd, gainFile: gainFile, target: -1, prev: -1, duckF: 1, force: true, wake: make(chan struct{}, 1)}
 }
 
 // set is volume.Sync.Out: it must not block.
@@ -126,7 +127,9 @@ func (o *output) wanted() (int, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	f := o.force
-	o.force = false
+	if o.target >= 0 {
+		o.force = false
+	}
 	return o.target, f
 }
 
@@ -167,6 +170,15 @@ func (o *output) ramp(ctx context.Context, in io.Writer, cur int) (int, error) {
 	for {
 		t, force := o.wanted()
 		if force && t >= 0 {
+			// The HAL drops a write of the value it believes is set, even when
+			// the amplifier has moved since: a neighbour first makes it write.
+			nudge := t - 1
+			if t == 0 {
+				nudge = 1
+			}
+			if _, err := fmt.Fprintf(in, "%d\n", nudge); err != nil {
+				return cur, err
+			}
 			cur = -1 // unknown: write t directly
 		}
 		if t < 0 || t == cur {
@@ -187,6 +199,9 @@ func (o *output) ramp(ctx context.Context, in io.Writer, cur int) (int, error) {
 			return cur, err
 		}
 		cur = next
+		o.mu.Lock()
+		o.wrote = time.Now()
+		o.mu.Unlock()
 		if cur != t {
 			time.Sleep(rampStep)
 		} else {
@@ -202,5 +217,69 @@ func logLines(prefix string, r io.Reader) {
 		if line := sc.Text(); !strings.HasPrefix(line, "hw_master_volume=") {
 			log.Printf("%s: %s", prefix, line)
 		}
+	}
+}
+
+// ampEvery is how often the amplifier is looked at; ampSettle is how long after
+// a write its level is taken as what that volume makes it.
+const (
+	ampEvery  = 500 * time.Millisecond
+	ampSettle = 300 * time.Millisecond
+	// ampTries readings in a row try to set it back, then one in ampRetryEvery.
+	ampTries      = 3
+	ampRetryEvery = 20
+)
+
+// ampWatch remembers the level the current volume makes on the amplifier.
+type ampWatch struct {
+	volume, level int
+	known         bool
+	off           int // readings in a row that were not level
+}
+
+// watchAmp puts the amplifier back whenever something else changes it. The
+// audio HAL sets a level of its own when an output wakes up: not only on resume
+// but at any track change that lets the stream run dry, and nothing reports it.
+func (o *output) watchAmp(ctx context.Context, read func() (int, error)) {
+	t := time.NewTicker(ampEvery)
+	defer t.Stop()
+	var w ampWatch
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			level, err := read()
+			if err != nil {
+				log.Printf("amplifier watch stopped: %v", err)
+				return
+			}
+			o.checkAmp(&w, level, now)
+		}
+	}
+}
+
+// checkAmp takes one reading of the amplifier.
+func (o *output) checkAmp(w *ampWatch, level int, now time.Time) {
+	o.mu.Lock()
+	v, moved := o.target, o.force || now.Sub(o.wrote) < ampSettle
+	o.mu.Unlock()
+	if v < 0 || moved {
+		return
+	}
+	switch {
+	case !w.known || w.volume != v:
+		*w = ampWatch{volume: v, level: level, known: true}
+	case level == w.level:
+		w.off = 0
+	default:
+		if w.off == 0 {
+			log.Printf("amplifier changed behind our back: level %d, want %d for volume %d; setting it back", level, w.level, v)
+		}
+		// Should it not take, keep trying, but seldom.
+		if w.off < ampTries || w.off%ampRetryEvery == 0 {
+			o.refresh(v)
+		}
+		w.off++
 	}
 }

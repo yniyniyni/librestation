@@ -71,7 +71,9 @@ func TestCommandWhileListeningIgnored(t *testing.T) {
 
 func TestStopWhileSpeakingHushes(t *testing.T) {
 	d, f, a, _, done := cmdTest(t)
-	a.setState("speaking")
+	a.mu.Lock()
+	a.state = "speaking"
+	a.mu.Unlock()
 	d.yring.write(make([]int16, 16000))
 	say(d, "хватит")
 	<-done
@@ -121,11 +123,31 @@ func TestStopRightAfterBargeInHushes(t *testing.T) {
 
 func TestNextWhileSpeakingIgnored(t *testing.T) {
 	d, f, a, _, _ := cmdTest(t)
-	a.setState("speaking")
+	a.mu.Lock()
+	a.state = "speaking"
+	a.mu.Unlock()
 	say(d, "дальше")
 	idle(t, f, a)
 	if h := lastHit(t, d); h.Fired || !h.Debounced {
 		t.Fatalf("hit %+v", h)
+	}
+}
+
+// Volume commands work with nothing playing: the ring shows the new level.
+func TestVolumeCommandsWithoutMusic(t *testing.T) {
+	for _, c := range []struct{ cmd, want string }{{"громче", "louder"}, {"тише", "quieter"}} {
+		t.Run(c.cmd, func(t *testing.T) {
+			d, f, _, _, done := cmdTest(t)
+			d.playback = "paused"
+			say(d, c.cmd)
+			<-done
+			if g := f.got(); !slices.Equal(g, []string{c.want}) {
+				t.Fatalf("actuator %v", g)
+			}
+			if h := lastHit(t, d); !h.Fired || h.Playback {
+				t.Fatalf("hit %+v", h)
+			}
+		})
 	}
 }
 
@@ -235,7 +257,9 @@ func TestDryRun(t *testing.T) {
 	d, f, a, _, _ := cmdTest(t)
 	d.settings.DryRun = true
 	say(d, "стоп")
-	a.setState("speaking")
+	a.mu.Lock()
+	a.state = "speaking"
+	a.mu.Unlock()
 	say(d, "стоп")
 	idle(t, f, a)
 	hits := d.state().Hits
@@ -464,5 +488,105 @@ func TestChannel0Shared(t *testing.T) {
 		if math.Abs(float64(live[i])-x1*LiveGain) > 1 {
 			t.Fatalf("assistant sample %d = %d, want %.0f (x1 x LiveGain)", i, live[i], x1*LiveGain)
 		}
+	}
+}
+
+// fakeWakeSpot fires whenever it is pushed to, as far as fires says.
+type fakeWakeSpot struct {
+	pushes, fires int
+}
+
+func (f *fakeWakeSpot) Push(_ []float32, fire func(string, float64)) {
+	f.pushes++
+	if f.fires > 0 {
+		f.fires--
+		fire("алиса", 0.9)
+	}
+}
+
+func TestStockWakeCallsTheAssistant(t *testing.T) {
+	d, _, a, clock, _ := cmdTest(t)
+	d.mu.Lock()
+	d.onStockWake("alisa", "Алиса", 0.9)
+	d.mu.Unlock()
+	wakes := func() int {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.wakes
+	}
+	if wakes() != 1 {
+		t.Fatalf("%d wakes", wakes())
+	}
+	h := lastHit(t, d)
+	if h.Word != "alisa" || h.Name != "Алиса" || h.Source != "yandex" || h.Action != "assistant" || !h.Fired {
+		t.Fatalf("hit %+v", h)
+	}
+	d.mu.Lock()
+	d.onStockWake("alisa", "Алиса", 0.9) // the same word, once more
+	d.mu.Unlock()
+	if wakes() != 1 {
+		t.Errorf("a repeat woke it: %d", wakes())
+	}
+	*clock = clock.Add(wakeRepeat)
+	a.mu.Lock()
+	a.state = "speaking"
+	a.mu.Unlock()
+	d.mu.Lock()
+	d.onStockWake("alisa", "Алиса", 0.9) // the reply's echo
+	d.mu.Unlock()
+	if wakes() != 1 {
+		t.Errorf("woken while speaking: %d", wakes())
+	}
+}
+
+func TestStockWakeOffCostsNothing(t *testing.T) {
+	f := &fakeWakeSpot{}
+	resets := 0
+	w := &wakeSpot{id: "alisa", name: "Алиса", spot: f, reset: func() { resets++ }}
+	pcm := make([]float32, 10)
+	w.push(pcm, func(float64) { t.Fatal("fired while off") })
+	if f.pushes != 0 {
+		t.Fatalf("%d pushes while off", f.pushes)
+	}
+	w.on = true
+	f.fires = 1
+	fired := 0
+	w.push(pcm, func(float64) { fired++ })
+	w.push(pcm, func(float64) { fired++ })
+	if f.pushes != 2 || fired != 1 || resets != 1 {
+		t.Errorf("pushes %d, fired %d, resets %d", f.pushes, fired, resets)
+	}
+}
+
+func TestWakeWordsNameTheStockOnes(t *testing.T) {
+	d, _, _, _, _ := cmdTest(t)
+	d.opt.Wake = []WakeModel{{ID: "alisa", Name: "Алиса"}, {ID: "yandex", Name: "Яндекс"}}
+	d.settings.StockWake = map[string]bool{"yandex": true}
+	if g := d.WakeWords(); !slices.Contains(g, "Яндекс") || slices.Contains(g, "Алиса") {
+		t.Errorf("words %v", g)
+	}
+}
+
+// Our words listen to channel 0 at its own level, as the commands do.
+func TestSpotCommandsReturnsChannelZero(t *testing.T) {
+	d, _, _, _, _ := cmdTest(t)
+	block := make([]int16, miccap.BlockFrames*miccap.Channels)
+	for i := range miccap.BlockFrames {
+		block[i*miccap.Channels] = int16(8000 * math.Sin(2*math.Pi*300*float64(i)/miccap.Rate))
+		block[i*miccap.Channels+3] = 30000 // a microphone: not this
+	}
+	var clip []int16
+	for range 20 {
+		clip = d.spotCommands(block)
+	}
+	if len(clip) != miccap.BlockFrames/3 {
+		t.Fatalf("%d samples", len(clip))
+	}
+	peak := 0
+	for _, v := range clip {
+		peak = max(peak, int(v), -int(v))
+	}
+	if peak < 4000 || peak > 12000 {
+		t.Errorf("peak %d, want about 8000: channel 0 at its own level", peak)
 	}
 }

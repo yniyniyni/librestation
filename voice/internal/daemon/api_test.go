@@ -339,3 +339,13 @@ func TestEventsLimitAndHubStops(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestAssistantViewNamesTheLiveModel(t *testing.T) {
+	d, err := New(Options{DataDir: t.TempDir(), LiveModel: "gemini-3.8-live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := d.assistantViewLocked(); v.LiveModel != "gemini-3.8-live" {
+		t.Errorf("live model %q", v.LiveModel)
+	}
+}

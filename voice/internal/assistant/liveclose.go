@@ -23,6 +23,11 @@ var infoTools = map[string]bool{"get_weather": true, "get_time": true}
 // dialogTools keep the conversation open for the full window.
 var dialogTools = map[string]bool{"web_answer": true, "now_playing": true}
 
+// silentTools are plain commands: what they do is heard, so the reply is not
+// waited for. Their failure is still told. A like makes no sound of its own,
+// so it keeps its reply.
+var silentTools = map[string]bool{"playback": true}
+
 // toolResult is one tool call of a turn.
 type toolResult struct {
 	Name string
@@ -33,6 +38,16 @@ type toolResult struct {
 type turnSummary struct {
 	Tools []toolResult
 	Reply string // transcription of the spoken reply
+}
+
+// silentDone reports whether the turn was only commands, all carried out.
+func silentDone(t turnSummary) bool {
+	for _, r := range t.Tools {
+		if !r.OK || !silentTools[r.Name] {
+			return false
+		}
+	}
+	return len(t.Tools) > 0
 }
 
 // closeAfter decides how a Live session ends after a turn: now=true closes it
