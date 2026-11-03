@@ -37,6 +37,8 @@ type Options struct {
 	Actuator  Actuator    // runs word actions; nil = actions are only logged
 	// Ring is the alarm or timer ringing, which any word stops first; nil = none.
 	Ring RingControl
+	// Alarms is what the panel sets and shows; nil = none.
+	Alarms AlarmsControl
 	// Assistant runs the "assistant" word action and gets every audio block;
 	// nil = that action is only logged.
 	Assistant Assistant

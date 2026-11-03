@@ -52,7 +52,7 @@
     h1 { font-size:22px; }
   }
 
-  button, select, input[type=text] { font:inherit; color:var(--fg); }
+  button, select, input[type=text], input[type=time], input[type=number] { font:inherit; color:var(--fg); }
   button { min-height:40px; border:1px solid var(--line); background:var(--raise); border-radius:10px; padding:8px 14px; cursor:pointer; }
   button:hover:not(:disabled) { background:var(--raise2); }
   button:disabled { opacity:.5; cursor:default; }
@@ -61,7 +61,7 @@
   button.danger { color:var(--bad); }
   button.icon { width:44px; height:44px; padding:0; border-radius:50%; font-size:18px; line-height:1; }
   button.play { width:36px; min-height:36px; height:36px; padding:0; }
-  select, input[type=text] { min-height:40px; max-width:100%; padding:8px 10px; border-radius:10px; border:1px solid var(--line); background:var(--bg); }
+  select, input[type=text], input[type=time], input[type=number] { min-height:40px; max-width:100%; padding:8px 10px; border-radius:10px; border:1px solid var(--line); background:var(--bg); }
   input[type=range] { accent-color:var(--accent); width:100%; margin:0; }
   input[type=checkbox].sw { appearance:none; -webkit-appearance:none; flex:none; width:44px; height:26px; margin:0; border-radius:13px; background:var(--tick); position:relative; cursor:pointer; transition:background .15s; }
   input[type=checkbox].sw::after { content:""; position:absolute; top:3px; left:3px; width:20px; height:20px; border-radius:50%; background:#fff; transition:transform .15s; }
@@ -121,6 +121,22 @@
   .take button { min-height:32px; height:32px; width:32px; padding:0; border:0; background:none; }
   .reading { padding:12px 14px; border-radius:10px; background:var(--raise2); max-width:66ch; }
 
+  /* Alarms */
+  .bigtime { font-size:30px; font-weight:300; font-variant-numeric:tabular-nums; line-height:1.1; }
+  .alarm { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; align-items:center; }
+  .alarm.off .bigtime { color:var(--muted); }
+  .alarm .acts { display:flex; gap:6px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
+  .days { display:flex; gap:6px; flex-wrap:wrap; }
+  .days label { position:relative; }
+  .days input { position:absolute; opacity:0; inset:0; margin:0; }
+  .days span { display:grid; place-items:center; width:40px; height:40px; border-radius:50%; background:var(--raise2); color:var(--muted); }
+  .days input:checked + span { background:var(--accent); color:var(--on-accent); }
+  .days input:focus-visible + span { outline:2px solid var(--accent); outline-offset:2px; }
+  .ringbanner { position:sticky; top:12px; z-index:5; margin-bottom:16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:14px 16px; border-radius:16px; background:var(--accent); color:var(--on-accent); font-weight:600; }
+  .ringbanner .grow { flex:1 1 180px; }
+  .ringbanner button { color:var(--fg); }
+  @media (max-width:519px) { .alarm { grid-template-columns:minmax(0,1fr); } .alarm .acts { justify-content:flex-start; } }
+
   /* Log */
   .hit { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; align-items:start; }
   .hit.suspect { box-shadow:inset 3px 0 0 var(--warn); }
@@ -145,12 +161,19 @@
   <nav aria-label="Разделы">
     <div class="brand" id="brand">Станция</div>
     <a href="#home" data-tab="home"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="2.5"/></svg>Главная</a>
+    <a href="#alarms" data-tab="alarms"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7.5"/><path d="M12 9v4l2.5 2M4 5.5 7 3M20 5.5 17 3"/></svg>Будильники</a>
     <a href="#words" data-tab="words"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>Слова</a>
     <a href="#log" data-tab="log"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>Журнал</a>
     <a href="#settings" data-tab="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg>Настройки</a>
   </nav>
   <main>
     <div class="banner warn" id="offline" role="status" style="margin-bottom:16px" hidden>Нет связи со станцией. Подключаюсь снова.</div>
+
+    <div class="ringbanner" id="ringbanner" role="alert" hidden>
+      <span class="grow" id="ringtext"></span>
+      <button id="ringsnooze">Отложить на 10 минут</button>
+      <button id="ringstop">Выключить</button>
+    </div>
 
     <section id="tab-home" hidden>
       <div class="home">
@@ -181,6 +204,57 @@
           </div>
           <div class="group">
             <label class="field" id="homequick"><span>Быстрые команды<br><span class="muted small">«стоп», «дальше» и другие без слова-пробуждения</span></span><input type="checkbox" class="sw" data-quickon></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-alarms" hidden>
+      <h1>Будильники</h1>
+      <p class="small bad" id="alarmerr" hidden></p>
+      <div>
+        <h2 class="gtitle">Таймеры</h2>
+        <div class="group" id="timerlist"></div>
+      </div>
+      <div class="group">
+        <div class="field">
+          <span>Новый таймер</span>
+          <input type="number" id="timermin" min="0" max="1440" value="10" aria-label="Минуты" style="flex:0 1 90px">
+          <span class="muted" style="flex:none">мин</span>
+          <input type="number" id="timersec" min="0" max="59" value="0" aria-label="Секунды" style="flex:0 1 90px">
+          <span class="muted" style="flex:none">с</span>
+        </div>
+        <label class="field"><span>Название</span><input type="text" id="timertitle" maxlength="60" placeholder="необязательно"></label>
+        <div class="row"><button class="primary" id="timeradd">Запустить</button></div>
+      </div>
+      <div>
+        <h2 class="gtitle">Будильники</h2>
+        <div class="group" id="alarmlist"></div>
+      </div>
+      <div>
+        <h2 class="gtitle" id="alarmformtitle">Новый будильник</h2>
+        <div class="group">
+          <label class="field"><span>Время</span><input type="time" id="alarmtime" value="07:00" required></label>
+          <div class="word">
+            <span>Дни недели <span class="muted small">без дней прозвенит один раз</span></span>
+            <div class="days" id="alarmdays">
+              <label><input type="checkbox" value="1"><span>Пн</span></label>
+              <label><input type="checkbox" value="2"><span>Вт</span></label>
+              <label><input type="checkbox" value="3"><span>Ср</span></label>
+              <label><input type="checkbox" value="4"><span>Чт</span></label>
+              <label><input type="checkbox" value="5"><span>Пт</span></label>
+              <label><input type="checkbox" value="6"><span>Сб</span></label>
+              <label><input type="checkbox" value="7"><span>Вс</span></label>
+            </div>
+          </div>
+          <label class="field"><span>Мелодия</span><select id="alarmsound"></select></label>
+          <label class="field"><span>Музыка вместо мелодии<br><span class="muted small">что включить в Spotify</span></span><input type="text" id="alarmmusic" maxlength="120" placeholder="необязательно"></label>
+          <label class="field"><span>Название</span><input type="text" id="alarmtitle" maxlength="60" placeholder="необязательно"></label>
+          <div class="row wrap">
+            <button class="primary" id="alarmsave">Поставить</button>
+            <button id="alarmcancel" hidden>Отмена</button>
+            <span class="grow"></span>
+            <button id="ringtest">Проверить звонок</button>
           </div>
         </div>
       </div>
@@ -578,14 +652,115 @@ $("ledbright").oninput = () => { $("ledbrightv").textContent = $("ledbright").va
 $("ledai").onclick = () => run($("ledai"), async () => renderLED(await api("PUT", "/led/ai", { on: !(led && led.ai) })));
 
 // ---- what shows now
+// ---- alarms
+const DAY_NAMES = ["", "пн", "вт", "ср", "чт", "пт", "сб", "вс"];
+let alarmEdit = "", soundsLoaded = false;
+function alarmDays(a) {
+  if (a.date) return new Date(a.date + "T12:00:00").toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  const d = a.days || [];
+  if (!d.length) return "один раз";
+  const k = [...d].sort().join("");
+  if (k === "12345") return "по будням";
+  if (k === "67") return "по выходным";
+  if (k === "1234567") return "каждый день";
+  return [...d].sort().map(x => DAY_NAMES[x]).join(", ");
+}
+function alarmNext(a) {
+  if (!a.next) return "выключен";
+  const t = new Date(a.next), now = new Date();
+  const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((day(t) - day(now)) / 864e5);
+  const clock = t.toLocaleTimeString("ru-RU", { hour: "numeric", minute: "2-digit" });
+  const when = diff === 0 ? "сегодня" : diff === 1 ? "завтра" : t.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
+  return `зазвонит ${when} в ${clock}`;
+}
+function alarmRow(a) {
+  const bits = [alarmDays(a), a.title, a.music && "музыка: " + a.music].filter(Boolean).map(esc).join(" · ");
+  const hm = a.hour + ":" + String(a.minute).padStart(2, "0");
+  return `<div class="alarm${a.next ? "" : " off"}">
+    <div><div class="bigtime">${hm}</div><div class="small muted">${bits}<br>${esc(alarmNext(a))}</div></div>
+    <div class="acts">
+      <input type="checkbox" class="sw" data-alarmon="${esc(a.id)}" aria-label="Будильник на ${hm}"${a.disabled ? "" : " checked"}>
+      <button data-alarmedit="${esc(a.id)}">Изменить</button>
+      <button class="danger" data-alarmdel="${esc(a.id)}" aria-label="Удалить будильник на ${hm}">Удалить</button>
+    </div></div>`;
+}
+function timerLeft(t) {
+  return t.paused || !t.ends_at ? t.left : Math.max(0, Math.ceil((new Date(t.ends_at) - Date.now()) / 1000));
+}
+function clockText(secs) {
+  const h = Math.floor(secs / 3600), m = Math.floor(secs % 3600 / 60), ss = String(secs % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+function timerRow(t) {
+  return `<div class="alarm">
+    <div><div class="bigtime" data-left="${esc(t.id)}">${clockText(timerLeft(t))}</div><div class="small muted">${esc(t.title || "таймер")}${t.paused ? " · на паузе" : ""}</div></div>
+    <div class="acts">
+      <button data-timerpause="${esc(t.id)}" data-paused="${t.paused ? 1 : 0}">${t.paused ? "Продолжить" : "Пауза"}</button>
+      <button class="danger" data-timerdel="${esc(t.id)}">Отменить</button>
+    </div></div>`;
+}
+function tickTimers() {
+  if (tab !== "alarms" || !state || !state.alarms) return;
+  for (const t of state.alarms.timers) {
+    const el = document.querySelector(`[data-left="${t.id}"]`);
+    if (el) el.textContent = clockText(timerLeft(t));
+  }
+}
+setInterval(tickTimers, 1000);
+function renderAlarms(s) {
+  const v = s.alarms;
+  if (!v) { setHTML($("alarmlist"), `<div class="muted">Будильники недоступны</div>`); setHTML($("timerlist"), ""); return; }
+  $("alarmerr").hidden = !v.ring.error;
+  $("alarmerr").textContent = v.ring.error ? "Не удалось прочитать или сохранить будильники: " + v.ring.error : "";
+  setHTML($("alarmlist"), v.alarms.map(alarmRow).join("") || `<div class="muted">Будильников нет</div>`);
+  setHTML($("timerlist"), v.timers.map(timerRow).join("") || `<div class="muted">Таймеров нет</div>`);
+  if (!soundsLoaded) {
+    soundsLoaded = true;
+    api("GET", "/alarms/sounds").then(r => {
+      $("alarmsound").innerHTML = r.sounds.map(x => `<option value="${esc(x.name)}">${esc(x.title)}</option>`).join("");
+    }).catch(() => { soundsLoaded = false; });
+  }
+}
+function renderRingBanner(s) {
+  const r = s.alarms && s.alarms.ring, on = !!(r && r.ring);
+  $("ringbanner").hidden = !on;
+  if (!on) return;
+  const what = r.ring === "timer" ? "Таймер" : "Будильник";
+  $("ringtext").textContent = r.title ? `${what}: ${r.title}` : `Звенит ${what.toLowerCase()}`;
+  $("ringsnooze").hidden = r.ring !== "alarm";
+}
+function alarmFormReset() {
+  alarmEdit = "";
+  $("alarmformtitle").textContent = "Новый будильник";
+  $("alarmsave").textContent = "Поставить";
+  $("alarmcancel").hidden = true;
+  $("alarmtime").value = "07:00"; $("alarmmusic").value = ""; $("alarmtitle").value = "";
+  $("alarmsound").selectedIndex = 0;
+  document.querySelectorAll("#alarmdays input").forEach(c => { c.checked = false; });
+}
+function alarmFormFill(a) {
+  alarmEdit = a.id;
+  $("alarmformtitle").textContent = "Изменить будильник";
+  $("alarmsave").textContent = "Сохранить";
+  $("alarmcancel").hidden = false;
+  $("alarmtime").value = String(a.hour).padStart(2, "0") + ":" + String(a.minute).padStart(2, "0");
+  $("alarmmusic").value = a.music || ""; $("alarmtitle").value = a.title || "";
+  if (a.sound) $("alarmsound").value = a.sound; else $("alarmsound").selectedIndex = 0;
+  document.querySelectorAll("#alarmdays input").forEach(c => { c.checked = (a.days || []).includes(+c.value); });
+  $("alarmtime").focus();
+}
+
 function render() {
   const s = state;
   if (!s) return;
+  renderRingBanner(s);
   const name = s.station && s.station !== "localhost" ? s.station : "Станция";
   $("brand").textContent = name; document.title = name;
   renderHome(s);
   if (tab === "words") { renderWords(s); renderEnroll(s); renderTrain(s); }
   if (tab === "settings") renderSettings(s);
+  if (tab === "alarms") renderAlarms(s);
 }
 function renderHits() {
   if (tab === "home") renderLastHit();
@@ -593,7 +768,7 @@ function renderHits() {
 }
 function route() {
   const t = location.hash.slice(1);
-  tab = ["home", "words", "log", "settings"].includes(t) ? t : "home";
+  tab = ["home", "alarms", "words", "log", "settings"].includes(t) ? t : "home";
   document.querySelectorAll("section").forEach(el => { el.hidden = el.id !== "tab-" + tab; });
   document.querySelectorAll("nav a").forEach(a => {
     const on = a.dataset.tab === tab;
@@ -680,6 +855,30 @@ $("trainbtn").onclick = () => run($("trainbtn"), async () => {
   msg($("trainmsg"), "обучение началось");
 });
 
+$("ringstop").onclick = () => run($("ringstop"), () => api("POST", "/ring/stop"));
+$("ringsnooze").onclick = () => run($("ringsnooze"), async () => {
+  const r = await api("POST", "/ring/snooze");
+  toast("Отложено до " + new Date(r.until).toLocaleTimeString("ru-RU", { hour: "numeric", minute: "2-digit" }));
+});
+$("ringtest").onclick = () => run($("ringtest"), async () => {
+  if (await ask("Колонка зазвонит как будильник: сначала тихо, потом всё громче.", { ok: "Звонить" })) await api("POST", "/ring/test");
+});
+$("timeradd").onclick = () => run($("timeradd"), async () => {
+  const seconds = (+$("timermin").value || 0) * 60 + (+$("timersec").value || 0);
+  await api("POST", "/timers", { seconds, title: $("timertitle").value.trim() });
+  $("timertitle").value = "";
+});
+$("alarmcancel").onclick = alarmFormReset;
+$("alarmsave").onclick = () => run($("alarmsave"), async () => {
+  const [hour, minute] = $("alarmtime").value.split(":").map(Number);
+  if (!Number.isInteger(hour)) throw new Error("Укажите время");
+  const days = [...document.querySelectorAll("#alarmdays input:checked")].map(c => +c.value);
+  const body = { hour, minute, days, title: $("alarmtitle").value.trim(), music: $("alarmmusic").value.trim(), sound: $("alarmsound").value, disabled: false };
+  if (alarmEdit) await api("PATCH", "/alarms/" + alarmEdit, body);
+  else await api("POST", "/alarms", body);
+  alarmFormReset();
+});
+
 const settingsPatch = {
   judge: t => ({ judge: t.checked }),
   judgemodel: t => ({ judge_model: t.value }),
@@ -698,6 +897,7 @@ document.addEventListener("change", (ev) => {
   if ("quickon" in ds) run(null, () => api("PATCH", "/settings", { quick: { off: !t.checked } }));
   if (ds.quick) run(null, () => api("PATCH", "/settings", { quick: { group: ds.quick, on: t.checked } }));
   if (ds.stockwake) run(null, () => api("PATCH", "/settings", { stock_wake: { [ds.stockwake]: t.checked } }));
+  if (ds.alarmon) run(null, () => api("PATCH", "/alarms/" + ds.alarmon, { disabled: !t.checked }));
   if (ds.enable) run(null, () => api("PATCH", "/words/" + ds.enable, { enabled: t.checked }));
   if (ds.action !== undefined) run(null, async () => { await api("PATCH", "/words/" + ds.action, { action: t.value || "none" }); done(); });
   if (ds.sens) run(null, async () => { await api("PATCH", "/words/" + ds.sens, { sensitivity: parseFloat(t.value) }); done(); });
@@ -706,6 +906,15 @@ document.addEventListener("click", (ev) => {
   const t = ev.target.closest("button");
   if (!t) return;
   const ds = t.dataset;
+  if (ds.alarmedit) { const a = state.alarms.alarms.find(x => x.id === ds.alarmedit); if (a) alarmFormFill(a); }
+  if (ds.alarmdel) run(t, async () => {
+    if (await ask("Удалить будильник?", { ok: "Удалить", danger: true })) {
+      await api("DELETE", "/alarms/" + ds.alarmdel);
+      if (alarmEdit === ds.alarmdel) alarmFormReset();
+    }
+  });
+  if (ds.timerpause) run(t, () => api("PATCH", "/timers/" + ds.timerpause, { paused: ds.paused !== "1" }));
+  if (ds.timerdel) run(t, () => api("DELETE", "/timers/" + ds.timerdel));
   if (ds.play) new Audio(ds.play + "?t=" + Date.now()).play().catch(e => toast("Не получилось воспроизвести запись"));
   if (ds.vol) api("PATCH", "/volume", { step: +ds.vol }).then(v => renderVolume(v.volume)).catch(e => toast(e.message));
   if (ds.player) api("POST", "/player/" + ds.player).catch(e => toast(e.message));

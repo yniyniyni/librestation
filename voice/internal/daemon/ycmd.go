@@ -62,7 +62,7 @@ const LiveGain = 2
 // spotCommands takes one raw capture block's channel 0 at 16 kHz, once, and
 // shares it: the Yandex spotters (those loaded and switched on) and the
 // assistant's Live session (when there is one). It returns it at its own level
-// for our words and everything else that listens: the chip has taken the music
+// for our words and everything else that listens: Yandex's VQE in the audio HAL has taken the music
 // and the speaker's voice out of this channel, and it recognised far better
 // than our own mix of the microphones (9 of 9 commands against 0 to 4). It runs
 // on the audio goroutine without d.mu.

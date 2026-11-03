@@ -174,7 +174,7 @@ func cmdRun(args []string) error {
 		ticks: newTicks,
 	}
 	alm := alarms.New(filepath.Join(opt.DataDir, "alarms.json"), rng, time.Now)
-	opt.Ring = alm
+	opt.Ring, opt.Alarms = alm, alm
 	if knob != "" {
 		go readKnob(ctx, knob, func(code uint16) {
 			if alm.ConsumesKnob() {
@@ -227,6 +227,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 	dmn.Store(d)
+	d.WatchAlarms(alm)
 	go alm.Run(ctx)
 	if ledSend != nil {
 		go showTimers(ctx, alm, ledSend)

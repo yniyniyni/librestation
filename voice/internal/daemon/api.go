@@ -52,7 +52,8 @@ type enrollView struct {
 }
 
 type stateView struct {
-	Station string `json:"station"`
+	Alarms  *alarmsView `json:"alarms"` // null without alarms
+	Station string      `json:"station"`
 	Audio   struct {
 		OK    bool    `json:"ok"`
 		Error string  `json:"error,omitempty"`
@@ -187,6 +188,7 @@ func (d *Daemon) volumeView() *volumeView {
 func (d *Daemon) state() stateView {
 	var v stateView
 	v.Volume = d.volumeView()
+	v.Alarms = d.alarmsView()
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	v.Station = d.stationName()
@@ -355,6 +357,7 @@ func (d *Daemon) Handler() http.Handler {
 		return nil
 	})
 	mux.HandleFunc("GET "+apiBase+"/events", d.serveEvents)
+	d.alarmRoutes(api)
 	api("GET /hits", func(w http.ResponseWriter, r *http.Request) error {
 		writeJSON(w, map[string][]Hit{"hits": d.state().Hits})
 		return nil
