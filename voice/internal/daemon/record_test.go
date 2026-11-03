@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"context"
 	"encoding/binary"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -97,5 +99,20 @@ func TestRecordRefusesWhenDiskLow(t *testing.T) {
 	freeBytes = func(string) (uint64, error) { return minFreeBytes + 100<<20, nil }
 	if err := d.startRecording(30); err != nil {
 		t.Fatalf("30 s with 100 MB spare: %v", err)
+	}
+}
+
+func TestMicMutedRefusesRecordUntilAudioReturns(t *testing.T) {
+	d, _ := newTest(t, nil, "", false)
+	d.process(make([]int16, 320))
+	d.micMuted()
+	if _, err := d.record(context.Background(), 0.01, 0); err == nil || !strings.Contains(err.Error(), "muted") {
+		t.Fatalf("record while muted: %v", err)
+	}
+	d.process(make([]int16, 320))
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.audioOK || d.audioErr != "" {
+		t.Fatalf("audio not back: ok=%v err=%q", d.audioOK, d.audioErr)
 	}
 }

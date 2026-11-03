@@ -32,9 +32,10 @@ type Options struct {
 	DataDir   string // words, settings
 	Negatives string // bundled negatives.bin
 	Listen    string
-	MicCmd    []string // capture helper command
-	Soloist   string   // Soloist WebSocket URL (used by the real Actuator)
-	Actuator  Actuator // runs word actions; nil = actions are only logged
+	MicCmd    []string    // capture helper command
+	MicMuted  func() bool // reads the station's mic switch; nil = no switch
+	Soloist   string      // Soloist WebSocket URL (used by the real Actuator)
+	Actuator  Actuator    // runs word actions; nil = actions are only logged
 	// Assistant runs the "assistant" word action and gets every audio block;
 	// nil = that action is only logged.
 	Assistant Assistant
@@ -453,11 +454,21 @@ func (d *Daemon) Run(ctx context.Context) {
 		Cmd:       d.opt.MicCmd,
 		OnBlock:   func(b []int16) { d.onRaw(b); d.spotCommands(b); d.onAudio(fe.Process(b)) },
 		OnSilence: killYandex,
+		Muted:     d.opt.MicMuted,
+		OnMuted:   d.micMuted,
 	}
 	err := r.Run(ctx)
 	d.mu.Lock()
 	d.audioOK = false
 	d.audioErr = fmt.Sprint(err)
+	d.mu.Unlock()
+}
+
+// micMuted notes that no audio comes while the switch is on; the next block
+// clears it.
+func (d *Daemon) micMuted() {
+	d.mu.Lock()
+	d.audioOK, d.audioErr = false, "mic muted by the switch"
 	d.mu.Unlock()
 }
 
