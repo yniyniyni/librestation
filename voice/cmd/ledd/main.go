@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -49,6 +50,14 @@ func run(args []string) error {
 	}
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 
+	// The port goes first: it tells whether another ledd is running, and a
+	// second one must not touch the screen or replace the event socket.
+	ln, err := net.Listen("tcp", listen)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -76,7 +85,7 @@ func run(args []string) error {
 	defer sol.Close()
 	go watchSoloist(ctx, sol, pb)
 
-	srv := &http.Server{Addr: listen, Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: a.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		sctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -85,7 +94,7 @@ func run(args []string) error {
 	}()
 	go render(ctx, w, sc, fps)
 	log.Printf("ledd: API on %s, socket %s, data in %s", listen, sock, data)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
