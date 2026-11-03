@@ -36,7 +36,7 @@ type ringer struct {
 	pause   func() error
 	resume  func() error
 	hush    func()
-	music   func(ctx context.Context, query string) error
+	music   func(ctx context.Context, ring alarms.Ring) error
 	led     func(proto.Event)
 	now     func() time.Time
 	sleep   func(ctx context.Context, d time.Duration) error
@@ -137,10 +137,10 @@ func (r *ringer) run(ctx context.Context, ring alarms.Ring) {
 	musicCtx, cancelMusic := context.WithCancel(ctx)
 	defer cancelMusic()
 	var musicDone chan error
-	waiting := ring.Music != "" && r.music != nil && r.volume() > 0
+	waiting := ring.HasMusic() && r.music != nil && r.volume() > 0
 	if waiting {
 		musicDone = make(chan error, 1)
-		go func() { musicDone <- r.music(musicCtx, ring.Music) }()
+		go func() { musicDone <- r.music(musicCtx, ring) }()
 	} else {
 		startSound()
 	}
@@ -209,7 +209,7 @@ loop:
 	}
 	r.show("")
 	// The ring's own music goes off first: the amplifier may be climbing back.
-	if asked || (ring.Music != "" && !wasPlaying && r.playing()) {
+	if asked || (ring.HasMusic() && !wasPlaying && r.playing()) {
 		if err := r.pause(); err != nil {
 			log.Printf("ring: pause: %v", err)
 		}

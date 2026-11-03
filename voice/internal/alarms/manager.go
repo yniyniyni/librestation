@@ -38,7 +38,11 @@ type Ring struct {
 	Sound string `json:"sound,omitempty"`
 	Music string `json:"music,omitempty"`
 	Title string `json:"title,omitempty"`
+	Item  *Music `json:"item,omitempty"`
 }
+
+// HasMusic says whether the ring wants music rather than its ringtone.
+func (r Ring) HasMusic() bool { return r.Music != "" || r.Item != nil }
 
 // Ringer makes the sound; its calls must not block.
 type Ringer interface {
@@ -198,7 +202,7 @@ func (m *Manager) dueLocked(now time.Time) (rings []due, dirty bool) {
 				log.Printf("alarms: alarm %s missed at %v", a.ID, next)
 				continue
 			}
-			rings = append(rings, due{Ring{KindAlarm, a.Sound, a.Music, a.Title}, a.ID})
+			rings = append(rings, due{Ring{KindAlarm, a.Sound, a.Music, a.Title, a.MusicItem}, a.ID})
 		}
 	}
 	kept := m.st.Timers[:0]

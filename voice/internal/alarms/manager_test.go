@@ -557,3 +557,25 @@ func TestRingTooOldToComeBack(t *testing.T) {
 		t.Errorf("%+v", r2.starts)
 	}
 }
+
+func TestRingCarriesTheChosenMusic(t *testing.T) {
+	g := newRig(t)
+	item := &Music{Kind: "track", URI: "spotify:track:t1", Name: "Blinding Lights", Artist: "The Weeknd"}
+	g.addAlarm(Alarm{Hour: 7, Music: "blinding lights", MusicItem: item})
+	g.advance(time.Minute)
+	g.wantRings(1)
+	if r := g.r.starts[0]; r.Item == nil || r.Item.URI != item.URI || !r.HasMusic() {
+		t.Errorf("%+v", r)
+	}
+}
+
+func TestHasMusic(t *testing.T) {
+	for _, c := range []struct {
+		r    Ring
+		want bool
+	}{{Ring{}, false}, {Ring{Music: "x"}, true}, {Ring{Item: &Music{URI: "spotify:collection"}}, true}} {
+		if c.r.HasMusic() != c.want {
+			t.Errorf("%+v", c.r)
+		}
+	}
+}

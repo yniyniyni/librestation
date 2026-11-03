@@ -9,6 +9,7 @@ import (
 
 	"voice/internal/agent"
 	"voice/internal/alarms"
+	"voice/internal/spotifyapi"
 )
 
 // isoDays are the names the model gives days by.
@@ -24,6 +25,39 @@ var onDays = [...]string{"в воскресенье", "в понедельник
 type Alarm struct {
 	M   *alarms.Manager
 	Now func() time.Time // nil = time.Now
+	// Find chooses the music when the alarm is set; nil = searched at the ring.
+	Find func(ctx context.Context, query, kind string) (alarms.Music, error)
+}
+
+// FindMusic finds what an alarm should wake to: a Spotify link, or query as kind
+// says, as play_music understands it.
+func FindMusic(ctx context.Context, s *spotifyapi.Client, query, kind string) (alarms.Music, error) {
+	query = strings.TrimSpace(query)
+	var it spotifyapi.Item
+	var err error
+	if k, id, ok := spotifyapi.ParseLink(query); ok {
+		it, err = s.Lookup(ctx, k, id)
+	} else {
+		switch kind {
+		case "liked":
+			it = spotifyapi.Liked()
+		case "my_playlist":
+			it, err = s.MyPlaylist(ctx, query)
+		case "":
+			it, err = s.Search(ctx, query, "any")
+		default:
+			it, err = s.Search(ctx, query, kind)
+		}
+	}
+	if err != nil {
+		return alarms.Music{}, err
+	}
+	return alarms.Music{Kind: it.Kind, URI: it.URI, Name: it.Name, Artist: it.Artist, Album: it.Album}, nil
+}
+
+// StartMusic plays what FindMusic found.
+func (p PlayMusic) StartMusic(ctx context.Context, m alarms.Music) error {
+	return p.play(ctx, spotifyapi.Item{Kind: m.Kind, URI: m.URI, Name: m.Name, Artist: m.Artist, Album: m.Album})
 }
 
 func (a Alarm) now() time.Time { return orNow(a.Now) }
@@ -44,7 +78,8 @@ func (Alarm) Decl() agent.FuncDecl {
 	return agent.FuncDecl{
 		Name: "alarm",
 		Description: "Set or change alarms on this speaker. \"на 7\" means the next 7:00; do not ask, say the result. " +
-			"Without days and date the alarm rings once. music is what to ask Spotify for instead of a ringtone. " +
+			"Without days and date the alarm rings once. music is what to wake to from Spotify instead of a ringtone: " +
+			"it is found now, and that exact thing plays; tell the user what the result names. " +
 			"snooze moves the alarm that just rang ten minutes ahead: \"отложи\". " +
 			"enable, disable and delete find the alarm by time, or by id from alarms_list; a lone alarm needs neither.",
 		Params: map[string]any{
@@ -56,19 +91,21 @@ func (Alarm) Decl() agent.FuncDecl {
 				"date":   map[string]any{"type": "string", "description": "YYYY-MM-DD, for one date"},
 				"title":  map[string]any{"type": "string"},
 				"sound":  map[string]any{"type": "string", "enum": sounds},
-				"music":  map[string]any{"type": "string"},
-				"id":     map[string]any{"type": "string"},
+				"music":  map[string]any{"type": "string", "description": "A song with its artist, an artist, an album or a playlist, spelled as it is really written"},
+				"music_kind": map[string]any{"type": "string", "enum": []string{"track", "artist", "album", "playlist", "any", "liked", "my_playlist"},
+					"description": "What music names; liked: the user's Liked Songs, with no music; my_playlist: one of the user's own playlists"},
+				"id": map[string]any{"type": "string"},
 			},
 			"required": []string{"action"},
 		},
 	}
 }
 
-func (a Alarm) Run(_ context.Context, args map[string]any) (map[string]any, error) {
+func (a Alarm) Run(ctx context.Context, args map[string]any) (map[string]any, error) {
 	action, _ := args["action"].(string)
 	switch action {
 	case "set":
-		return a.set(args)
+		return a.set(ctx, args)
 	case "snooze":
 		until, err := a.M.Snooze()
 		if err != nil {
@@ -102,7 +139,7 @@ func (a Alarm) Run(_ context.Context, args map[string]any) (map[string]any, erro
 	return nil, fmt.Errorf("unknown action %q", action)
 }
 
-func (a Alarm) set(args map[string]any) (map[string]any, error) {
+func (a Alarm) set(ctx context.Context, args map[string]any) (map[string]any, error) {
 	clock, _ := args["time"].(string)
 	h, m, err := parseClock(clock)
 	if err != nil {
@@ -119,11 +156,28 @@ func (a Alarm) set(args map[string]any) (map[string]any, error) {
 	if al.Sound != "" && !alarms.IsSound(al.Sound) {
 		return nil, fmt.Errorf("нет такой мелодии: %s", al.Sound)
 	}
+	kind, _ := args["music_kind"].(string)
+	var note string
+	if (al.Music != "" || kind == "liked") && a.Find != nil {
+		// Not found now is no reason to lose the alarm: it searches when it rings.
+		if m, err := a.Find(ctx, al.Music, kind); err != nil {
+			note = "сейчас не нашёл, поищу перед звонком: " + err.Error()
+		} else {
+			al.MusicItem = &m
+		}
+	}
 	al, err = a.M.AddAlarm(al)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"id": al.ID, "when": whenWords(a.now(), al.Next(a.now()))}, nil
+	res := map[string]any{"id": al.ID, "when": whenWords(a.now(), al.Next(a.now()))}
+	if al.MusicItem != nil {
+		res["music"] = al.MusicItem.Label()
+	}
+	if note != "" {
+		res["music_note"] = note
+	}
+	return res, nil
 }
 
 // find is the alarm the call means: by id, by time, or the only one there is.
@@ -344,6 +398,11 @@ func (l AlarmsList) Run(context.Context, map[string]any) (map[string]any, error)
 		e := map[string]any{"id": a.ID, "time": fmt.Sprintf("%d:%02d", a.Hour, a.Minute)}
 		if a.Title != "" {
 			e["title"] = a.Title
+		}
+		if a.MusicItem != nil {
+			e["music"] = a.MusicItem.Label()
+		} else if a.Music != "" {
+			e["music"] = a.Music
 		}
 		if next := a.Next(now); next.IsZero() {
 			e["off"] = true

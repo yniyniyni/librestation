@@ -43,7 +43,9 @@ func All(d Deps) []agent.Tool {
 		music(PlayMusic{S: d.Spotify, Radio: d.Radio, Shuffle: d.Shuffle}),
 		music(LikeTrack{S: d.Spotify}),
 		music(NowPlaying{S: d.Spotify}),
-		Alarm{M: d.Alarms},
+		Alarm{M: d.Alarms, Find: func(ctx context.Context, query, kind string) (alarms.Music, error) {
+			return FindMusic(ctx, d.Spotify, query, kind)
+		}},
 		TimerTool{M: d.Alarms},
 		AlarmsList{M: d.Alarms},
 	}

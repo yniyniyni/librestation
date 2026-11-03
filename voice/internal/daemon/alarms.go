@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -99,6 +100,28 @@ func (d *Daemon) alarmRoutes(api func(string, func(http.ResponseWriter, *http.Re
 		Disabled *bool   `json:"disabled"`
 		Sound    *string `json:"sound"`
 		Music    *string `json:"music"`
+		Kind     *string `json:"music_kind"`
+	}
+	// chooseMusic finds the music if the request named any, and says when it
+	// could not: the alarm is kept, to search when it rings.
+	chooseMusic := func(ctx context.Context, a *alarms.Alarm, b alarmBody) string {
+		if b.Music == nil && b.Kind == nil {
+			return ""
+		}
+		a.MusicItem = nil
+		kind := ""
+		if b.Kind != nil {
+			kind = *b.Kind
+		}
+		if d.opt.FindMusic == nil || (a.Music == "" && kind != "liked") {
+			return ""
+		}
+		m, err := d.opt.FindMusic(ctx, a.Music, kind)
+		if err != nil {
+			return "Музыку сейчас найти не удалось, будильник поищет её перед звонком: " + err.Error()
+		}
+		a.MusicItem = &m
+		return ""
 	}
 	apply := func(a *alarms.Alarm, b alarmBody) error {
 		set := func(dst *int, v *int) {
@@ -156,11 +179,15 @@ func (d *Daemon) alarmRoutes(api func(string, func(http.ResponseWriter, *http.Re
 		if err := apply(&a, b); err != nil {
 			return err
 		}
+		note := chooseMusic(r.Context(), &a, b)
 		a, err := c.AddAlarm(a)
 		if err != nil {
 			return badRequest(err.Error())
 		}
-		writeJSON(w, viewAlarm(a, time.Now()))
+		writeJSON(w, struct {
+			alarmView
+			Note string `json:"music_note,omitempty"`
+		}{viewAlarm(a, time.Now()), note})
 		return nil
 	})
 	api("PATCH /alarms/{id}", func(w http.ResponseWriter, r *http.Request) error {
@@ -175,10 +202,11 @@ func (d *Daemon) alarmRoutes(api func(string, func(http.ResponseWriter, *http.Re
 		if err := apply(a, b); err != nil {
 			return err
 		}
+		note := chooseMusic(r.Context(), a, b)
 		if err := c.UpdateAlarm(*a); err != nil {
 			return notFound(err.Error())
 		}
-		writeOK(w)
+		writeJSON(w, map[string]any{"ok": true, "music_note": note})
 		return nil
 	})
 	api("DELETE /alarms/{id}", func(w http.ResponseWriter, r *http.Request) error {

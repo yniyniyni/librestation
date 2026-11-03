@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,5 +225,103 @@ func TestDurationWords(t *testing.T) {
 		if got := durationWords(c.d); got != c.want {
 			t.Errorf("%v: %q, want %q", c.d, got, c.want)
 		}
+	}
+}
+
+func TestFindMusicByKind(t *testing.T) {
+	var q, typ string
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		q, typ = r.URL.Query().Get("q"), r.URL.Query().Get("type")
+		w.Write([]byte(`{"artists":{"items":[{"uri":"spotify:artist:a1","name":"The Weeknd"}]}}`))
+	})
+	m, err := FindMusic(context.Background(), c, "the weeknd", "artist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q != "the weeknd" || typ != "artist" || m.Kind != "artist" || m.URI != "spotify:artist:a1" || m.Name != "The Weeknd" {
+		t.Errorf("q %q type %q: %+v", q, typ, m)
+	}
+}
+
+func TestFindMusicLiked(t *testing.T) {
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) { t.Errorf("no call needed: %s", r.URL) })
+	m, err := FindMusic(context.Background(), c, "", "liked")
+	if err != nil || m.Kind != "liked" || m.URI == "" {
+		t.Errorf("%+v, %v", m, err)
+	}
+}
+
+func TestFindMusicByLink(t *testing.T) {
+	var path string
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		w.Write([]byte(`{"uri":"spotify:track:0VjI","name":"Blinding Lights","artists":[{"name":"The Weeknd"}],"album":{"uri":"spotify:album:al1"}}`))
+	})
+	for _, link := range []string{
+		"https://open.spotify.com/track/0VjI?si=abc",
+		"https://open.spotify.com/intl-ru/track/0VjI",
+		"spotify:track:0VjI",
+	} {
+		m, err := FindMusic(context.Background(), c, link, "any")
+		if err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if path != "/v1/tracks/0VjI" || m.URI != "spotify:track:0VjI" || m.Name != "Blinding Lights" || m.Artist != "The Weeknd" || m.Album != "spotify:album:al1" {
+			t.Errorf("%s: path %s: %+v", link, path, m)
+		}
+	}
+}
+
+// Whatever Spotify says of a link, the track asked for is what plays.
+func TestFindMusicLinkWithoutDetails(t *testing.T) {
+	c := musicClient(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", http.StatusNotFound) })
+	if _, err := FindMusic(context.Background(), c, "https://open.spotify.com/track/gone", "any"); err == nil {
+		t.Error("a link to nothing passed")
+	}
+}
+
+func TestSetAlarmChoosesTheMusicNow(t *testing.T) {
+	g := newAlarmRig(t)
+	var gotQ, gotKind string
+	g.a.Find = func(_ context.Context, q, kind string) (alarms.Music, error) {
+		gotQ, gotKind = q, kind
+		return alarms.Music{Kind: "track", URI: "spotify:track:t1", Name: "Blinding Lights", Artist: "The Weeknd"}, nil
+	}
+	r := g.alarm(map[string]any{"action": "set", "time": "07:00", "music": "блайндинг лайтс", "music_kind": "track"})
+	if gotQ != "блайндинг лайтс" || gotKind != "track" {
+		t.Errorf("searched %q %q", gotQ, gotKind)
+	}
+	if r["music"] != "Blinding Lights, The Weeknd" {
+		t.Errorf("%v", r)
+	}
+	if a := g.m.Alarms()[0]; a.MusicItem == nil || a.MusicItem.URI != "spotify:track:t1" {
+		t.Errorf("%+v", a)
+	}
+}
+
+// Liked Songs take no query.
+func TestSetAlarmOnLiked(t *testing.T) {
+	g := newAlarmRig(t)
+	g.a.Find = func(_ context.Context, q, kind string) (alarms.Music, error) {
+		return alarms.Music{Kind: kind, URI: "spotify:collection", Name: "Любимые треки"}, nil
+	}
+	g.alarm(map[string]any{"action": "set", "time": "07:00", "music_kind": "liked"})
+	if a := g.m.Alarms()[0]; a.MusicItem == nil || a.MusicItem.Kind != "liked" {
+		t.Errorf("%+v", a)
+	}
+}
+
+// No network now is no reason to lose the alarm: it searches when it rings.
+func TestSetAlarmWhenTheMusicCannotBeFound(t *testing.T) {
+	g := newAlarmRig(t)
+	g.a.Find = func(context.Context, string, string) (alarms.Music, error) {
+		return alarms.Music{}, errors.New("no network")
+	}
+	r := g.alarm(map[string]any{"action": "set", "time": "07:00", "music": "The Weeknd"})
+	if r["music_note"] == nil {
+		t.Errorf("%v", r)
+	}
+	if a := g.m.Alarms()[0]; a.MusicItem != nil || a.Music != "The Weeknd" {
+		t.Errorf("%+v", a)
 	}
 }

@@ -76,8 +76,8 @@ func newRingRig(t *testing.T) *ringRig {
 		},
 		resume: func() error { note("resume"); return nil },
 		hush:   func() { note("hush") },
-		music: func(ctx context.Context, q string) error {
-			note("music " + q)
+		music: func(ctx context.Context, ring alarms.Ring) error {
+			note("music " + ring.Music)
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			return g.musicErr
@@ -368,7 +368,7 @@ func TestMusicThatStopsFallsToSound(t *testing.T) {
 func TestMusicRequestCancelledAtFallback(t *testing.T) {
 	g := newRingRig(t)
 	asked, cancelled := make(chan struct{}), make(chan struct{})
-	g.r.music = func(ctx context.Context, q string) error {
+	g.r.music = func(ctx context.Context, ring alarms.Ring) error {
 		close(asked)
 		<-ctx.Done()
 		close(cancelled)
@@ -433,5 +433,25 @@ func TestStoppedBeforeItBeganDoesNothing(t *testing.T) {
 	g.r.run(ctx, alarms.Ring{Kind: alarms.KindAlarm})
 	if c := g.calls(); len(c) != 0 {
 		t.Errorf("%v", c)
+	}
+}
+
+// Chosen when it was set, the music needs no words to search by.
+func TestMusicChosenAhead(t *testing.T) {
+	g := newRingRig(t)
+	g.r.Start(alarms.Ring{Kind: alarms.KindAlarm, Item: &alarms.Music{Kind: "liked", URI: "spotify:collection"}})
+	for !has(g.calls(), "music ") {
+		time.Sleep(time.Millisecond)
+	}
+	g.mu.Lock()
+	g.playing = true
+	g.mu.Unlock()
+	g.tick(time.Second)
+	if has(g.calls(), "play") {
+		t.Errorf("rang over the music: %v", g.calls())
+	}
+	g.stop()
+	if !has(g.calls(), "pause") {
+		t.Errorf("%v", g.calls())
 	}
 }

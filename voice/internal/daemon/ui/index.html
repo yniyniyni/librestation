@@ -250,7 +250,11 @@
             </div>
           </div>
           <label class="field"><span>Мелодия</span><select id="alarmsound"></select></label>
-          <label class="field"><span>Музыка вместо мелодии<br><span class="muted small">что включить в Spotify</span></span><input type="text" id="alarmmusic" maxlength="120" placeholder="необязательно"></label>
+          <label class="field"><span>Музыка вместо мелодии</span><select id="alarmkind">
+            <option value="any">Что найдётся</option><option value="track">Трек</option><option value="artist">Артист</option>
+            <option value="album">Альбом</option><option value="playlist">Плейлист</option><option value="my_playlist">Мой плейлист</option>
+            <option value="liked">Любимые треки</option></select></label>
+          <label class="field" id="alarmmusicrow"><span>Название <span class="muted small">или ссылка из Spotify; пусто — мелодия</span></span><input type="text" id="alarmmusic" maxlength="300" placeholder="необязательно"></label>
           <label class="field"><span>Название</span><input type="text" id="alarmtitle" maxlength="60" placeholder="необязательно"></label>
           <div class="row wrap">
             <button class="primary" id="alarmsave">Поставить</button>
@@ -676,8 +680,12 @@ function alarmNext(a) {
   const when = diff === 0 ? "сегодня" : diff === 1 ? "завтра" : t.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
   return `зазвонит ${when} в ${clock}`;
 }
+function alarmMusic(a) {
+  const m = a.music_item;
+  return m ? [m.name, m.artist].filter(Boolean).join(", ") : a.music;
+}
 function alarmRow(a) {
-  const bits = [alarmDays(a), a.title, a.music && "музыка: " + a.music].filter(Boolean).map(esc).join(" · ");
+  const bits = [alarmDays(a), a.title, alarmMusic(a) && "музыка: " + alarmMusic(a)].filter(Boolean).map(esc).join(" · ");
   const hm = a.hour + ":" + String(a.minute).padStart(2, "0");
   return `<div class="alarm${a.next ? "" : " off"}">
     <div><div class="bigtime">${hm}</div><div class="small muted">${bits}<br>${esc(alarmNext(a))}</div></div>
@@ -738,6 +746,7 @@ function alarmFormReset() {
   $("alarmsave").textContent = "Поставить";
   $("alarmcancel").hidden = true;
   $("alarmtime").value = "07:00"; $("alarmmusic").value = ""; $("alarmtitle").value = "";
+  $("alarmkind").value = "any"; $("alarmmusicrow").hidden = false;
   $("alarmsound").selectedIndex = 0;
   document.querySelectorAll("#alarmdays input").forEach(c => { c.checked = false; });
 }
@@ -748,6 +757,8 @@ function alarmFormFill(a) {
   $("alarmcancel").hidden = false;
   $("alarmtime").value = String(a.hour).padStart(2, "0") + ":" + String(a.minute).padStart(2, "0");
   $("alarmmusic").value = a.music || ""; $("alarmtitle").value = a.title || "";
+  $("alarmkind").value = (a.music_item && a.music_item.kind) || "any";
+  $("alarmmusicrow").hidden = $("alarmkind").value === "liked";
   if (a.sound) $("alarmsound").value = a.sound; else $("alarmsound").selectedIndex = 0;
   document.querySelectorAll("#alarmdays input").forEach(c => { c.checked = (a.days || []).includes(+c.value); });
   $("alarmtime").focus();
@@ -871,14 +882,16 @@ $("timeradd").onclick = () => run($("timeradd"), async () => {
   $("timertitle").value = "";
 });
 $("alarmcancel").onclick = alarmFormReset;
+$("alarmkind").onchange = () => { $("alarmmusicrow").hidden = $("alarmkind").value === "liked"; };
 $("alarmsave").onclick = () => run($("alarmsave"), async () => {
   const [hour, minute] = $("alarmtime").value.split(":").map(Number);
   if (!Number.isInteger(hour)) throw new Error("Укажите время");
   const days = [...document.querySelectorAll("#alarmdays input:checked")].map(c => +c.value);
-  const body = { hour, minute, days, title: $("alarmtitle").value.trim(), music: $("alarmmusic").value.trim(), sound: $("alarmsound").value, disabled: false };
-  if (alarmEdit) await api("PATCH", "/alarms/" + alarmEdit, body);
-  else await api("POST", "/alarms", body);
+  const kind = $("alarmkind").value;
+  const body = { hour, minute, days, title: $("alarmtitle").value.trim(), music: kind === "liked" ? "" : $("alarmmusic").value.trim(), music_kind: kind, sound: $("alarmsound").value, disabled: false };
+  const r = alarmEdit ? await api("PATCH", "/alarms/" + alarmEdit, body) : await api("POST", "/alarms", body);
   alarmFormReset();
+  if (r.music_note) toast(r.music_note);
 });
 
 const settingsPatch = {

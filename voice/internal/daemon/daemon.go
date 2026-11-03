@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"voice/internal/alarms"
 
 	miccap "voice/internal/capture"
 	"voice/internal/dsp"
@@ -39,6 +40,8 @@ type Options struct {
 	Ring RingControl
 	// Alarms is what the panel sets and shows; nil = none.
 	Alarms AlarmsControl
+	// FindMusic chooses an alarm's music when it is set; nil = searched at the ring.
+	FindMusic func(ctx context.Context, query, kind string) (alarms.Music, error)
 	// Assistant runs the "assistant" word action and gets every audio block;
 	// nil = that action is only logged.
 	Assistant Assistant

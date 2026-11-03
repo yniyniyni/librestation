@@ -163,9 +163,12 @@ func cmdRun(args []string) error {
 		},
 		pause:  sol.Pause,
 		resume: sol.Play,
-		music: func(ctx context.Context, query string) error {
-			_, err := tools.PlayMusic{S: sp, Radio: sol.PlayRadio, Shuffle: sol.SetShuffle}.
-				Run(ctx, map[string]any{"query": query, "kind": "any"})
+		music: func(ctx context.Context, ring alarms.Ring) error {
+			p := tools.PlayMusic{S: sp, Radio: sol.PlayRadio, Shuffle: sol.SetShuffle}
+			if ring.Item != nil {
+				return p.StartMusic(ctx, *ring.Item)
+			}
+			_, err := p.Run(ctx, map[string]any{"query": ring.Music, "kind": "any"})
 			return err
 		},
 		led:   ledSend,
@@ -175,6 +178,9 @@ func cmdRun(args []string) error {
 	}
 	alm := alarms.New(filepath.Join(opt.DataDir, "alarms.json"), rng, time.Now)
 	opt.Ring, opt.Alarms = alm, alm
+	opt.FindMusic = func(ctx context.Context, query, kind string) (alarms.Music, error) {
+		return tools.FindMusic(ctx, sp, query, kind)
+	}
 	if knob != "" {
 		go readKnob(ctx, knob, func(code uint16) {
 			if alm.ConsumesKnob() {

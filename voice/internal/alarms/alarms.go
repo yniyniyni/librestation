@@ -20,10 +20,30 @@ type Alarm struct {
 	Disabled bool   `json:"disabled,omitempty"`
 	Sound    string `json:"sound,omitempty"` // a name from Sounds; empty = the default
 	Music    string `json:"music,omitempty"` // what to ask Spotify for instead of Sound
+	// MusicItem is what Music was found to be when the alarm was set: exactly
+	// this plays. Without it Music is searched for at the ring.
+	MusicItem *Music `json:"music_item,omitempty"`
 
 	SnoozeUntil time.Time `json:"snooze_until,omitzero"`
 	Armed       time.Time `json:"armed,omitzero"` // set or switched on; nothing before it counts
 	Fired       time.Time `json:"fired,omitzero"` // the firing that rang last, as scheduled
+}
+
+// Music is one thing Spotify can play, found ahead of the ring.
+type Music struct {
+	Kind   string `json:"kind"` // track, artist, album, playlist, liked
+	URI    string `json:"uri"`
+	Name   string `json:"name,omitempty"`
+	Artist string `json:"artist,omitempty"`
+	Album  string `json:"album,omitempty"` // a track's album: what goes on after it
+}
+
+// Label is how the music is named to the user.
+func (m Music) Label() string {
+	if m.Artist != "" {
+		return m.Name + ", " + m.Artist
+	}
+	return m.Name
 }
 
 // Timer runs down to EndsAt, or holds Left while Paused.

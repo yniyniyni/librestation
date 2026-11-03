@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -216,5 +218,48 @@ func TestInfoNamesAlarms(t *testing.T) {
 	info := d.info()["features"].(map[string]bool)
 	if !info["alarms"] {
 		t.Errorf("%v", info)
+	}
+}
+
+func TestAPIChoosesTheMusic(t *testing.T) {
+	srv, m, d := alarmServer(t)
+	d.opt.FindMusic = func(_ context.Context, q, kind string) (alarms.Music, error) {
+		if q == "нет" {
+			return alarms.Music{}, errors.New("ничего не найдено")
+		}
+		return alarms.Music{Kind: kind, URI: "spotify:artist:a1", Name: "The Weeknd"}, nil
+	}
+	url := srv.URL + apiBase
+	r := call(t, "POST", url+"/alarms", `{"hour":7,"music":"the weeknd","music_kind":"artist"}`)
+	wantStatus(t, r, 200)
+	a := m.Alarms()[0]
+	if a.MusicItem == nil || a.MusicItem.URI != "spotify:artist:a1" {
+		t.Fatalf("%+v", a)
+	}
+	// Something else changing leaves the choice alone; clearing the text clears it.
+	wantStatus(t, call(t, "PATCH", url+"/alarms/"+a.ID, `{"hour":8}`), 200)
+	if m.Alarms()[0].MusicItem == nil {
+		t.Error("lost on another change")
+	}
+	wantStatus(t, call(t, "PATCH", url+"/alarms/"+a.ID, `{"music":""}`), 200)
+	if b := m.Alarms()[0]; b.MusicItem != nil || b.Music != "" {
+		t.Errorf("%+v", b)
+	}
+	// Not found: kept to be searched at the ring, and the panel is told.
+	r = call(t, "PATCH", url+"/alarms/"+a.ID, `{"music":"нет"}`)
+	wantStatus(t, r, 200)
+	var v struct {
+		Note string `json:"music_note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&v); err != nil || v.Note == "" {
+		t.Errorf("%+v %v", v, err)
+	}
+	if b := m.Alarms()[0]; b.MusicItem != nil || b.Music != "нет" {
+		t.Errorf("%+v", b)
+	}
+	// Liked Songs need no words.
+	wantStatus(t, call(t, "PATCH", url+"/alarms/"+a.ID, `{"music":"","music_kind":"liked"}`), 200)
+	if b := m.Alarms()[0]; b.MusicItem == nil || b.MusicItem.Kind != "liked" {
+		t.Errorf("%+v", b)
 	}
 }
