@@ -635,12 +635,34 @@ func TestLiveServerInterrupted(t *testing.T) {
 	g.open()
 	g.send(f, mHeard("расскажи"), mAudio())
 	g.untilState("speaking")
+	g.speak(loudSpeech()) // local evidence the user spoke
 	g.send(f, mInterrupted())
 	g.until("flush", func() bool { return g.flushes() == 1 })
 	g.untilState("listening")
 	g.reply(f, "другое", "Хорошо.")
 	if c := g.chunks(); c != 2 {
 		t.Errorf("played %d chunks, want 2", c)
+	}
+}
+
+// The server's Interrupted without local evidence is a false positive: the
+// already-queued audio finishes and the session goes to follow-up instead of
+// flushing mid-word.
+func TestLiveServerInterruptedIgnoredWithoutLocalEvidence(t *testing.T) {
+	g := newLiveRig(t)
+	f := g.conn()
+	g.open()
+	g.send(f, mHeard("какая погода"), mAudio())
+	g.untilState("speaking")
+	// No loud LiveAudio: the server's VAD false-triggered on stale audio.
+	g.send(f, mInterrupted())
+	// The queued audio plays out, then the session transitions to follow-up.
+	g.untilState("followup")
+	if g.flushes() != 0 {
+		t.Error("reply flushed on a false server interrupt")
+	}
+	if c := g.chunks(); c != 1 {
+		t.Errorf("played %d chunks, want 1 (the audio already queued)", c)
 	}
 }
 

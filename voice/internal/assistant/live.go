@@ -159,6 +159,7 @@ func (s *Session) micOff() {
 	s.amu.Lock()
 	s.mute = true
 	s.watch.peak = silentDB
+	s.watch.loud = 0
 	s.amu.Unlock()
 }
 
@@ -530,7 +531,12 @@ func (r *liveRun) message(lm liveMsg) bool {
 	}
 	if c := m.ServerContent; c != nil {
 		if c.Interrupted {
-			r.interrupted()
+			if r.state == "speaking" && !r.user && r.s.echoPeak() < bargeInDBFS {
+				log.Printf("assistant: Live: server interrupted, local peak %.0f dBFS: finishing the reply", r.s.echoPeak())
+				r.turnComplete()
+			} else {
+				r.interrupted()
+			}
 		}
 		if tr := c.InputTranscription; tr != nil && tr.Text != "" {
 			t := r.begin()
