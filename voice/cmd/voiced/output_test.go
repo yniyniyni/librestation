@@ -95,3 +95,40 @@ func TestDuckScalesGain(t *testing.T) {
 	o.duck(7) // clamped
 	check(60, 1)
 }
+
+func TestAmpWatchSetsItBack(t *testing.T) {
+	o := newOutput(nil, "")
+	o.mu.Lock()
+	o.target = 27
+	o.mu.Unlock()
+	var w ampWatch
+	now := time.Now()
+	o.checkAmp(&w, 132, now) // what volume 27 makes
+	o.checkAmp(&w, 132, now.Add(ampEvery))
+	if _, force := o.wanted(); force {
+		t.Fatal("nothing changed, yet it is set again")
+	}
+	o.checkAmp(&w, 109, now.Add(2*ampEvery)) // the HAL at a track change
+	if v, force := o.wanted(); !force || v != 27 {
+		t.Errorf("wanted %d, force %v; want 27 written again", v, force)
+	}
+}
+
+func TestAmpWatchLearnsANewVolume(t *testing.T) {
+	o := newOutput(nil, "")
+	o.mu.Lock()
+	o.target = 27
+	o.mu.Unlock()
+	var w ampWatch
+	now := time.Now()
+	o.checkAmp(&w, 132, now)
+	o.mu.Lock()
+	o.target, o.wrote = 40, now
+	o.mu.Unlock()
+	o.checkAmp(&w, 150, now.Add(ampSettle/2)) // on its way
+	o.checkAmp(&w, 160, now.Add(ampSettle))   // there
+	o.checkAmp(&w, 160, now.Add(ampSettle+ampEvery))
+	if _, force := o.wanted(); force {
+		t.Error("a volume change taken for the HAL's")
+	}
+}

@@ -19,6 +19,10 @@ type Event struct {
 	Status string
 }
 
+// EventConnected is the Type of the event sent after each (re)connect: Soloist
+// may have restarted, with its start values.
+const EventConnected = "connected"
+
 // ErrNotConnected is returned when no WebSocket connection is up.
 var ErrNotConnected = errors.New("soloist: not connected")
 
@@ -69,6 +73,9 @@ func (c *Client) run(ctx context.Context) {
 			c.conn = conn
 			c.gen++
 			c.mu.Unlock()
+			if c.onEvent != nil {
+				c.onEvent(Event{Type: EventConnected})
+			}
 			c.readLoop(ctx, conn)
 			c.mu.Lock()
 			c.conn = nil

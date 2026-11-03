@@ -196,6 +196,10 @@ func (s *Sync) Key(code uint16) {
 // ignored; any other one is a change made in Spotify and becomes current.
 // Resuming playback calls Resumed (see resumeDelays).
 func (s *Sync) OnEvent(e soloist.Event) {
+	if e.Type == soloist.EventConnected {
+		s.reapply()
+		return
+	}
 	if e.Status != "" {
 		s.onStatus(e.Status)
 	}
@@ -225,9 +229,22 @@ func (s *Sync) OnEvent(e soloist.Event) {
 	if len(s.inflight) > 0 || v == s.cur {
 		return // stale report from before our latest set
 	}
+	log.Printf("volume: %d from Spotify, was %d", v, s.cur)
 	s.cur = v
 	s.save()
 	s.outLocked()
+}
+
+// reapply sends the volume again to a Soloist that may have restarted: what it
+// reports until then is its --initial-volume, which must not become ours.
+func (s *Sync) reapply() {
+	s.mu.Lock()
+	again := s.applied
+	s.applied = false
+	s.mu.Unlock()
+	if again {
+		go s.Run(context.Background()) // ends as soon as it is sent
+	}
 }
 
 // onStatus notes the playback status; buffering (track changes, seeks)

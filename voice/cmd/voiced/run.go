@@ -106,6 +106,13 @@ func cmdRun(args []string) error {
 		opt.OnLED = sender.Send
 	}
 	go out.run(ctx)
+	if hwCmd != "" {
+		if m, err := openMixerControl(mixerDevice, ampControl); err != nil {
+			log.Printf("amplifier watch: %v", err)
+		} else {
+			go out.watchAmp(ctx, m.read)
+		}
+	}
 	// The daemon watches playback and volume changes from every source to
 	// tell when the user takes a voice command back; it is created last.
 	var dmn atomic.Pointer[daemon.Daemon]

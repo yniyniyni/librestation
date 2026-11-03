@@ -159,7 +159,11 @@ func TestNotConnectedErrors(t *testing.T) {
 func TestVolumeFromEvents(t *testing.T) {
 	f := newFake(t)
 	evs := make(chan Event, 8)
-	c := dial(t, f.url(), func(e Event) { evs <- e })
+	c := dial(t, f.url(), func(e Event) {
+		if e.Type != EventConnected {
+			evs <- e
+		}
+	})
 	sc := f.conn(t)
 	if _, ok := c.Volume(); ok {
 		t.Fatal("volume known too early")
@@ -214,7 +218,11 @@ func TestClientReconnects(t *testing.T) {
 func TestErrorEventIsNotFatal(t *testing.T) {
 	f := newFake(t)
 	evs := make(chan Event, 8)
-	c := dial(t, f.url(), func(e Event) { evs <- e })
+	c := dial(t, f.url(), func(e Event) {
+		if e.Type != EventConnected {
+			evs <- e
+		}
+	})
 	sc := f.conn(t)
 	waitConnected(t, c)
 	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"error","message":"not logged in"}`))
@@ -230,5 +238,20 @@ func TestErrorEventIsNotFatal(t *testing.T) {
 	case <-f.conns:
 		t.Fatal("reconnected after error event")
 	case <-time.After(1500 * time.Millisecond):
+	}
+}
+
+func TestConnectEvent(t *testing.T) {
+	f := newFake(t)
+	evs := make(chan Event, 8)
+	dial(t, f.url(), func(e Event) { evs <- e })
+	f.conn(t)
+	select {
+	case e := <-evs:
+		if e.Type != EventConnected {
+			t.Errorf("event %+v, want the connect first", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no connect event")
 	}
 }

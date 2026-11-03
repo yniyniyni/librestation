@@ -243,6 +243,27 @@ func TestEventsBeforeApplyIgnored(t *testing.T) {
 	}
 }
 
+// Soloist restarted: it reports its --initial-volume, which must not become
+// the user's volume, and gets ours back.
+func TestSoloistRestartKeepsTheVolume(t *testing.T) {
+	s, f, _ := newSync(t, "40")
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	s.OnEvent(soloist.Event{Type: soloist.EventConnected})
+	s.OnEvent(vol(15))
+	deadline := time.Now().Add(2 * time.Second)
+	for len(f.got()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.got(); len(got) != 2 || got[1] != 40 {
+		t.Errorf("sent %v, want 40 twice", got)
+	}
+	if s.Volume() != 40 {
+		t.Errorf("volume %d, want 40", s.Volume())
+	}
+}
+
 func TestRunRetriesUntilApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "volume")
 	f := &fakeSetter{err: soloist.ErrNotConnected}
