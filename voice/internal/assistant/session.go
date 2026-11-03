@@ -64,7 +64,7 @@ type Player interface {
 	Play(ctx context.Context, pcm []int16, rate int) error
 }
 
-// Deps are the session's collaborators. Duck, LED and Stock may be nil.
+// Deps are the session's collaborators. Duck, LED, Stock and Earcon may be nil.
 type Deps struct {
 	Agent  *agent.Agent
 	TTS    func() tts.Engine // the engine chosen in the panel
@@ -76,6 +76,8 @@ type Deps struct {
 	// Player that cannot stream, leaves every conversation to the agent.
 	Live func(ctx context.Context, handle string) (LiveSession, error)
 	Now  func() time.Time // nil = time.Now
+	// Earcon is the sound played as a request begins; nil = none.
+	Earcon func() ([]int16, int)
 }
 
 // Status is the session's state for the panel.
@@ -299,6 +301,15 @@ func (s *Session) listening() bool {
 
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
+	if s.d.Earcon != nil {
+		// Not waited for: what the user says right away must not wait for it.
+		go func() {
+			pcm, rate := s.d.Earcon()
+			if err := s.d.Player.Play(ctx, pcm, rate); err != nil && ctx.Err() == nil && !errors.Is(err, ErrFlushed) {
+				log.Printf("assistant: earcon: %v", err)
+			}
+		}()
+	}
 	var left liveLeft
 	if lp, ok := s.d.Player.(livePlayer); ok && s.d.Live != nil {
 		var done bool

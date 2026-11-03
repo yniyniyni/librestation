@@ -1101,3 +1101,30 @@ func TestBrief(t *testing.T) {
 		t.Errorf("brief = %s", got)
 	}
 }
+
+func TestEarconOnWake(t *testing.T) {
+	g := newLiveRig(t)
+	g.s.d.Earcon = Earcon
+	f := g.conn()
+	g.open()
+	g.until("the sound", func() bool { n, _ := g.player.counts(); return n == 1 })
+	f.Close()
+	g.ended()
+}
+
+func TestEarconIsShortAndQuiet(t *testing.T) {
+	pcm, rate := Earcon()
+	if d := float64(len(pcm)) / float64(rate); d < 0.15 || d > 0.4 {
+		t.Errorf("%.2f s long", d)
+	}
+	peak := 0
+	for _, v := range pcm {
+		peak = max(peak, int(v), -int(v))
+	}
+	if peak == 0 || peak > 32767/3 {
+		t.Errorf("peak %d", peak)
+	}
+	if pcm[0] != 0 || pcm[len(pcm)-1] > 300 || pcm[len(pcm)-1] < -300 {
+		t.Errorf("starts at %d, ends at %d: a click", pcm[0], pcm[len(pcm)-1])
+	}
+}
