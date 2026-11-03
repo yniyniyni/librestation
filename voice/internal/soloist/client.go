@@ -53,6 +53,12 @@ type Client struct {
 	status  string
 	shuffle bool
 	lastErr string // its last error message, since clearErr
+
+	// The playing position as last reported, and when.
+	posMs    float64
+	posSpeed float64
+	posAt    time.Time
+	posKnown bool
 }
 
 // Dial starts connecting in the background and returns immediately. The
@@ -120,6 +126,10 @@ type wireMsg struct {
 	Options *struct {
 		Shuffle bool `json:"shuffle"`
 	} `json:"options"`
+	Position *struct {
+		Ms    float64 `json:"position_ms"`
+		Speed float64 `json:"speed"`
+	} `json:"position"`
 }
 
 func (c *Client) readLoop(ctx context.Context, conn *websocket.Conn) {
@@ -150,6 +160,9 @@ func (c *Client) note(m wireMsg) {
 	defer c.mu.Unlock()
 	if m.Type == "error" {
 		c.lastErr = m.Message
+	}
+	if p := m.Position; p != nil {
+		c.posMs, c.posSpeed, c.posAt, c.posKnown = p.Ms, p.Speed, time.Now(), true
 	}
 	if m.Type != "playback_state" {
 		return
@@ -308,6 +321,27 @@ func (c *Client) PlayRadio(ctx context.Context, track string) error {
 		}
 	}
 	return fmt.Errorf("soloist: трек не начался")
+}
+
+// Seek moves playback to position, or by it from where playback is now when
+// relative is set; a move before the start goes to the start, and one past the
+// end is Soloist's to handle.
+func (c *Client) Seek(position time.Duration, relative bool) error {
+	ms := float64(position.Milliseconds())
+	if relative {
+		c.mu.Lock()
+		if !c.posKnown || c.item == "" {
+			c.mu.Unlock()
+			return errors.New("сейчас ничего не играет")
+		}
+		ms += c.posMs + float64(time.Since(c.posAt).Milliseconds())*c.posSpeed
+		c.mu.Unlock()
+	}
+	return c.send(struct {
+		Type       string `json:"type"`
+		Command    string `json:"command"`
+		PositionMs int64  `json:"position_ms"`
+	}{"command", "seek", int64(max(ms, 0))})
 }
 
 // SetShuffle turns shuffle on or off and waits for Soloist to report it: what

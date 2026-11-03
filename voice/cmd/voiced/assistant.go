@@ -70,6 +70,7 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Music:       music,
 		Radio:       sol.PlayRadio,
 		Shuffle:     sol.SetShuffle,
+		Seek:        sol.Seek,
 	})}
 
 	if err := os.MkdirAll(c.piperOut, 0o755); err != nil {

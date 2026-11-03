@@ -2,6 +2,7 @@ package soloist
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -342,5 +343,68 @@ func TestPlayRadioSkipsEarlierQueue(t *testing.T) {
 	state("spotify:track:x")
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSeekRelative(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	if err := c.Seek(30*time.Second, true); err == nil {
+		t.Fatal("nothing playing: want an error")
+	}
+	sc.Write(context.Background(), websocket.MessageText, []byte(`{"type":"playback_state","status":"paused","item":{"uri":"spotify:track:t"},"position":{"position_ms":100000,"speed":0}}`))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		err := c.Seek(30*time.Second, true)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"seek","position_ms":130000}` {
+		t.Fatalf("got %s", got)
+	}
+	if err := c.Seek(-5*time.Minute, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"seek","position_ms":0}` {
+		t.Fatalf("before the start: got %s", got)
+	}
+	if err := c.Seek(time.Minute, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.msg(t); got != `{"type":"command","command":"seek","position_ms":60000}` {
+		t.Fatalf("absolute: got %s", got)
+	}
+}
+
+// A position_sync moves the position while playing, between the states.
+func TestSeekFollowsPlayback(t *testing.T) {
+	f := newFake(t)
+	c := dial(t, f.url(), nil)
+	sc := f.conn(t)
+	waitConnected(t, c)
+	ctx := context.Background()
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"playback_state","status":"playing","item":{"uri":"spotify:track:t"},"position":{"position_ms":0,"speed":1}}`))
+	sc.Write(ctx, websocket.MessageText, []byte(`{"type":"position_sync","position":{"position_ms":50000,"speed":1}}`))
+	if !c.wait(ctx, 5*time.Second, func() bool { return c.posMs == 50000 }) {
+		t.Fatal("position_sync not taken")
+	}
+	if err := c.Seek(10*time.Second, true); err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		PositionMs int64 `json:"position_ms"`
+	}
+	if err := json.Unmarshal([]byte(f.msg(t)), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.PositionMs < 60000 || m.PositionMs > 62000 {
+		t.Errorf("position %d, want just past 60000", m.PositionMs)
 	}
 }
