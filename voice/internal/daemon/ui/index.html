@@ -219,10 +219,12 @@
       <div class="group">
         <div class="field">
           <span>Новый таймер</span>
-          <input type="number" id="timermin" min="0" max="1440" value="10" aria-label="Минуты" style="flex:0 1 90px">
-          <span class="muted" style="flex:none">мин</span>
-          <input type="number" id="timersec" min="0" max="59" value="0" aria-label="Секунды" style="flex:0 1 90px">
-          <span class="muted" style="flex:none">с</span>
+          <span class="row" style="flex:none;gap:8px">
+            <input type="number" id="timermin" min="0" max="1440" value="10" aria-label="Минуты" style="width:72px">
+            <span class="muted">мин</span>
+            <input type="number" id="timersec" min="0" max="59" value="0" aria-label="Секунды" style="width:64px">
+            <span class="muted">с</span>
+          </span>
         </div>
         <label class="field"><span>Название</span><input type="text" id="timertitle" maxlength="60" placeholder="необязательно"></label>
         <div class="row"><button class="primary" id="timeradd">Запустить</button></div>
@@ -671,7 +673,7 @@ function alarmNext(a) {
   const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const diff = Math.round((day(t) - day(now)) / 864e5);
   const clock = t.toLocaleTimeString("ru-RU", { hour: "numeric", minute: "2-digit" });
-  const when = diff === 0 ? "сегодня" : diff === 1 ? "завтра" : t.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
+  const when = diff === 0 ? "сегодня" : diff === 1 ? "завтра" : t.toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
   return `зазвонит ${when} в ${clock}`;
 }
 function alarmRow(a) {

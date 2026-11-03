@@ -210,3 +210,11 @@ func TestChangeNoticeUnderTheLock(t *testing.T) {
 		t.Fatal("deadlock")
 	}
 }
+
+func TestInfoNamesAlarms(t *testing.T) {
+	_, _, d := alarmServer(t)
+	info := d.info()["features"].(map[string]bool)
+	if !info["alarms"] {
+		t.Errorf("%v", info)
+	}
+}

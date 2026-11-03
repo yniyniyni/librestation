@@ -716,7 +716,7 @@ func (d *Daemon) info() map[string]any {
 	d.mu.Unlock()
 	return map[string]any{"api_version": APIVersion, "name": name, "features": map[string]bool{
 		"assistant": d.opt.Assistant != nil, "judge": d.opt.Judge != nil, "led": d.opt.LED != nil,
-		"player": d.opt.Actuator != nil, "quick": d.opt.Commands != nil, "volume": d.opt.Volume != nil,
+		"player": d.opt.Actuator != nil, "quick": d.opt.Commands != nil, "volume": d.opt.Volume != nil, "alarms": d.opt.Alarms != nil,
 	}}
 }
 

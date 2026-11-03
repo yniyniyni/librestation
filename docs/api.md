@@ -93,7 +93,7 @@ dns-sd -B _librestation._tcp
 
 ```json
 {"api_version": 1, "name": "localhost",
- "features": {"assistant": true, "judge": true, "led": true, "player": true, "quick": true, "volume": true}}
+ "features": {"alarms": true, "assistant": true, "judge": true, "led": true, "player": true, "quick": true, "volume": true}}
 ```
 
 **`GET /state`** отдаёт снимок. `null` у `volume` значит, что управления громкостью нет; `null` у
