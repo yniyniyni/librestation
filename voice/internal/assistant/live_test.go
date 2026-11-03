@@ -1209,7 +1209,7 @@ func TestEarconOnWake(t *testing.T) {
 	g.ended()
 }
 
-func TestEarconIsShortAndQuiet(t *testing.T) {
+func TestEarconIsShortAndClean(t *testing.T) {
 	pcm, rate := Earcon()
 	// Long enough to fill the output's 8192 frames, or it would not start.
 	if d := float64(len(pcm)) / float64(rate); d <= 8192.0/24000 || d > 0.5 {
@@ -1219,7 +1219,8 @@ func TestEarconIsShortAndQuiet(t *testing.T) {
 	for _, v := range pcm {
 		peak = max(peak, int(v), -int(v))
 	}
-	if peak == 0 || peak > 32767/3 {
+	// As loud as speech, with room left: it has to be heard over ducked music.
+	if peak < 32767/2 || peak > 32767*9/10 {
 		t.Errorf("peak %d", peak)
 	}
 	if pcm[0] != 0 || pcm[len(pcm)-1] > 300 || pcm[len(pcm)-1] < -300 {

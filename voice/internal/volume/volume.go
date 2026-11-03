@@ -181,6 +181,7 @@ func (s *Sync) Step(delta int) error {
 	defer s.mu.Unlock()
 	v := min(max(s.cur+delta, 0), 100)
 	if v == s.cur && s.applied {
+		s.outLocked() // at the limit: the ring still answers
 		return nil
 	}
 	return s.sendLocked(v)

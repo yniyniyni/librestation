@@ -295,6 +295,26 @@ func TestBecomingActiveKeepsTheVolume(t *testing.T) {
 	}
 }
 
+func TestStepAtTheLimitStillShows(t *testing.T) {
+	s, f, _ := newSync(t, "100")
+	var out []int
+	s.Out = func(v int) { out = append(out, v) }
+	if err := s.Apply(); err != nil {
+		t.Fatal(err)
+	}
+	sent := len(f.got())
+	out = nil
+	if err := s.Step(5); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.got()) != sent {
+		t.Errorf("sent %v at the limit", f.got())
+	}
+	if len(out) != 1 || out[0] != 100 {
+		t.Errorf("out %v, want the limit shown again", out)
+	}
+}
+
 func TestRunRetriesUntilApplied(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "volume")
 	f := &fakeSetter{err: soloist.ErrNotConnected}

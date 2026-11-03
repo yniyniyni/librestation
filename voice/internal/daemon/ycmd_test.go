@@ -129,6 +129,24 @@ func TestNextWhileSpeakingIgnored(t *testing.T) {
 	}
 }
 
+// Volume commands work with nothing playing: the ring shows the new level.
+func TestVolumeCommandsWithoutMusic(t *testing.T) {
+	for _, c := range []struct{ cmd, want string }{{"громче", "louder"}, {"тише", "quieter"}} {
+		t.Run(c.cmd, func(t *testing.T) {
+			d, f, _, _, done := cmdTest(t)
+			d.playback = "paused"
+			say(d, c.cmd)
+			<-done
+			if g := f.got(); !slices.Equal(g, []string{c.want}) {
+				t.Fatalf("actuator %v", g)
+			}
+			if h := lastHit(t, d); !h.Fired || h.Playback {
+				t.Fatalf("hit %+v", h)
+			}
+		})
+	}
+}
+
 func TestPlayingActions(t *testing.T) {
 	for _, c := range []struct{ cmd, want string }{
 		{"стоп", "pause"}, {"хватит", "pause"}, {"пауза", "pause"},

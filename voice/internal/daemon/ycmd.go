@@ -127,6 +127,8 @@ func (d *Daemon) onCommand(cmd string, conf float64) {
 		h.Debounced = true // already playing
 	case playing:
 		action = q.action
+	case q.group == "volume":
+		action = q.action // nothing plays, but the ring shows it and it is easily undone
 	case q.action == "play" && (now.Sub(d.lastPlaying) <= playWindow || now.Sub(d.started) <= playWindow):
 		action = "play" // Spotify resumes where it was
 	}
