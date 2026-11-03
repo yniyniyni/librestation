@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"voice/internal/agent"
+	"voice/internal/alarms"
 	"voice/internal/assistant"
 	"voice/internal/daemon"
 	"voice/internal/geminilive"
@@ -42,7 +43,6 @@ const piperWarmDelay = 5 * time.Second
 
 type builtAssistant struct {
 	session   *assistant.Session
-	speaker   *speaker
 	link      *spotifyLink
 	piperDown *atomic.Bool // Piper did not start or its last synthesis failed
 }
@@ -52,8 +52,8 @@ type builtAssistant struct {
 // model is the model for each turn; judgeModel is the client's fallback.
 func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel string, model func() string,
 	settings func() daemon.AssistantSettings, wakeWords func() []string,
-	act daemon.Actuator, sol *soloist.Client, vol *volume.Sync, out *output, led func(proto.Event)) builtAssistant {
-	sp := spotifyapi.New(c.spotifyToken, c.spotifyDevice)
+	act daemon.Actuator, sol *soloist.Client, sp *spotifyapi.Client, spk *speaker, alm *alarms.Manager, vol *volume.Sync, out *output,
+	led func(proto.Event)) builtAssistant {
 	link := newSpotifyLink(sp.Linked)
 	go link.run(ctx, spotifyLinkEvery)
 	music := func(t agent.Tool) agent.Tool { return then(t, link.Refresh) }
@@ -71,6 +71,7 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Radio:       sol.PlayRadio,
 		Shuffle:     sol.SetShuffle,
 		Seek:        sol.Seek,
+		Alarms:      alm,
 	})}
 
 	if err := os.MkdirAll(c.piperOut, 0o755); err != nil {
@@ -90,7 +91,6 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		}
 	}()
 
-	spk := newSpeaker(strings.Fields(c.speakerCmd), func() { out.refresh(vol.Volume()) })
 	sess := assistant.New(assistant.Deps{
 		Agent:  ag,
 		TTS:    ttsChooser(settings, key, piperHealth{piper, piperDown}),
@@ -107,7 +107,7 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		},
 	})
 	log.Printf("assistant: on, Live model %s; text fallback model %s", c.liveModel, model())
-	return builtAssistant{sess, spk, link, piperDown}
+	return builtAssistant{sess, link, piperDown}
 }
 
 // piperHealth notes whether Piper's last synthesis worked, for the panel.

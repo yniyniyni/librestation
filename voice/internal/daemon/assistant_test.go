@@ -445,3 +445,14 @@ func TestQuickSettingsUnknownGroup(t *testing.T) {
 		t.Fatalf("disabled %v", d.settings.Quick.Disabled)
 	}
 }
+
+func TestPlayingFollowsPlayback(t *testing.T) {
+	d := &Daemon{}
+	if d.Playing() {
+		t.Error("playing at the start")
+	}
+	d.playback = "playing"
+	if !d.Playing() {
+		t.Error("not playing")
+	}
+}

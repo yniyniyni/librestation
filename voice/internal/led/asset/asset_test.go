@@ -181,9 +181,26 @@ func TestLoadGIFMissingFile(t *testing.T) {
 }
 
 func TestParseLEDSkipsGeneratorDirectives(t *testing.T) {
-	in := "gradient 0 000000 1 000000 183\nrotate a707bb 9c08c6\n" + strings.Repeat("000000 ", 24) + "20\n"
+	in := "gradient odd\nrotate a707bb 9c08c6\n" + strings.Repeat("000000 ", 24) + "20\n"
 	p, err := ParseLED(strings.NewReader(in))
 	if err != nil || len(p.Frames) != 1 {
 		t.Fatalf("err=%v p=%+v", err, p)
+	}
+}
+
+// The stock alarm and timer patterns are whole-ring gradients.
+func TestParseLEDGradient(t *testing.T) {
+	p, err := ParseLED(strings.NewReader("loop\n\ngradient 0 ff0000 1 ff0000 100\nsmooth 0\ngradient 0 000000 1 00ff00 50\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Frames) != 2 || p.Delays[1] != 50*time.Millisecond || !p.Loop {
+		t.Fatalf("%+v", p)
+	}
+	if c := p.Frames[0][13]; c != (RGB{R: 255}) {
+		t.Errorf("flat frame: %+v", c)
+	}
+	if p.Frames[1][0] != (RGB{}) || p.Frames[1][23].G < 240 {
+		t.Errorf("gradient ends: %+v, %+v", p.Frames[1][0], p.Frames[1][23])
 	}
 }

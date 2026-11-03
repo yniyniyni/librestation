@@ -29,17 +29,9 @@ TZ=$(getprop persist.sys.timezone)
 [ -n "$TZ" ] || TZ=Europe/Moscow
 export TZ
 
-until getprop init.svc.audioserver | grep -q running && ip -4 addr show wlan0 | grep -q inet; do
+until getprop init.svc.audioserver | grep -q running; do
     sleep 5
 done
-
-if [ ! -s $S/api-key ]; then
-    log "no API key in $S/api-key, not starting"
-    exit 1
-fi
-mkdir -p $R/etc/soloist
-cp $S/api-key $R/etc/soloist/api-key
-chmod 600 $S/api-key $R/etc/soloist/api-key
 
 # the PulseAudio config is deployed next to this script (the rootfs is root-only)
 [ -s $S/soloist.pa ] && cp $S/soloist.pa $R/etc/pulse/soloist.pa
@@ -84,14 +76,30 @@ if [ -s $S/xray.json ]; then
     PROXY_ENV="HTTPS_PROXY=http://127.0.0.1:1081 HTTP_PROXY=http://127.0.0.1:1081 ALL_PROXY=socks5h://127.0.0.1:1080 NO_PROXY=localhost,127.0.0.1"
 fi
 
-sleep 3
-# extra flags (e.g. --verbose) from $S/flags; chroot.sh clears the environment, so pass them inline
-SOLOIST_FLAGS=$(cat $S/flags 2>/dev/null)
-supervise soloist sh $S/chroot.sh /bin/sh -c \
-    'export PULSE_SERVER=unix:/tmp/pulse.sock $2; exec /opt/soloist/soloist \
-        --device-name "$0" --api-key "$(cat /etc/soloist/api-key)" \
-        --data-dir /var/lib/soloist --cache-dir /var/cache/soloist --cache-size 300 \
-        --initial-volume 15 --ws 127.0.0.1:9771 $1' "$NAME" "$SOLOIST_FLAGS" "$PROXY_ENV" &
+# Soloist needs the network and its key; alarms, the panel and the rest below do
+# not, so a speaker that starts with no Wi-Fi must not wait for them.
+(
+    until ip -4 addr show wlan0 | grep -q inet; do
+        sleep 5
+    done
+    if [ ! -s $S/api-key ]; then
+        log "no API key in $S/api-key, Soloist not starting"
+        exit 0
+    fi
+    mkdir -p $R/etc/soloist
+    cp $S/api-key $R/etc/soloist/api-key
+    chmod 600 $S/api-key $R/etc/soloist/api-key
+
+    sleep 3
+    # extra flags (e.g. --verbose) from $S/flags; chroot.sh clears the environment, so pass them inline
+    SOLOIST_FLAGS=$(cat $S/flags 2>/dev/null)
+    supervise soloist sh $S/chroot.sh /bin/sh -c \
+        'export PULSE_SERVER=unix:/tmp/pulse.sock $2; exec /opt/soloist/soloist \
+            --device-name "$0" --api-key "$(cat /etc/soloist/api-key)" \
+            --data-dir /var/lib/soloist --cache-dir /var/cache/soloist --cache-size 300 \
+            --initial-volume 15 --ws 127.0.0.1:9771 $1' "$NAME" "$SOLOIST_FLAGS" "$PROXY_ENV" &
+    wait
+) &
 
 # LED daemon: clock, volume ring and carousel on the front panel
 supervise ledd $V/ledd -assets $V/assets -data $V/data -sock $V/ledd.sock &

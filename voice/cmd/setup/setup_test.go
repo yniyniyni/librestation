@@ -576,3 +576,35 @@ func TestCheckJavaEnvReportsWhy(t *testing.T) {
 		t.Fatalf("valid: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestFixAlarmSoundsWithoutAPK(t *testing.T) {
+	e := &env{u: newUI(false), d: fakeDevice("__librestation_rc=1\n")}
+	err := fixAlarmSounds(e)
+	if err == nil || !strings.Contains(err.Error(), "нет ServicesIosdk.apk") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestFixAlarmSoundsExtractsFromAPK(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "scripts")
+	d := &adb.Device{Serial: "fake", Command: func(args ...string) *exec.Cmd {
+		return exec.Command("sh", "-c", "cat >>\"$1\"; printf '__librestation_rc=0\\n'", "sh", log)
+	}}
+	e := &env{u: newUI(false), d: d}
+	if err := fixAlarmSounds(e); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"'assets/quark/sounds/common/alarm.mp3'",
+		"mv " + ycmdTmp + "/assets/quark/sounds/common/timer.wav " + alarmSoundDir + "/",
+		"test -s " + alarmSoundDir + "/kids.wav",
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("no %q in the scripts:\n%s", want, b)
+		}
+	}
+}

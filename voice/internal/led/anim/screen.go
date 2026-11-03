@@ -62,6 +62,19 @@ func Clock(f *asset.Font, now time.Time, y0 int) Screen {
 	return s
 }
 
+// TimeLeft draws what is left of a timer on the clock's face: MM:SS, or HH:MM
+// from an hour up. The colon stays on: only the clock's blinks.
+func TimeLeft(f *asset.Font, secs int) Screen {
+	a, b := secs/60, secs%60
+	if secs >= 3600 {
+		a, b = min(secs/3600, 23), secs%3600/60
+	}
+	return Clock(f, time.Date(2000, 1, 1, a, b, 0, 0, time.UTC), 3)
+}
+
+// Anim is an animation's frame at t, for an animation the caller checked exists.
+func Anim(a *asset.Anim, t time.Duration) Screen { return fromAnim(a, t) }
+
 // VolumeNumber draws the volume percentage centered in the built-in 5x9 font.
 func VolumeNumber(v int) Screen {
 	var s Screen

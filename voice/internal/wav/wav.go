@@ -1,4 +1,4 @@
-// Package wav reads and writes 16-bit PCM mono WAV files.
+// Package wav writes 16-bit PCM mono WAV files and reads 16- and 24-bit ones.
 package wav
 
 import (
@@ -34,7 +34,8 @@ func WriteFile(path string, pcm []int16, rate int) error {
 	return os.WriteFile(path, Encode(pcm, rate), 0o644)
 }
 
-// Decode parses a PCM s16 WAV; multi-channel input keeps channel 0.
+// Decode parses a 16- or 24-bit PCM WAV into s16; multi-channel input keeps
+// channel 0.
 func Decode(b []byte) (pcm []int16, rate int, err error) {
 	if len(b) < 12 || string(b[:4]) != "RIFF" || string(b[8:12]) != "WAVE" {
 		return nil, 0, errors.New("wav: not a RIFF/WAVE file")
@@ -57,17 +58,18 @@ func Decode(b []byte) (pcm []int16, rate int, err error) {
 			channels = int(binary.LittleEndian.Uint16(body[2:]))
 			rate = int(binary.LittleEndian.Uint32(body[4:]))
 			bits = int(binary.LittleEndian.Uint16(body[14:]))
-			if (format != 1 && format != 0xfffe) || bits != 16 || channels < 1 {
-				return nil, 0, fmt.Errorf("wav: need 16-bit PCM, got format %d, %d bits", format, bits)
+			if (format != 1 && format != 0xfffe) || (bits != 16 && bits != 24) || channels < 1 {
+				return nil, 0, fmt.Errorf("wav: need 16- or 24-bit PCM, got format %d, %d bits", format, bits)
 			}
 		case "data":
 			if channels == 0 {
 				return nil, 0, errors.New("wav: data before fmt")
 			}
-			n := size / (2 * channels)
-			pcm = make([]int16, n)
+			width := bits / 8
+			pcm = make([]int16, size/(width*channels))
 			for i := range pcm {
-				pcm[i] = int16(binary.LittleEndian.Uint16(body[2*channels*i:]))
+				// The top two bytes of a little-endian sample are its s16.
+				pcm[i] = int16(binary.LittleEndian.Uint16(body[width*channels*i+width-2:]))
 			}
 			return pcm, rate, nil
 		}

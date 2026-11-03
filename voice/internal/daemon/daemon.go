@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"voice/internal/alarms"
 
 	miccap "voice/internal/capture"
 	"voice/internal/dsp"
@@ -35,6 +36,12 @@ type Options struct {
 	MicMuted  func() bool // reads the station's mic switch; nil = no switch
 	Soloist   string      // Soloist WebSocket URL (used by the real Actuator)
 	Actuator  Actuator    // runs word actions; nil = actions are only logged
+	// Ring is the alarm or timer ringing, which any word stops first; nil = none.
+	Ring RingControl
+	// Alarms is what the panel sets and shows; nil = none.
+	Alarms AlarmsControl
+	// FindMusic chooses an alarm's music when it is set; nil = searched at the ring.
+	FindMusic func(ctx context.Context, query, kind string) (alarms.Music, error)
 	// Assistant runs the "assistant" word action and gets every audio block;
 	// nil = that action is only logged.
 	Assistant Assistant
@@ -72,6 +79,24 @@ type Options struct {
 type WakeModel struct {
 	ID, Name string
 	Model    *ycmd.Model
+}
+
+// RingControl is the ring as the words see it. Both calls run on the audio
+// goroutine, under d.mu: they must not block or call back into the daemon.
+type RingControl interface {
+	Ringing() bool
+	Stop()
+}
+
+// stopRingLocked ends the ring if one is on and says so; caller holds d.mu. The
+// same word said again just after must not pause the music the ring gives back.
+func (d *Daemon) stopRingLocked() bool {
+	if d.opt.Ring == nil || !d.opt.Ring.Ringing() {
+		return false
+	}
+	d.opt.Ring.Stop()
+	d.lastAction["pause"] = d.now()
+	return true
 }
 
 // VolumeControl is the volume behind the API. Its calls may wait for Soloist,
@@ -348,7 +373,10 @@ func New(opt Options) (*Daemon, error) {
 	d.settings = Settings{Words: map[string]*WordSettings{}}
 	if b, err := os.ReadFile(d.settingsPath()); err == nil {
 		if err := json.Unmarshal(b, &d.settings); err != nil {
-			return nil, fmt.Errorf("settings: %w", err)
+			// A broken file must not keep the panel and the alarms down.
+			log.Printf("settings: %v; kept as .bad, starting from the defaults", err)
+			os.Rename(d.settingsPath(), d.settingsPath()+".bad")
+			d.settings = Settings{}
 		}
 	}
 	if d.settings.Words == nil {
@@ -550,6 +578,13 @@ func (d *Daemon) wakeLocked(h *Hit) {
 	d.addHitLocked(h)
 }
 
+// Playing says whether music is playing as far as Soloist has told.
+func (d *Daemon) Playing() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.playback == "playing"
+}
+
 // sendAudioLED sends the level and the playback spectrum to ledd, at most
 // once per ledAudioEvery. It runs on the audio goroutine without d.mu.
 func (d *Daemon) sendAudioLED(dbfs float64) {
@@ -608,6 +643,12 @@ func (d *Daemon) onHit(id string, score float32) {
 	}
 	h.Action = action
 	asst := d.opt.Assistant
+	if d.stopRingLocked() && action != "assistant" {
+		h.Action, h.Fired = "ring_stop", true
+		d.addHitLocked(h)
+		log.Printf("hit %s score %.3f stopped the ring", id, score)
+		return
+	}
 	if action == "assistant" {
 		d.wakeLocked(h)
 		log.Printf("hit %s score %.3f action %q", id, score, action)

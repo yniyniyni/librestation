@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"voice/internal/agent"
+	"voice/internal/alarms"
 	"voice/internal/spotifyapi"
 )
 
@@ -25,6 +26,7 @@ type Deps struct {
 	Radio   func(ctx context.Context, track string) error
 	Shuffle func(ctx context.Context, on bool) error
 	Seek    func(position time.Duration, relative bool) error
+	Alarms  *alarms.Manager
 }
 
 // All is the one list of the assistant's tools.
@@ -41,5 +43,10 @@ func All(d Deps) []agent.Tool {
 		music(PlayMusic{S: d.Spotify, Radio: d.Radio, Shuffle: d.Shuffle}),
 		music(LikeTrack{S: d.Spotify}),
 		music(NowPlaying{S: d.Spotify}),
+		Alarm{M: d.Alarms, Find: func(ctx context.Context, query, kind string) (alarms.Music, error) {
+			return FindMusic(ctx, d.Spotify, query, kind)
+		}},
+		TimerTool{M: d.Alarms},
+		AlarmsList{M: d.Alarms},
 	}
 }

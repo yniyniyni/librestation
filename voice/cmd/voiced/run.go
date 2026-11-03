@@ -18,12 +18,15 @@ import (
 	"syscall"
 	"time"
 
+	"voice/internal/alarms"
 	"voice/internal/daemon"
 	"voice/internal/input"
 	"voice/internal/judge"
 	"voice/internal/led/proto"
 	"voice/internal/mdns"
 	"voice/internal/soloist"
+	"voice/internal/spotifyapi"
+	"voice/internal/tools"
 	"voice/internal/volume"
 	"voice/internal/ycmd"
 )
@@ -142,10 +145,51 @@ func cmdRun(args []string) error {
 	vol.Resumed = out.refresh
 	close(volReady)
 	go vol.Run(ctx)
-	if knob != "" {
-		go readKnob(ctx, knob, vol.Key)
-	}
 	opt.Actuator = actuator{sol, vol}
+
+	// The speaker and Spotify serve alarms even with no assistant to talk to.
+	spk := newSpeaker(strings.Fields(ac.speakerCmd), func() { out.refresh(vol.Volume()) })
+	defer spk.Close()
+	sp := spotifyapi.New(ac.spotifyToken, ac.spotifyDevice)
+	rng := &ringer{
+		sounds: filepath.Join(ac.sounds, "alarm"),
+		play:   spk.Play,
+		flush:  spk.Flush,
+		hold:   out.hold,
+		volume: vol.Volume,
+		playing: func() bool {
+			d := dmn.Load()
+			return d != nil && d.Playing()
+		},
+		pause:  sol.Pause,
+		resume: sol.Play,
+		music: func(ctx context.Context, ring alarms.Ring) error {
+			p := tools.PlayMusic{S: sp, Radio: sol.PlayRadio, Shuffle: sol.SetShuffle}
+			if ring.Item != nil {
+				return p.StartMusic(ctx, *ring.Item)
+			}
+			_, err := p.Run(ctx, map[string]any{"query": ring.Music, "kind": "any"})
+			return err
+		},
+		led:   ledSend,
+		now:   time.Now,
+		sleep: sleepCtx,
+		ticks: newTicks,
+	}
+	alm := alarms.New(filepath.Join(opt.DataDir, "alarms.json"), rng, time.Now)
+	opt.Ring, opt.Alarms = alm, alm
+	opt.FindMusic = func(ctx context.Context, query, kind string) (alarms.Music, error) {
+		return tools.FindMusic(ctx, sp, query, kind)
+	}
+	if knob != "" {
+		go readKnob(ctx, knob, func(code uint16) {
+			if alm.ConsumesKnob() {
+				alm.Stop()
+				return
+			}
+			vol.Key(code)
+		})
+	}
 
 	// The session reads the panel's settings on every turn.
 	settings := func() daemon.AssistantSettings {
@@ -169,8 +213,8 @@ func cmdRun(args []string) error {
 			}
 			return nil
 		}
-		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, wakeWords, opt.Actuator, sol, vol, out, ledSend)
-		defer a.speaker.Close()
+		a := buildAssistant(ctx, ac, key, judgeModel, model, settings, wakeWords, opt.Actuator, sol, sp, spk, alm, vol, out, ledSend)
+		rng.hush = a.session.Hush
 		opt.Assistant = a.session
 		opt.LiveModel = ac.liveModel
 		opt.AssistantStatus = func() any { return a.session.Status() }
@@ -184,11 +228,19 @@ func cmdRun(args []string) error {
 	}
 	opt.LED, opt.Volume = led, vol
 
+	// Alarms do not depend on the rest coming up.
+	go alm.Run(ctx)
+	if ledSend != nil {
+		go showTimers(ctx, alm, ledSend)
+	}
 	d, err := daemon.New(opt)
 	if err != nil {
+		log.Printf("voiced: %v; only alarms and timers are on", err)
+		<-ctx.Done()
 		return err
 	}
 	dmn.Store(d)
+	d.WatchAlarms(alm)
 
 	srv := &http.Server{Addr: opt.Listen, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

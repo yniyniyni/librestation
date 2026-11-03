@@ -407,6 +407,47 @@ func (c *Client) Search(ctx context.Context, q, kind string) (Item, error) {
 	return it, nil
 }
 
+// ParseLink reads a Spotify link or URI to a track, artist, album or playlist.
+func ParseLink(s string) (kind, id string, ok bool) {
+	s = strings.TrimSpace(s)
+	var parts []string
+	switch {
+	case strings.HasPrefix(s, "spotify:"):
+		parts = strings.Split(strings.TrimPrefix(s, "spotify:"), ":")
+	default:
+		u, err := url.Parse(s)
+		if err != nil || u.Host != "open.spotify.com" {
+			return "", "", false
+		}
+		parts = strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) > 0 && strings.HasPrefix(parts[0], "intl-") {
+			parts = parts[1:]
+		}
+	}
+	if len(parts) != 2 || parts[1] == "" {
+		return "", "", false
+	}
+	switch parts[0] {
+	case "track", "artist", "album", "playlist":
+		return parts[0], parts[1], true
+	}
+	return "", "", false
+}
+
+// Lookup gets the item a link names.
+func (c *Client) Lookup(ctx context.Context, kind, id string) (Item, error) {
+	var r struct {
+		URI     string      `json:"uri"`
+		Name    string      `json:"name"`
+		Artists []artistRef `json:"artists"`
+		Album   albumRef    `json:"album"`
+	}
+	if _, err := c.call(ctx, http.MethodGet, "/v1/"+kind+"s/"+url.PathEscape(id), nil, nil, &r); err != nil {
+		return Item{}, err
+	}
+	return Item{Kind: kind, URI: r.URI, Name: r.Name, Artist: firstArtist(r.Artists), Album: r.Album.URI}, nil
+}
+
 // pick chooses from the results what the query most likely names.
 func pick(r searchResp, q, kind string) (Item, bool) {
 	want := func(k string) bool { return kind == "any" || kind == k }

@@ -93,7 +93,7 @@ dns-sd -B _librestation._tcp
 
 ```json
 {"api_version": 1, "name": "localhost",
- "features": {"assistant": true, "judge": true, "led": true, "player": true, "quick": true, "volume": true}}
+ "features": {"alarms": true, "assistant": true, "judge": true, "led": true, "player": true, "quick": true, "volume": true}}
 ```
 
 **`GET /state`** отдаёт снимок. `null` у `volume` значит, что управления громкостью нет; `null` у
@@ -115,6 +115,7 @@ dns-sd -B _librestation._tcp
   "settings": {"judge": false, "auto_false_undo": false},
   "assistant": {"available": true, "status": {"state": "idle"}, "spotify_linked": true, "piper_missing": false,
                 "settings": {"tts": "gemini", "voice": "Kore", "city": "Москва"}, "default_model": "gemini-3.5-flash-lite"},
+  "alarms": {"alarms": [], "timers": [], "ring": {}},
   "quick": {"available": true, "off": false, "groups": [{"id": "pause", "words": "стоп, пауза", "on": true}]}
 }
 ```
@@ -138,6 +139,59 @@ dns-sd -B _librestation._tcp
 колёсика, от 1 до 10). Отвечает новым состоянием.
 
 **`POST /player/{pause|play|next|prev}`** отвечает `{"ok": true}`.
+
+### Будильники и таймеры
+
+Поле `alarms` в `/state` содержит то же, что `GET /alarms`; `null` значит, что будильников нет.
+Звонок и его выключение не требуют интернета.
+
+**`GET /alarms`** отвечает так. У будильника `next` — следующий звонок, у выключенного его нет.
+`ring` пуст, пока ничего не звенит; `ring.error` — последняя ошибка чтения или записи файла. У
+идущего таймера есть `ends_at`, страница считает обратный отсчёт сама. Таймер на паузе отдаёт
+`left` в секундах.
+
+```json
+{
+  "alarms": [{"id": "1a2b3c4d", "hour": 7, "minute": 30, "days": [1, 2, 3, 4, 5], "title": "работа",
+              "sound": "birds", "next": "2026-11-09T07:30:00+03:00"}],
+  "timers": [{"id": "5e6f7a8b", "title": "чай", "seconds": 600, "left": 0, "ends_at": "2026-11-04T12:10:00+03:00"}],
+  "ring": {"ring": "alarm", "title": "работа", "since": "2026-11-04T07:30:00+03:00"}
+}
+```
+
+**`POST /alarms`** ставит будильник и отвечает им. Поля:
+
+| Поле | Значение |
+|---|---|
+| `hour`, `minute` | время |
+| `days` | дни недели, понедельник = 1, воскресенье = 7 |
+| `date` | дата `ГГГГ-ММ-ДД`; вместо `days`. Без обоих прозвенит один раз, в ближайшее время |
+| `title` | название |
+| `sound` | мелодия из `GET /alarms/sounds` |
+| `music` | что включить в Spotify вместо мелодии: название или ссылка |
+| `music_kind` | что это: `track`, `artist`, `album`, `playlist`, `my_playlist`, `liked` (без `music`) или `any` |
+| `disabled` | выключен |
+
+Музыка ищется сразу и запоминается в `music_item`: в момент звонка играет именно это. Если найти
+не удалось, будильник всё равно ставится, ответ содержит `music_note`, а поиск повторится перед
+звонком.
+
+**`PATCH /alarms/{id}`** с теми же полями меняет только присланные и считает будильник заново
+от текущего момента. **`DELETE /alarms/{id}`** удаляет.
+
+**`GET /alarms/sounds`** отдаёт `{"sounds": [{"name": "alarm", "title": "Классический"}]}`; первая
+мелодия используется по умолчанию. Файлы мелодий извлекает `./setup`; если файла нет, звонит
+встроенный сигнал.
+
+**`GET /timers`** отдаёт `{"timers": [...]}`, где `left` — оставшиеся секунды.
+**`POST /timers`** с полями `seconds` и `title` запускает таймер.
+**`PATCH /timers/{id}`** с `{"paused": true|false}` ставит на паузу и продолжает.
+**`DELETE /timers/{id}`** отменяет.
+
+**`POST /ring/stop`** выключает звонок; если он не идёт, ничего не делает.
+**`POST /ring/snooze`** откладывает на 10 минут будильник, который звенит или прозвенел не
+раньше 2 минут назад, и отвечает `{"until": "..."}`; нечего откладывать — `409`.
+**`POST /ring/test`** звонит как будильник, без самого будильника.
 
 ### Срабатывания
 
