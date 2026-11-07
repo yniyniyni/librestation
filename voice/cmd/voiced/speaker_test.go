@@ -37,6 +37,7 @@ func newTestSpeaker(cmd []string, wakes *int) (*speaker, *fakeClock, *time.Durat
 	s := newSpeaker(cmd, func() { *wakes++ })
 	s.now = clk.now
 	s.sleep = func(ctx context.Context, d time.Duration) error { waited = d; return ctx.Err() }
+	s.wakePad = 0
 	return s, clk, &waited
 }
 

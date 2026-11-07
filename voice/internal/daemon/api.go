@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/url"
@@ -167,10 +168,20 @@ type assistantView struct {
 	DefaultModel  string            `json:"default_model"` // what Model "" means: the judge's current model
 }
 
+// EQPreset describes one equalizer preset for the UI.
+type EQPreset struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
 // settingsView is the part of Settings the hits card edits.
 type settingsView struct {
-	Judge         bool `json:"judge"`
-	AutoFalseUndo bool `json:"auto_false_undo"`
+	Judge         bool       `json:"judge"`
+	AutoFalseUndo bool       `json:"auto_false_undo"`
+	ActivationOff bool       `json:"activation_off"`
+	EQMode        int        `json:"eq_mode"`
+	HasEQ         bool       `json:"has_eq"`
+	EQPresets     []EQPreset `json:"eq_presets,omitempty"`
 }
 
 // volumeView reads the volume; never under d.mu, because a volume step holds
@@ -215,7 +226,8 @@ func (d *Daemon) state() stateView {
 	for i, h := range d.hits {
 		v.Hits[len(d.hits)-1-i] = *h // newest first; copied, it changes after unlock
 	}
-	v.Settings = settingsView{Judge: !d.settings.JudgeOff, AutoFalseUndo: d.settings.AutoFalseUndo}
+	v.Settings = settingsView{Judge: !d.settings.JudgeOff, AutoFalseUndo: d.settings.AutoFalseUndo, ActivationOff: d.settings.ActivationOff,
+		EQMode: d.settings.EQMode, HasEQ: d.opt.SetEQ != nil, EQPresets: d.opt.EQPresets}
 	v.Judge = d.judgeViewLocked()
 	if e := d.enroll; e != nil {
 		ev := &enrollView{Name: e.Name, HasAmbient: len(e.Ambient) > 0, MinTakes: minTakes,
@@ -286,10 +298,11 @@ func (d *Daemon) assistantViewLocked() assistantView {
 
 // assistantPatch is a partial update of AssistantSettings from the panel.
 type assistantPatch struct {
-	Model *string `json:"model"`
-	TTS   *string `json:"tts"`
-	Voice *string `json:"voice"`
-	City  *string `json:"city"`
+	Model     *string `json:"model"`
+	TTS       *string `json:"tts"`
+	Voice     *string `json:"voice"`
+	City      *string `json:"city"`
+	EarconOff *bool   `json:"earcon_off"`
 }
 
 // apply validates the patch and applies it to s; s is unchanged on error.
@@ -324,6 +337,9 @@ func (p *assistantPatch) apply(s *AssistantSettings) error {
 			return fmt.Errorf("%s длиннее %d символов", f.what, maxAssistantText)
 		}
 		*f.out = v
+	}
+	if p.EarconOff != nil {
+		n.EarconOff = *p.EarconOff
 	}
 	*s = n
 	return nil
@@ -472,6 +488,8 @@ func (d *Daemon) Handler() http.Handler {
 			Judge         *bool           `json:"judge"`
 			JudgeModel    *string         `json:"judge_model"`
 			AutoFalseUndo *bool           `json:"auto_false_undo"`
+			ActivationOff *bool           `json:"activation_off"`
+			EQMode        *int            `json:"eq_mode"`
 			Assistant     *assistantPatch `json:"assistant"`
 			Quick         *quickPatch     `json:"quick"`
 			StockWake     map[string]bool `json:"stock_wake"`
@@ -481,6 +499,9 @@ func (d *Daemon) Handler() http.Handler {
 		}
 		if m := req.JudgeModel; m != nil && !judge.ValidModel(*m) {
 			return badRequest(fmt.Sprintf("неверное имя модели %q", *m))
+		}
+		if m := req.EQMode; m != nil && (*m < 0 || *m >= len(d.opt.EQPresets)) {
+			return badRequest(fmt.Sprintf("eq_mode %d вне диапазона 0-%d", *m, len(d.opt.EQPresets)-1))
 		}
 		for id := range req.StockWake {
 			if !slices.ContainsFunc(d.opt.Wake, func(m WakeModel) bool { return m.ID == id }) {
@@ -509,6 +530,14 @@ func (d *Daemon) Handler() http.Handler {
 		if req.AutoFalseUndo != nil {
 			d.settings.AutoFalseUndo = *req.AutoFalseUndo
 		}
+		if req.ActivationOff != nil {
+			d.settings.ActivationOff = *req.ActivationOff
+		}
+		var eqApply *int
+		if m := req.EQMode; m != nil {
+			d.settings.EQMode = *m
+			eqApply = m
+		}
 		d.settings.Assistant, d.settings.Quick = asst, quick
 		for id, on := range req.StockWake {
 			if d.settings.StockWake == nil {
@@ -519,6 +548,11 @@ func (d *Daemon) Handler() http.Handler {
 		d.mu.Unlock()
 		if err := d.persistSettings(); err != nil {
 			return internal(err)
+		}
+		if eqApply != nil && d.opt.SetEQ != nil {
+			if err := d.opt.SetEQ(*eqApply); err != nil {
+				log.Printf("eq: %v", err)
+			}
 		}
 		writeOK(w)
 		return nil

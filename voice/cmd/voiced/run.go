@@ -35,7 +35,7 @@ func cmdRun(args []string) error {
 	exe, _ := os.Executable()
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var opt daemon.Options
-	var micCmd, hwCmd, gainFile, knob, muteSw, ledSock, leddURL, judgeKey, judgeModel string
+	var micCmd, hwCmd, gainFile, knob, muteSw, remote, ledSock, leddURL, judgeKey, judgeModel string
 	var ac assistantConfig
 	var ycmdDir, wakeDir string
 	fs.StringVar(&opt.DataDir, "data", "/data/local/tmp/voice/data", "words and settings")
@@ -47,6 +47,7 @@ func cmdRun(args []string) error {
 	fs.StringVar(&gainFile, "gain-file", "/data/local/tmp/soloist/gain", "aaudio_pipe gain that undoes Soloist's software volume; empty = none")
 	fs.StringVar(&knob, "knob", "/dev/input/event2", "volume knob evdev device; empty = none")
 	fs.StringVar(&muteSw, "mute-switch", "/dev/input/event0", "mic button evdev device; empty = none")
+	fs.StringVar(&remote, "remote", "/dev/input/event4", "BLE remote evdev device (YNDX-00402); empty = none")
 	fs.StringVar(&ledSock, "led-sock", "/data/local/tmp/voice/ledd.sock", "ledd event socket; empty = no LED events")
 	fs.StringVar(&leddURL, "ledd", "http://127.0.0.1:8781", "ledd HTTP API behind /api/led")
 	fs.StringVar(&judgeKey, "judge-key", "/data/local/tmp/voice/gemini.key", "Gemini API key file; missing = hits are not judged")
@@ -146,9 +147,18 @@ func cmdRun(args []string) error {
 	close(volReady)
 	go vol.Run(ctx)
 	opt.Actuator = actuator{sol, vol}
+	spkEQ := &eq{}
+	opt.SetEQ = func(mode int) error {
+		spkEQ.SetPreset(mode)
+		return nil
+	}
+	for i, p := range EQPresets() {
+		opt.EQPresets = append(opt.EQPresets, daemon.EQPreset{ID: i, Name: p.Name})
+	}
 
 	// The speaker and Spotify serve alarms even with no assistant to talk to.
 	spk := newSpeaker(strings.Fields(ac.speakerCmd), func() { out.refresh(vol.Volume()) })
+	spk.eq = spkEQ
 	defer spk.Close()
 	sp := spotifyapi.New(ac.spotifyToken, ac.spotifyDevice)
 	rng := &ringer{
@@ -240,7 +250,53 @@ func cmdRun(args []string) error {
 		return err
 	}
 	dmn.Store(d)
+	if opt.SetEQ != nil {
+		if m := d.Settings().EQMode; m > 0 {
+			if err := opt.SetEQ(m); err != nil {
+				log.Printf("eq: restore mode %d: %v", m, err)
+			} else {
+				log.Printf("eq: restored mode %d", m)
+			}
+		}
+	}
 	d.WatchAlarms(alm)
+	if remote != "" {
+		asst := opt.Assistant
+		go readRemote(ctx, remote, func(code uint16) {
+			switch code {
+			case input.KeyVoiceAssist:
+				if asst != nil {
+					asst.Wake(context.Background(), func() {})
+				}
+			case input.KeyVolumeUp:
+				vol.Step(vol.KnobStep())
+			case input.KeyVolumeDown:
+				vol.Step(-vol.KnobStep())
+			case input.KeyPlayPause:
+				if d := dmn.Load(); d != nil && d.Playing() {
+					sol.Pause()
+				} else {
+					sol.Play()
+				}
+			case input.KeyBack:
+				if asst != nil && asst.Busy() {
+					asst.Hush()
+				} else {
+					injectKey(4) // KEYCODE_BACK
+				}
+			case input.KeyEnter:
+				if alm.ConsumesKnob() {
+					alm.Stop()
+				} else {
+					injectKey(23) // KEYCODE_DPAD_CENTER
+				}
+			default:
+				if kc, ok := remoteForward[code]; ok {
+					injectKey(kc)
+				}
+			}
+		})
+	}
 
 	srv := &http.Server{Addr: opt.Listen, Handler: d.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

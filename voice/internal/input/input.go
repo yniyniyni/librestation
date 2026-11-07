@@ -24,6 +24,23 @@ const (
 	SwMuteDevice = 14 // the station's mic button (gpio_keypad, /dev/input/event0)
 )
 
+// BLE remote key codes (YNDX-00402, Vendor_057a_Product_006f.kl).
+const (
+	KeyEnter       = 28  // DPAD_CENTER on the Yandex remote
+	KeyDpadUp      = 103
+	KeyDpadLeft    = 105
+	KeyDpadRight   = 106
+	KeyDpadDown    = 108
+	KeyVolumeDown  = 114
+	KeyVolumeUp    = 115
+	KeyPower       = 116
+	KeyMenu        = 139
+	KeyBack        = 158
+	KeyPlayPause   = 164
+	KeyHome        = 172
+	KeyVoiceAssist = 217
+)
+
 // Event is one decoded input_event without its timestamp.
 type Event struct {
 	Type  uint16
