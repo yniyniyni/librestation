@@ -262,6 +262,21 @@ func cmdRun(args []string) error {
 	d.WatchAlarms(alm)
 	if remote != "" {
 		asst := opt.Assistant
+		fwd := newForwarder()
+		defer fwd.Close()
+		// Mute toggles the speaker's own volume (the amplifier voiced controls);
+		// a forwarded Android VOLUME_MUTE does not touch the Soloist→aaudio_pipe
+		// path, so it did nothing. mutedVol holds the level to restore; 0 = live.
+		mutedVol := 0
+		muteToggle := func() {
+			if v := vol.Volume(); v > 0 {
+				mutedVol = v
+				vol.Step(-v)
+			} else if mutedVol > 0 {
+				vol.Step(mutedVol)
+				mutedVol = 0
+			}
+		}
 		go readRemote(ctx, remote, func(code uint16) {
 			switch code {
 			case input.KeyVoiceAssist:
@@ -272,28 +287,32 @@ func cmdRun(args []string) error {
 				vol.Step(vol.KnobStep())
 			case input.KeyVolumeDown:
 				vol.Step(-vol.KnobStep())
+			case input.KeyMute:
+				muteToggle()
 			case input.KeyPlayPause:
 				if d := dmn.Load(); d != nil && d.Playing() {
 					sol.Pause()
 				} else {
 					sol.Play()
 				}
+			case input.KeyFastForward, input.KeyMediaNext:
+				sol.Next()
+			case input.KeyRewind, input.KeyMediaPrev:
+				sol.Prev()
 			case input.KeyBack:
 				if asst != nil && asst.Busy() {
 					asst.Hush()
 				} else {
-					injectKey(4) // KEYCODE_BACK
+					fwd.key(input.KeyBack)
 				}
-			case input.KeyEnter:
+			case input.KeyEnter, input.KeySelect:
 				if alm.ConsumesKnob() {
 					alm.Stop()
 				} else {
-					injectKey(23) // KEYCODE_DPAD_CENTER
+					fwd.key(code)
 				}
 			default:
-				if kc, ok := remoteForward[code]; ok {
-					injectKey(kc)
-				}
+				fwd.key(code)
 			}
 		})
 	}

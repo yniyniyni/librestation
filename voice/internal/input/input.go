@@ -24,21 +24,34 @@ const (
 	SwMuteDevice = 14 // the station's mic button (gpio_keypad, /dev/input/event0)
 )
 
-// BLE remote key codes (YNDX-00402, Vendor_057a_Product_006f.kl).
+// BLE remote key codes (YNDX-00402, Vendor_057a_Product_006f.kl). The physical
+// remote does not always send the scancode the key layout lists first: its OK
+// sends KEY_SELECT (353), not 28, and it has dedicated media-transport keys.
+// These were confirmed by logging live presses, not taken from the doc.
 const (
-	KeyEnter       = 28  // DPAD_CENTER on the Yandex remote
+	KeyTVInput     = 59 // F1 remapped to TV_INPUT (HDMI/AV source select)
+	KeyEnter       = 28 // DPAD_CENTER (alternate to KeySelect)
 	KeyDpadUp      = 103
 	KeyDpadLeft    = 105
 	KeyDpadRight   = 106
 	KeyDpadDown    = 108
+	KeyMute        = 113 // VOLUME_MUTE
 	KeyVolumeDown  = 114
 	KeyVolumeUp    = 115
 	KeyPower       = 116
 	KeyMenu        = 139
 	KeyBack        = 158
+	KeyMediaNext   = 163 // MEDIA_NEXT
 	KeyPlayPause   = 164
+	KeyMediaPrev   = 165 // MEDIA_PREVIOUS
+	KeyRewind      = 168 // MEDIA_REWIND
 	KeyHome        = 172
+	KeyFastForward = 208 // MEDIA_FAST_FORWARD — this remote's "вперёд"
 	KeyVoiceAssist = 217
+	KeyPairing     = 231 // BLE pairing; no Android keycode, not forwarded
+	KeySelect      = 353 // KEY_SELECT: this remote's OK button (DPAD_CENTER)
+	KeyAppSwitch   = 580
+	KeySearch      = 582
 )
 
 // Event is one decoded input_event without its timestamp.
