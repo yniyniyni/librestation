@@ -78,6 +78,9 @@ type Deps struct {
 	Now  func() time.Time // nil = time.Now
 	// Earcon is the sound played as a request begins; nil = none.
 	Earcon func() ([]int16, int)
+	// Volume reports the speaker's current volume (0..100); it sets the barge-in
+	// level, which rises with it. Nil = treat as quiet (the base level).
+	Volume func() int
 }
 
 // Status is the session's state for the panel.
@@ -302,9 +305,11 @@ func (s *Session) listening() bool {
 func (s *Session) run(ctx context.Context, gen int, hist []agent.Content, seed bool, onNoRequest func()) {
 	s.duck(gen, duckGain)
 	if s.d.Earcon != nil {
-		// Not waited for: what the user says right away must not wait for it.
 		go func() {
 			pcm, rate := s.d.Earcon()
+			if len(pcm) == 0 {
+				return
+			}
 			if err := s.d.Player.Play(ctx, pcm, rate); err != nil && ctx.Err() == nil && !errors.Is(err, ErrFlushed) {
 				log.Printf("assistant: earcon: %v", err)
 			}

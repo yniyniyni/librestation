@@ -98,7 +98,13 @@ func buildAssistant(ctx context.Context, c assistantConfig, key, judgeModel stri
 		Duck:   out.duck,
 		LED:    led,
 		Stock:  newStockSounds(c.sounds).Load,
-		Earcon: assistant.Earcon,
+		Earcon: func() ([]int16, int) {
+			if settings().EarconOff {
+				return nil, 0
+			}
+			return assistant.Earcon()
+		},
+		Volume: vol.Volume,
 		Live: func(lctx context.Context, handle string) (assistant.LiveSession, error) {
 			return geminilive.Dial(lctx, geminilive.Config{
 				Key: key, Model: c.liveModel, Voice: settings().Voice, Handle: handle,

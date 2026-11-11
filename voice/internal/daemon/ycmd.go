@@ -84,15 +84,16 @@ func (d *Daemon) spotCommands(block []int16) []int16 {
 	clip := level(1)
 	d.mu.Lock()
 	d.yring.write(clip)
+	off := d.settings.ActivationOff
 	for _, w := range d.wakes {
-		w.on = d.settings.StockWake[w.id]
+		w.on = d.settings.StockWake[w.id] && !off
 	}
 	d.mu.Unlock()
-	if d.spot != nil {
+	if d.spot != nil && !off {
 		d.spot.Push(pcm, func(cmd string, conf float64) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
-			if d.paused == 0 {
+			if d.paused == 0 && !d.settings.ActivationOff {
 				d.onCommand(cmd, conf)
 			}
 		})
@@ -101,7 +102,7 @@ func (d *Daemon) spotCommands(block []int16) []int16 {
 		w.push(pcm, func(conf float64) {
 			d.mu.Lock()
 			defer d.mu.Unlock()
-			if d.paused == 0 {
+			if d.paused == 0 && !d.settings.ActivationOff {
 				d.onStockWake(w.id, w.name, conf)
 			}
 		})

@@ -56,8 +56,16 @@ func (o *output) set(v int) {
 	o.gainMu.Lock()
 	o.mu.Lock()
 	f := o.duckF
+	prev := o.prev
 	o.mu.Unlock()
-	o.writeGain(v, f)
+	// When volume drops, the compensation gain rises: (100/v)^3 grows fast.
+	// Writing the higher gain while the amplifier is still at the old (louder)
+	// level causes a spike. Defer the gain write to ramp completion so the
+	// audio stays quieter, never louder, during the transition. When volume
+	// rises, the gain falls and writing it early is safe.
+	if prev < 0 || v >= prev {
+		o.writeGain(v, f)
+	}
 	o.mu.Lock()
 	o.user = v
 	if o.held < 0 {
@@ -232,6 +240,14 @@ func (o *output) ramp(ctx context.Context, in io.Writer, cur int) (int, error) {
 		if cur != t {
 			time.Sleep(rampStep)
 		} else {
+			// The amplifier reached the target; now it is safe to write the
+			// gain that may have been deferred by set() on a volume drop.
+			o.gainMu.Lock()
+			o.mu.Lock()
+			gf := o.duckF
+			o.mu.Unlock()
+			o.writeGain(cur, gf)
+			o.gainMu.Unlock()
 			log.Printf("amplifier volume %d", cur)
 		}
 	}

@@ -36,6 +36,10 @@ type Options struct {
 	MicMuted  func() bool // reads the station's mic switch; nil = no switch
 	Soloist   string      // Soloist WebSocket URL (used by the real Actuator)
 	Actuator  Actuator    // runs word actions; nil = actions are only logged
+	// SetEQ applies the EQ mode on the device; nil = no EQ control.
+	SetEQ func(mode int) error
+	// EQPresets lists the available EQ presets for the UI.
+	EQPresets []EQPreset
 	// Ring is the alarm or timer ringing, which any word stops first; nil = none.
 	Ring RingControl
 	// Alarms is what the panel sets and shows; nil = none.
@@ -136,8 +140,9 @@ type Assistant interface {
 
 // Settings is persisted in <data>/settings.json.
 type Settings struct {
-	DryRun bool                     `json:"dry_run"` // log hits without acting
-	Words  map[string]*WordSettings `json:"words"`
+	DryRun        bool                     `json:"dry_run"`        // log hits without acting
+	ActivationOff bool                     `json:"activation_off"` // master switch: all detection off
+	Words         map[string]*WordSettings `json:"words"`
 	// JudgeOff stops sending hits to the audio model even with a key.
 	JudgeOff bool `json:"judge_off"`
 	// JudgeModel is the model that judges hits; "" = Options.JudgeModel.
@@ -145,6 +150,8 @@ type Settings struct {
 	// AutoFalseUndo marks hits whose action the user took back as false
 	// alarms without asking.
 	AutoFalseUndo bool `json:"auto_false_undo"`
+	// EQMode is the Amlogic audio HAL's eq_mode (0-9); -1 = not set.
+	EQMode int `json:"eq_mode"`
 	// Assistant is read by the session on every turn.
 	Assistant AssistantSettings `json:"assistant"`
 	// Quick switches Yandex's quick commands.
@@ -162,14 +169,22 @@ type QuickSettings struct {
 
 // AssistantSettings are the assistant's choices in the panel.
 type AssistantSettings struct {
-	Model string `json:"model,omitempty"` // the agent's, when Live is out; "" = the judge's current model
-	TTS   string `json:"tts"`             // "gemini" (default) or "piper"
-	Voice string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
-	City  string `json:"city,omitempty"`  // weather's default city
+	Model     string `json:"model,omitempty"` // the agent's, when Live is out; "" = the judge's current model
+	TTS       string `json:"tts"`             // "gemini" (default) or "piper"
+	Voice     string `json:"voice,omitempty"` // Gemini voice; "" = tts.DefaultVoice
+	City      string `json:"city,omitempty"`  // weather's default city
+	EarconOff bool   `json:"earcon_off"`      // no activation beep
 }
 
 // maxAssistantText bounds the voice and city, in characters.
 const maxAssistantText = 64
+
+// Settings returns a copy of the settings.
+func (d *Daemon) Settings() Settings {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.settings
+}
 
 // AssistantSettings returns a copy of the assistant's settings.
 func (d *Daemon) AssistantSettings() AssistantSettings {
@@ -624,7 +639,7 @@ func (d *Daemon) process(pcm []int16) float64 {
 			d.capture = nil
 		}
 	}
-	if d.det == nil || d.paused > 0 {
+	if d.det == nil || d.paused > 0 || d.settings.ActivationOff {
 		return d.level
 	}
 	d.det.Push(pcm, func(i int, score float32) { d.onHit(d.detWords[i], score) })

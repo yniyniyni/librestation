@@ -78,6 +78,9 @@
   .field select, .field input[type=text] { flex:0 1 280px; min-width:0; }
   @media (max-width:519px) { .field select, .field input[type=text] { flex:1 1 100%; } }
   .gtitle { margin:8px 0 8px 4px; }
+  .eqgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); gap:8px; }
+  .eqgrid button { width:100%; font-size:14px; }
+  .eqgrid button.on { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
 
   /* Home: the ring is the page. */
   .home { display:grid; grid-template-columns:minmax(280px,380px) minmax(0,1fr); gap:32px; align-items:start; }
@@ -96,6 +99,7 @@
   .ring[data-state=thinking] { --ring:var(--warn); }
   .ring[data-state=speaking] { --ring:var(--ok); }
   .ring[data-state=off] { --ring:var(--bad); }
+  .ring[data-state=muted] { --ring:var(--muted); }
   .pad { display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:center; }
   .pad .sep { width:1px; height:24px; background:var(--line); margin:0 4px; }
 
@@ -193,6 +197,12 @@
           <p class="small bad" id="audioerr" style="text-align:center" hidden></p>
         </div>
         <div style="display:grid;gap:20px;min-width:0">
+          <div class="group">
+            <label class="field"><span>Активация голосом<br><span class="muted small">все слова, триггеры и быстрые команды</span></span><input type="checkbox" class="sw" id="activationsw"></label>
+          </div>
+          <div class="group" id="earcongroup" hidden>
+            <label class="field"><span>Звук активации<br><span class="muted small">короткий сигнал при пробуждении ассистента</span></span><input type="checkbox" class="sw" id="earconsw"></label>
+          </div>
           <div class="banner" id="hometrain" hidden></div>
           <div>
             <h2 class="gtitle">Последнее срабатывание</h2>
@@ -311,6 +321,12 @@
         <h2 class="gtitle">Звук</h2>
         <div class="group">
           <label class="field"><span>Шаг колёсика</span><select id="knobstep"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+        </div>
+      </div>
+      <div id="eqgroup" hidden>
+        <h2 class="gtitle">Эквалайзер</h2>
+        <div class="group">
+          <div class="eqgrid" id="eqgrid"></div>
         </div>
       </div>
       <div id="asstgroup">
@@ -439,10 +455,10 @@ function renderVolume(v) {
   const on = Math.round(v * TICKS / 100);
   tickEls.forEach((t, i) => t.classList.toggle("on", i < on));
 }
-function renderRing(audioOK, assistant) {
-  const st = audioOK ? (assistant || "idle") : "off";
+function renderRing(audioOK, assistant, activationOff) {
+  const st = !audioOK ? "off" : activationOff ? "muted" : (assistant || "idle");
   $("ring").dataset.state = st;
-  $("ringstate").textContent = audioOK ? (ASST_STATES[st] || st) : "нет звука";
+  $("ringstate").textContent = !audioOK ? "нет звука" : activationOff ? "не слушает" : (ASST_STATES[st] || st);
 }
 function renderLevel(level) {
   const c = 2 * Math.PI * 88, x = Math.max(0, Math.min(1, (level + 80) / 70));
@@ -452,7 +468,10 @@ function renderLevel(level) {
 // ---- home
 function renderHome(s) {
   if (s.volume) renderVolume(s.volume.volume);
-  renderRing(s.audio.ok, s.assistant.available ? (s.assistant.status || {}).state : "");
+  setChecked($("activationsw"), !s.settings.activation_off);
+  $("earcongroup").hidden = !s.assistant.available;
+  setChecked($("earconsw"), !(s.assistant.settings && s.assistant.settings.earcon_off));
+  renderRing(s.audio.ok, s.assistant.available ? (s.assistant.status || {}).state : "", s.settings.activation_off);
   renderLevel(s.audio.level);
   $("audioerr").hidden = s.audio.ok || !s.audio.error;
   $("audioerr").textContent = s.audio.error || "";
@@ -584,7 +603,16 @@ function fillSelect(sel, opts, value) {
   if (!editing(sel) && sel.dataset.opts !== opts) { sel.innerHTML = opts; sel.dataset.opts = opts; }
   setValue(sel, value);
 }
+function renderEQ(s) {
+  const presets = s.settings.eq_presets || [];
+  const show = s.settings.has_eq && presets.length > 0;
+  $("eqgroup").hidden = !show;
+  if (!show) return;
+  const cur = s.settings.eq_mode;
+  setHTML($("eqgrid"), presets.map(p => `<button data-eq="${p.id}" class="${p.id === cur ? "on" : ""}">${esc(p.name)}</button>`).join(""));
+}
 function renderSettings(s) {
+  renderEQ(s);
   if (s.volume) setValue($("knobstep"), String(s.volume.knob_step));
   const a = s.assistant;
   $("asstoff").hidden = a.available;
@@ -811,7 +839,7 @@ function connect() {
     const l = JSON.parse(ev.data);
     $("offline").hidden = true;
     if (l.volume != null) renderVolume(l.volume);
-    renderRing(l.audio_ok, l.assistant);
+    renderRing(l.audio_ok, l.assistant, state && state.settings.activation_off);
     renderLevel(l.level);
     if (tab === "words") for (const [id, v] of Object.entries(l.scores)) {
       const m = document.querySelector(`[data-meter="${CSS.escape(id)}"]`);
@@ -895,6 +923,8 @@ $("alarmsave").onclick = () => run($("alarmsave"), async () => {
 });
 
 const settingsPatch = {
+  activationsw: t => ({ activation_off: !t.checked }),
+  earconsw: t => ({ assistant: { earcon_off: !t.checked } }),
   judge: t => ({ judge: t.checked }),
   judgemodel: t => ({ judge_model: t.value }),
   autoundo: t => ({ auto_false_undo: t.checked }),
@@ -921,6 +951,7 @@ document.addEventListener("click", (ev) => {
   const t = ev.target.closest("button");
   if (!t) return;
   const ds = t.dataset;
+  if (ds.eq !== undefined) run(t, async () => { await api("PATCH", "/settings", { eq_mode: +ds.eq }); });
   if (ds.alarmedit) { const a = state.alarms.alarms.find(x => x.id === ds.alarmedit); if (a) alarmFormFill(a); }
   if (ds.alarmdel) run(t, async () => {
     if (await ask("Удалить будильник?", { ok: "Удалить", danger: true })) {

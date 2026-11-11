@@ -30,12 +30,18 @@
 #define BUFFER_FRAMES 8192
 #define FIFO_BYTES 4096
 #define XRUN_LOG_NS (10LL * 1000 * 1000 * 1000)
+// When playback resumes after a pause the audio HAL wakes and resets the
+// amplifier to its own level; the volume watchdog corrects it but that takes
+// up to ~500 ms. Fade the audio in over this window so the spike is inaudible.
+#define FADE_MS 500
 
 static int sample_rate = 44100;
 static const char *gain_file;
 static float gain = 1.0f;
 static AAudioStream *stream;
 static int playing;
+static int fade_total;     // total fade-in frames (set once from sample_rate)
+static int fade_remaining; // frames left in the current fade-in; 0 = done
 
 static void close_stream(void) {
     if (stream) {
@@ -86,6 +92,8 @@ static int ensure_playing(void) {
             return -1;
         }
         playing = 1;
+        fade_remaining = fade_total;
+        fprintf(stderr, "aaudio_pipe: resume, fade-in %d ms\n", FADE_MS);
     }
     return 0;
 }
@@ -134,6 +142,17 @@ static void apply_gain(float *s, int n) {
     }
 }
 
+static void apply_fade(float *s, int frames) {
+    if (fade_remaining <= 0)
+        return;
+    for (int i = 0; i < frames && fade_remaining > 0; i++, fade_remaining--) {
+        float t = 1.0f - (float)fade_remaining / fade_total;
+        t *= t; // quadratic: stays quiet longer, rises fast at the end
+        s[i * CHANNELS]     *= t;
+        s[i * CHANNELS + 1] *= t;
+    }
+}
+
 // log_xruns reports output underruns now and then, so dropouts show in the log.
 static void log_xruns(void) {
     static long long next;
@@ -152,6 +171,7 @@ static void play(unsigned char *buf, int frames) {
     update_gain();
     log_xruns();
     apply_gain((float *)buf, frames * CHANNELS);
+    apply_fade((float *)buf, frames);
     while (frames > 0) {
         if (ensure_playing() != 0) {
             // audioserver not ready; drop this chunk rather than block librespot forever
@@ -174,6 +194,7 @@ int main(int argc, char **argv) {
         sample_rate = atoi(argv[1]);
     if (argc > 2)
         gain_file = argv[2];
+    fade_total = sample_rate * FADE_MS / 1000;
     if (fcntl(STDIN_FILENO, F_SETPIPE_SZ, FIFO_BYTES) < 0)
         perror("aaudio_pipe: F_SETPIPE_SZ");
 

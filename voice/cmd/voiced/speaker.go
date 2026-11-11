@@ -27,6 +27,12 @@ const (
 	// speakerBuffer is the audio still queued in the device after the last
 	// write.
 	speakerBuffer = 340 * time.Millisecond
+	// speakerWakePad is silence after the amplifier refresh on a wake: the
+	// HAL reset and the correction both take time, and actual audio must not
+	// start until the amplifier is back at the right level. Two refreshes
+	// fire (before and after the pad) because the HAL may reset the amp
+	// slightly after the stream wakes up.
+	speakerWakePad = 400 * time.Millisecond
 	// speakerWriteTimeout bounds one chunk's write: a helper that stops
 	// reading is killed instead of blocking Play for good.
 	speakerWriteTimeout = 2 * time.Second
@@ -45,14 +51,17 @@ var errFlushed = assistant.ErrFlushed
 type speaker struct {
 	cmd    []string
 	onWake func() // the output woke from idle: the HAL may have reset the amplifier
+	eq     *eq    // software EQ applied before writing; nil = none
 
 	now          func() time.Time
 	sleep        func(ctx context.Context, d time.Duration) error
 	writeTimeout time.Duration
+	wakePad      time.Duration
 
 	play    sync.Mutex // one Play at a time; guards the fields below
 	proc    *speakerProc
 	last    time.Time // when the last chunk was written; zero = stream not running
+	woke    bool      // the stream woke from idle; settle before real audio
 	lead    []float32 // Live audio held back before the reply's first write
 	liveEnd time.Time // when the Live reply written so far ends playing; zero = none
 
@@ -69,7 +78,7 @@ type speakerProc struct {
 }
 
 func newSpeaker(cmd []string, onWake func()) *speaker {
-	return &speaker{cmd: cmd, onWake: onWake, now: time.Now, sleep: sleepCtx, writeTimeout: speakerWriteTimeout}
+	return &speaker{cmd: cmd, onWake: onWake, now: time.Now, sleep: sleepCtx, writeTimeout: speakerWriteTimeout, wakePad: speakerWakePad}
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {
@@ -184,19 +193,44 @@ func (s *speaker) begin(ctx context.Context) (context.Context, func(*error)) {
 	}
 }
 
-// open starts the helper if needed and reports a wake from idle. The caller
-// holds s.play.
+// open starts the helper if needed and notes whether the stream woke from
+// idle; the caller settles before writing real audio. The caller holds s.play.
 func (s *speaker) open() (*speakerProc, error) {
 	p, err := s.start()
 	if err != nil {
 		return nil, err
 	}
 	if s.last.IsZero() || s.now().Sub(s.last) > speakerIdle {
+		s.woke = true
+	}
+	return p, nil
+}
+
+// wakeSettle writes silence so the audio HAL resets the amplifier during it
+// (not during the reply), then refreshes the amplifier and pads with more
+// silence while the correction takes effect. The caller holds s.play.
+func (s *speaker) wakeSettle(ctx context.Context, p *speakerProc) error {
+	if !s.woke {
+		return nil
+	}
+	s.woke = false
+	if s.onWake == nil || s.wakePad <= 0 {
 		if s.onWake != nil {
 			s.onWake()
 		}
+		return nil
 	}
-	return p, nil
+	burst := make([]float32, speakerRate/50) // 20 ms: wakes the output
+	if err := s.writeLocked(ctx, p, burst); err != nil {
+		return err
+	}
+	s.onWake()
+	pad := make([]float32, speakerRate*int(s.wakePad)/int(time.Second))
+	if err := s.writeLocked(ctx, p, pad); err != nil {
+		return err
+	}
+	s.onWake() // again: the HAL may reset the amp after the stream started
+	return nil
 }
 
 // Play writes pcm (mono, rate Hz) to the stream and returns once it has had
@@ -216,6 +250,9 @@ func (s *speaker) Play(ctx context.Context, pcm []int16, rate int) (err error) {
 	}
 	p, err := s.open()
 	if err != nil {
+		return err
+	}
+	if err := s.wakeSettle(ctx, p); err != nil {
 		return err
 	}
 	frames := resample24k(pcm, rate)
@@ -294,10 +331,12 @@ func (s *speaker) writeLive(ctx context.Context, frames []float32) error {
 	}
 	p, err := s.open()
 	if err == nil {
-		t := s.now()
-		if err = s.writeLocked(ctx, p, frames); err == nil {
-			s.liveEnd = later(s.liveEnd, t).Add(framesDuration(frames))
-			return nil
+		if err = s.wakeSettle(ctx, p); err == nil {
+			t := s.now()
+			if err = s.writeLocked(ctx, p, frames); err == nil {
+				s.liveEnd = later(s.liveEnd, t).Add(framesDuration(frames))
+				return nil
+			}
 		}
 	}
 	s.lead, s.liveEnd = nil, time.Time{}
@@ -351,6 +390,9 @@ func (s *speaker) writeLocked(ctx context.Context, p *speakerProc, frames []floa
 			return err
 		}
 		chunk := frames[off:min(off+per, len(frames))]
+		if s.eq != nil {
+			s.eq.Process(chunk)
+		}
 		buf = buf[:0]
 		for _, v := range chunk {
 			buf = binary.LittleEndian.AppendUint32(buf, math.Float32bits(v))

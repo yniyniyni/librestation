@@ -214,15 +214,33 @@ func level(pcm []int16) float64 {
 }
 
 const (
-	// bargeInDBFS is the LiveAudio level (channel 0 ×LiveGain, LiveGain = 2)
+	// bargeInDBFS is the base LiveAudio level (channel 0 ×LiveGain, LiveGain = 2)
 	// that, held for bargeInFor while the reply plays, cuts the reply off.
 	// Measured on the station (ledger, Task 1; channel 0 ×1): the assistant's
 	// own voice leaves a residual of p99 ≈ −39 dBFS, the user's speech at
 	// 1–3 m peaks at p99 ≈ −22…−24 dBFS. −31 dBFS ×1 sits between, +6 dB of
 	// gain makes it −25.
+	//
+	// That residual, though, scales with how loud the speaker plays: at
+	// amplifier volume ≈ 46 it was measured at −13 dBFS, well above −25, so the
+	// assistant cut its own replies off. bargeThreshold raises the level with
+	// the volume (bargeInDBFS holds up to bargeRefVol), so loud playback no
+	// longer counts as a barge-in; past that volume the user interrupts with the
+	// remote instead of their voice.
 	bargeInDBFS = -25.0
 	bargeInFor  = 150 * time.Millisecond
+
+	bargeRefVol = 20   // volume (0..100) up to which the base level holds
+	bargeSlope  = 0.65 // dB added to the level per volume unit above bargeRefVol
+	bargeMaxTh  = -3.0 // the level never rises past this
 )
+
+// bargeThreshold is the barge-in level for playback at volume vol (0..100). It
+// rises with the volume because the speaker's echo in channel 0 does.
+func bargeThreshold(vol int) float64 {
+	th := bargeInDBFS + bargeSlope*float64(max(0, vol-bargeRefVol))
+	return min(th, bargeMaxTh)
+}
 
 // silentDB is below any frame: the peak of nothing heard yet.
 const silentDB = -120.0
@@ -248,12 +266,14 @@ type voiceWatch struct {
 	speaking         bool
 	ev               voiceEvent
 	peak             float64 // the loudest frame since the last readPeak
+	bargeTh          float64 // barge-in level; micOff raises it with the volume
 }
 
 // arm takes a new noise floor from the recent audio and forgets the past.
 func (w *voiceWatch) arm() {
 	w.floor = w.lv.floor()
 	w.run, w.quiet, w.loud, w.speaking, w.ev = 0, 0, 0, false, 0
+	w.bargeTh = bargeInDBFS
 }
 
 // push takes in pcm and reports whether a new event was noted.
@@ -269,7 +289,7 @@ func (w *voiceWatch) push(pcm []int16) bool {
 
 func (w *voiceWatch) frame(db float64) {
 	w.peak = max(w.peak, db)
-	if db < bargeInDBFS {
+	if db < w.bargeTh {
 		w.loud = 0
 	} else if w.loud++; w.loud == int(bargeInFor/frameDur) {
 		w.ev |= evLoud
