@@ -78,6 +78,9 @@ type Deps struct {
 	Now  func() time.Time // nil = time.Now
 	// Earcon is the sound played as a request begins; nil = none.
 	Earcon func() ([]int16, int)
+	// Volume reports the speaker's current volume (0..100); it sets the barge-in
+	// level, which rises with it. Nil = treat as quiet (the base level).
+	Volume func() int
 }
 
 // Status is the session's state for the panel.

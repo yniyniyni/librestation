@@ -196,3 +196,24 @@ func TestRecentKeepsTheLastSamples(t *testing.T) {
 		t.Errorf("push allocates %v times", n)
 	}
 }
+
+func TestBargeThresholdRisesWithVolume(t *testing.T) {
+	// Quiet playback keeps the base level so a normal voice can barge in.
+	if got := bargeThreshold(0); got != bargeInDBFS {
+		t.Errorf("bargeThreshold(0) = %v, want %v", got, bargeInDBFS)
+	}
+	if got := bargeThreshold(bargeRefVol); got != bargeInDBFS {
+		t.Errorf("bargeThreshold(%d) = %v, want %v", bargeRefVol, got, bargeInDBFS)
+	}
+	// Loud playback raises it above the measured echo (-13 dBFS at volume ~46).
+	if got := bargeThreshold(46); got <= -13 {
+		t.Errorf("bargeThreshold(46) = %v, want > -13 (above the measured echo)", got)
+	}
+	// It is monotonic and capped.
+	if bargeThreshold(60) < bargeThreshold(40) {
+		t.Error("bargeThreshold must not fall as volume rises")
+	}
+	if got := bargeThreshold(100); got != bargeMaxTh {
+		t.Errorf("bargeThreshold(100) = %v, want the cap %v", got, bargeMaxTh)
+	}
+}

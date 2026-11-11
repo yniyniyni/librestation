@@ -156,9 +156,14 @@ func (s *Session) liveOff() {
 // detection, hearing it, would cut the reply off and answer itself. Only the
 // local voice watch listens meanwhile, and it knows the echo's level.
 func (s *Session) micOff() {
+	vol := 0
+	if s.d.Volume != nil {
+		vol = s.d.Volume()
+	}
 	s.amu.Lock()
 	s.mute = true
 	s.watch.peak = silentDB
+	s.watch.bargeTh = bargeThreshold(vol)
 	s.amu.Unlock()
 }
 
